@@ -7,7 +7,7 @@ with the line for the same file name in `SHA256SUMS`. The two must be identical.
 Windows (PowerShell):
 
 ```powershell
-Get-FileHash .\<file> -Algorithm SHA256
+Get-FileHash $HOME\Downloads\<file> -Algorithm SHA256
 ```
 
 macOS:
