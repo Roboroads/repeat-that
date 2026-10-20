@@ -6,8 +6,10 @@ use std::sync::Mutex;
 
 use tauri::test::{mock_builder, mock_context, noop_assets};
 
-use crate::actions::{ActionHost, AppAction, dispatch};
-use crate::tray::{SharedStatus, TrayStatus};
+use tauri::Manager;
+
+use crate::actions::{AppAction, dispatch};
+use crate::tray::{SharedStatus, TrayStatus, lock_status};
 
 #[test]
 fn toggle_pause_works_on_the_mock_runtime() {
@@ -16,12 +18,39 @@ fn toggle_pause_works_on_the_mock_runtime() {
         .build(mock_context(noop_assets()))
         .expect("the mock app builds");
     let handle = app.handle();
+    let is_paused = || lock_status(&handle.state::<SharedStatus>()).is_paused();
 
-    assert!(!handle.is_paused());
+    assert!(!is_paused());
     dispatch(AppAction::TogglePause, handle);
-    assert!(handle.is_paused());
+    assert!(is_paused());
     dispatch(AppAction::TogglePause, handle);
-    assert!(!handle.is_paused());
+    assert!(!is_paused());
+}
+
+/// Pause toggles from the tray and the hotkeys can arrive at the same time; an even number of toggles must always end
+/// where it started, which a read followed by a separate write would not guarantee.
+#[test]
+fn simultaneous_pause_toggles_do_not_get_lost() {
+    let app = mock_builder()
+        .manage::<SharedStatus>(Mutex::new(TrayStatus::default()))
+        .build(mock_context(noop_assets()))
+        .expect("the mock app builds");
+
+    let threads: Vec<_> = (0..4)
+        .map(|_| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                for _ in 0..5000 {
+                    dispatch(AppAction::TogglePause, &handle);
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().expect("the toggling thread finishes");
+    }
+
+    assert!(!lock_status(&app.handle().state::<SharedStatus>()).is_paused());
 }
 
 /// The manifest is what makes Windows load Common Controls v6, the only version that has `TaskDialogIndirect`
