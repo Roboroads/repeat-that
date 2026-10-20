@@ -625,6 +625,26 @@ mod tests {
     }
 
     #[test]
+    fn the_window_may_send_duck_and_hotkeys_as_whole_objects() {
+        let settings = apply(json!({
+            "duck": { "enabled": false, "level": 0.4 },
+            "hotkeys": { "replay": "Ctrl+Shift+R", "stop": null, "catchUp": "Ctrl+Shift+C" }
+        }))
+        .unwrap();
+        assert_eq!(
+            settings.duck,
+            Duck {
+                enabled: false,
+                level: 0.4
+            }
+        );
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys(Some("Ctrl+Shift+R"), None, Some("Ctrl+Shift+C"))
+        );
+    }
+
+    #[test]
     fn patch_numbers_are_clamped() {
         let settings = apply(json!({
             "bufferSeconds": 5000, "replaySpeed": 0.1, "catchUpSpeed": 10, "duck": { "level": 0 }
