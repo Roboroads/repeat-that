@@ -72,7 +72,8 @@ function keyName(code: string): string | undefined {
   return NAMED_KEYS.has(code) ? code : undefined;
 }
 
-function modifiersOf(e: KeyInput): string[] {
+/** The modifiers held in `e`, as accelerator names in the order they are written. */
+export function heldModifiers(e: Pick<KeyboardEvent, 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>): string[] {
   const held: string[] = [];
   if (e.ctrlKey) held.push('Ctrl');
   if (e.altKey) held.push('Alt');
@@ -82,7 +83,7 @@ function modifiersOf(e: KeyInput): string[] {
 }
 
 export function interpretKey(e: KeyInput): KeyOutcome {
-  const modifiers = modifiersOf(e);
+  const modifiers = heldModifiers(e);
 
   if (MODIFIER_CODES.has(e.code)) return { kind: 'pending', modifiers };
 

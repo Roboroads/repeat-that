@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte';
   import { suspendHotkeys, type HotkeyName, type Settings } from '../api';
   import { DEFAULT_HOTKEYS } from '../defaults';
-  import { formatAccel, interpretKey } from '../hotkey';
+  import { formatAccel, heldModifiers, interpretKey } from '../hotkey';
   import type { SettingsStore } from '../store.svelte';
   import Section from './Section.svelte';
 
@@ -102,7 +102,9 @@
     }
   }
 
-  function onkeyup(event: KeyboardEvent) {
+  function onkeyup(event: KeyboardEvent, name: HotkeyName) {
+    // Keep the "Ctrl+Alt+…" preview in step with what is still held.
+    if (recording === name) held = heldModifiers(event);
     if (swallowed === event.code) {
       swallowed = null;
       event.preventDefault();
@@ -152,7 +154,7 @@
           begin(name);
         }}
         onkeydown={(event) => onkeydown(event, name)}
-        onkeyup={onkeyup}
+        onkeyup={(event) => onkeyup(event, name)}
         onblur={() => {
           if (recording === name) end();
         }}

@@ -100,6 +100,24 @@ describe('hotkey recorder', () => {
     expect(replayField()).toHaveTextContent('Ctrl');
   });
 
+  it('drops a modifier from the preview when it is released', async () => {
+    await renderApp();
+    await fireEvent.click(replayField());
+    const release = (code: string, mods: { ctrlKey?: boolean; altKey?: boolean }) =>
+      fireEvent.keyUp(replayField(), { code, key: code, ...mods });
+
+    await press(replayField(), 'ControlLeft', { ctrl: true });
+    await press(replayField(), 'AltLeft', { ctrl: true, alt: true });
+    expect(replayField()).toHaveTextContent('Ctrl+Alt+…');
+
+    await release('AltLeft', { ctrlKey: true });
+    expect(replayField()).toHaveTextContent('Ctrl+…');
+    expect(replayField()).not.toHaveTextContent('Alt');
+
+    await release('ControlLeft', {});
+    expect(replayField()).toHaveTextContent('Press a combination');
+  });
+
   it('shows the backend error for a conflicting combination and leaves the field as it was', async () => {
     const { backend } = await renderApp();
     await fireEvent.click(replayField());
