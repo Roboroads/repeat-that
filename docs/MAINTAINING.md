@@ -46,5 +46,7 @@ release PR to trigger CI.
 - [ ] Apply the branch ruleset (see above)
 - [ ] Turn on private vulnerability reporting (Settings → Security) and add a `SECURITY.md`
 - [ ] Turn on Dependabot alerts and security updates (version updates are already set up in `.github/dependabot.yml`)
-- [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing
+- [ ] Publish the GitHub Pages site (milestone 8 in the roadmap; on a free plan, Pages needs the public repo)
+- [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing. The Pages site has to be live
+  first, because SignPath asks for a project website and a public repository
 - [ ] Add topics and a social preview image so people can find the project

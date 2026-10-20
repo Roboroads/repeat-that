@@ -44,6 +44,19 @@
 - [ ] `whisper-rs` transcription of finished utterances (local models, downloaded on demand)
 - [ ] Transcript panel / overlay, memory-only
 
+## Milestone 8 — Website and going public
+This milestone can run in parallel with 5–7.
+
+- [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release, and a link to `SHA256SUMS` with how to verify it
+- [ ] Short demo video of a replay in a call (Discord or Teams), made with a video skill that still has to be installed
+- [ ] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary
+- [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist)
+- [ ] Apply for free open-source code signing from SignPath Foundation (Windows), with the website as the project page
+
+The demo video uses a staged conversation between people who agreed to be in it. It never contains audio captured from
+a real call with someone else (see [PRIVACY.md](PRIVACY.md)). Large media stays out of git history: the video is hosted
+as a release asset or on YouTube, and any other big files go on a Pages-only branch.
+
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
 - [ ] Auto-update
