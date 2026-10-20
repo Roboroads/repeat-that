@@ -5,27 +5,34 @@
 
 use std::collections::HashMap;
 
-/// Volumes from before ducking, by session instance id.
+use crate::duck_journal::JournalEntry;
+
+/// Ducked sessions with their volume from before ducking, by session instance id.
 #[derive(Debug, Default)]
-pub(crate) struct BeforeDuck(HashMap<String, f32>);
+pub(crate) struct BeforeDuck(HashMap<String, JournalEntry>);
 
 impl BeforeDuck {
     /// The volume to give session `id` for duck `level`, or `None` to leave it alone. The first duck remembers the
-    /// session's `current` volume; later ducks scale that remembered volume, so they never compound. At `1.0` the
-    /// remembered volume comes back, and sessions that were never ducked are left alone.
-    pub fn target(&mut self, id: &str, level: f32, current: impl FnOnce() -> Option<f32>) -> Option<f32> {
+    /// session's identifier and `current` volume from `session`; later ducks scale that remembered volume, so they
+    /// never compound. At `1.0` the remembered volume comes back, and sessions that were never ducked are left alone.
+    pub fn target(&mut self, id: &str, level: f32, session: impl FnOnce() -> Option<(String, f32)>) -> Option<f32> {
         if level >= 1.0 {
-            return self.0.get(id).copied();
+            return self.0.get(id).map(|e| e.original);
         }
-        let original = match self.0.get(id) {
-            Some(&original) => original,
+        let entry = match self.0.get_mut(id) {
+            Some(entry) => entry,
             None => {
-                let current = current()?;
-                self.0.insert(id.to_owned(), current);
-                current
+                let (identifier, current) = session()?;
+                let entry = JournalEntry {
+                    identifier,
+                    original: current,
+                    ducked: current,
+                };
+                self.0.entry(id.to_owned()).or_insert(entry)
             }
         };
-        Some(original * level)
+        entry.ducked = entry.original * level;
+        Some(entry.ducked)
     }
 
     /// Whether session `id` is ducked.
@@ -41,25 +48,34 @@ impl BeforeDuck {
     pub fn restored(&mut self, id: &str) {
         self.0.remove(id);
     }
+
+    /// The ducked sessions, for the duck journal.
+    pub fn entries(&self) -> impl Iterator<Item = &JournalEntry> {
+        self.0.values()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn session(current: f32) -> impl FnOnce() -> Option<(String, f32)> {
+        move || Some(("app".into(), current))
+    }
+
     #[test]
     fn ducking_scales_the_volume_from_before_the_first_duck() {
         let mut before = BeforeDuck::default();
-        assert_eq!(before.target("a", 0.5, || Some(0.8)), Some(0.4));
+        assert_eq!(before.target("a", 0.5, session(0.8)), Some(0.4));
         // The session is at 0.4 now; ducking again must not compound.
-        assert_eq!(before.target("a", 0.25, || Some(0.4)), Some(0.2));
-        assert_eq!(before.target("a", 0.25, || Some(0.2)), Some(0.2));
+        assert_eq!(before.target("a", 0.25, session(0.4)), Some(0.2));
+        assert_eq!(before.target("a", 0.25, session(0.2)), Some(0.2));
     }
 
     #[test]
     fn unducking_restores_the_original_volume_until_it_is_confirmed() {
         let mut before = BeforeDuck::default();
-        before.target("a", 0.5, || Some(0.8));
+        before.target("a", 0.5, session(0.8));
         assert_eq!(before.target("a", 1.0, || unreachable!()), Some(0.8));
         // Restoring failed: the next attempt still knows the original.
         assert_eq!(before.target("a", 1.0, || unreachable!()), Some(0.8));
@@ -70,14 +86,14 @@ mod tests {
     #[test]
     fn sessions_that_were_never_ducked_are_left_alone() {
         let mut before = BeforeDuck::default();
-        assert_eq!(before.target("a", 1.0, || Some(0.8)), None);
+        assert_eq!(before.target("a", 1.0, session(0.8)), None);
     }
 
     #[test]
     fn ducked_sessions_are_known_until_restored() {
         let mut before = BeforeDuck::default();
         assert!(!before.contains("a"));
-        before.target("a", 0.5, || Some(0.8));
+        before.target("a", 0.5, session(0.8));
         assert!(before.contains("a"));
         before.restored("a");
         assert!(!before.contains("a"));
@@ -88,5 +104,21 @@ mod tests {
         let mut before = BeforeDuck::default();
         assert_eq!(before.target("a", 0.5, || None), None);
         assert_eq!(before.target("a", 1.0, || unreachable!()), None);
+    }
+
+    #[test]
+    fn journal_entries_hold_the_original_and_the_ducked_volume() {
+        let mut before = BeforeDuck::default();
+        before.target("a", 0.5, session(0.8));
+        before.target("a", 0.25, session(0.4));
+        let entries: Vec<_> = before.entries().cloned().collect();
+        assert_eq!(
+            entries,
+            [JournalEntry {
+                identifier: "app".into(),
+                original: 0.8,
+                ducked: 0.2
+            }]
+        );
     }
 }

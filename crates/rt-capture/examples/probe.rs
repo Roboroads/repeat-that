@@ -1,4 +1,5 @@
-//! Development tool: tries the capture backend of this OS on a real app. Nothing is written to disk.
+//! Development tool: tries the capture backend of this OS on a real app. No audio is written to disk; on Windows the
+//! duck journal (app volumes only) lives in the temp directory.
 //!
 //! ```sh
 //! cargo run -p rt-capture --example probe -- list
@@ -14,14 +15,14 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, platform_source};
+use rt_capture::{AppAudioSource, AudioApp, CaptureFormat};
 use rt_core::{AudioFormat, Recorder, SegmenterConfig, SileroVad};
 
 type Error = Box<dyn std::error::Error>;
 
 fn main() -> Result<(), Error> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let source = platform_source()?;
+    let source = source()?;
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["list"] => list(source.as_ref()),
         ["capture", app, rest @ ..] => {
@@ -39,6 +40,18 @@ fn main() -> Result<(), Error> {
             std::process::exit(2);
         }
     }
+}
+
+/// The capture backend, with a duck journal on Windows so a probe killed mid-duck gives the app its volume back.
+#[cfg(windows)]
+fn source() -> Result<Box<dyn AppAudioSource>, Error> {
+    let journal = env::temp_dir().join("repeat-that-probe-duck.journal");
+    Ok(Box::new(rt_capture::WasapiSource::new().with_duck_journal(journal)))
+}
+
+#[cfg(not(windows))]
+fn source() -> Result<Box<dyn AppAudioSource>, Error> {
+    Ok(rt_capture::platform_source()?)
 }
 
 fn list(source: &dyn AppAudioSource) -> Result<(), Error> {

@@ -21,6 +21,7 @@ use windows::core::{HSTRING, Interface, PWSTR, w};
 
 use super::backend;
 use crate::before_duck::BeforeDuck;
+use crate::duck_journal::{self, JournalEntry};
 use crate::process_tree::{Process, ProcessTable};
 use crate::{AudioApp, Result};
 
@@ -101,7 +102,11 @@ fn duck_session(
         return Ok(());
     }
     let volume: ISimpleAudioVolume = session.cast()?;
-    let Some(target) = before_duck.target(&id, level, || unsafe { volume.GetMasterVolume() }.ok()) else {
+    let target = before_duck.target(&id, level, || unsafe {
+        let current = volume.GetMasterVolume().ok()?;
+        Some((take_co_string(session.GetSessionIdentifier().ok()?), current))
+    });
+    let Some(target) = target else {
         return Ok(());
     };
     unsafe { volume.SetMasterVolume(target, std::ptr::null()) }?;
@@ -109,6 +114,38 @@ fn duck_session(
         before_duck.restored(&id);
     }
     Ok(())
+}
+
+/// Restores the sessions a duck journal from an earlier run lists, if their volume is still the one we set. Returns the
+/// entries without a live session yet, because their app isn't running.
+pub(crate) fn recover(journal: Vec<JournalEntry>) -> Result<Vec<JournalEntry>> {
+    let mut seen = vec![false; journal.len()];
+    for_each_session(|session| {
+        let Ok(identifier) = unsafe { session.GetSessionIdentifier() }.map(take_co_string) else {
+            return;
+        };
+        let Ok(volume) = session.cast::<ISimpleAudioVolume>() else {
+            return;
+        };
+        for (entry, seen) in journal.iter().zip(&mut seen) {
+            if entry.identifier != identifier {
+                continue;
+            }
+            let Ok(current) = (unsafe { volume.GetMasterVolume() }) else {
+                continue;
+            };
+            *seen = true;
+            if duck_journal::should_restore(entry, current) {
+                let _ = unsafe { volume.SetMasterVolume(entry.original, std::ptr::null()) };
+            }
+        }
+    })?;
+    Ok(journal
+        .into_iter()
+        .zip(seen)
+        .filter(|(_, seen)| !seen)
+        .map(|(entry, _)| entry)
+        .collect())
 }
 
 /// Calls `f` for every live, non-system audio session on every active output device. Fails only when the devices
