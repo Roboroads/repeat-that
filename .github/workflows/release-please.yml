@@ -17,18 +17,23 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       sha: ${{ steps.release.outputs.sha }}
     steps:
-      # release-please opens its PRs with a personal access token instead of GITHUB_TOKEN: PRs and pushes made with
-      # GITHUB_TOKEN don't start other workflows, so CI would never run on a release PR (and with the branch ruleset
-      # on, it would wait forever for the required checks). Fail here, pointing at the docs, when the secret is
-      # missing or empty. An expired token fails in release-please itself with an authentication error. How to renew
-      # it is in docs/MAINTAINING.md.
+      # release-please acts with a personal access token so that CI runs on its PRs; Release token in
+      # docs/MAINTAINING.md says why and how to renew it. Fail here when the secret is empty, rather than let the action
+      # fall back to GITHUB_TOKEN, and warn when the token is close to its expiry.
       - name: Check the release token
         env:
-          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         run: |
-          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
+          if [ -z "$GH_TOKEN" ]; then
             echo "::error::The RELEASE_PLEASE_TOKEN secret is empty. See Release token in docs/MAINTAINING.md."
             exit 1
+          fi
+          # A token that has an expiry says when, in a response header of every API call.
+          expires=$(gh api --include rate_limit | tr -d '\r' | sed -n 's/^github-authentication-token-expiration: *//Ip')
+          if [ -n "$expires" ] && end=$(date -d "$expires" +%s); then
+            if [ "$end" -le $(( $(date +%s) + 30 * 86400 )) ]; then
+              echo "::warning::The release token expires on $expires. See Release token in docs/MAINTAINING.md."
+            fi
           fi
 
       # Fails when a `release-as` pin outlived its release (what --tags adds is described in the script).

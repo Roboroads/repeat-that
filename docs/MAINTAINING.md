@@ -60,8 +60,12 @@ The token that exists now:
 
 - Repository access: only `Roboroads/repeat-that`.
 - Permissions: Contents, Pull requests and Issues with read and write, and Metadata with read.
-- Created 2026-10-20 and valid for a year, so it **expires around 2027-10-20**. Put the date in a calendar. Release PRs
-  are opened as the account that owns the token.
+- Created 2026-10-20 and valid for a year, so it **expires around 2027-10-20**. Release PRs are opened as the account
+  that owns the token.
+
+From 30 days before the expiry, the `Check the release token` step of every `release-please` run adds a warning to the
+run summary (it reads the date from the `github-authentication-token-expiration` header that the API sends with a
+token that expires). A warning on a green run is easy to miss, so put the date in a calendar too.
 
 When it expires (or leaks), the `release-please` run on `main` fails in the release-please step with an authentication
 error, and no release PR is opened or updated until it is renewed. To renew it:
