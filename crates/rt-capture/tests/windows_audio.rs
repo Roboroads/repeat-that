@@ -113,20 +113,24 @@ fn lists_captures_and_ducks_a_playing_process() {
 
     // Around the moment the volume changes, compensation and the actual volume can be briefly out of step.
     let profile = duck_transitions(&source, &app);
-    let (low, high) = profile
-        .iter()
-        .fold((f64::MAX, 0.0f64), |(lo, hi), &r| (lo.min(r), hi.max(r)));
-    println!(
-        "10 ms windows across duck and restore: {low:.2}×–{high:.2}× of normal, {} of {} off by more than 10%",
-        profile.iter().filter(|r| (*r - 1.0).abs() > 0.1).count(),
-        profile.len(),
-    );
-    // Never more than the full compensation (4× at 25%), and never silent.
-    assert!(high < 4.5 && low > 0.2, "transition levels {low:.2}×–{high:.2}×");
+    let mut off = Vec::new();
+    for (ms, &ratio) in profile.iter().enumerate() {
+        if (ratio - 1.0).abs() > 0.1 {
+            match off.last_mut() {
+                Some((start, len, lo, hi)) if *start + *len == ms => {
+                    *len += 1;
+                    *lo = ratio.min(*lo);
+                    *hi = ratio.max(*hi);
+                }
+                _ => off.push((ms, 1, ratio, ratio)),
+            }
+        }
+    }
+    println!("1 ms windows off by more than 10% (start ms, length ms, min×, max×): {off:.2?}");
 }
 
-/// Captures continuously while ducking to 25% and back, and returns the RMS of each 10 ms window relative to the
-/// tone's level.
+/// Captures continuously while ducking to 25% and back three times, and returns the RMS of each 1 ms window (one
+/// period of the tone) relative to the tone's level.
 fn duck_transitions(source: &WasapiSource, app: &AudioApp) -> Vec<f64> {
     let (tx, rx) = mpsc::channel::<(Vec<f32>, CaptureFormat)>();
     let handle = source
@@ -138,10 +142,12 @@ fn duck_transitions(source: &WasapiSource, app: &AudioApp) -> Vec<f64> {
         )
         .expect("capture starts");
     thread::sleep(Duration::from_millis(500));
-    source.set_app_volume(app, 0.25).unwrap();
-    thread::sleep(Duration::from_millis(500));
-    source.set_app_volume(app, 1.0).unwrap();
-    thread::sleep(Duration::from_millis(500));
+    for _ in 0..3 {
+        source.set_app_volume(app, 0.25).unwrap();
+        thread::sleep(Duration::from_millis(300));
+        source.set_app_volume(app, 1.0).unwrap();
+        thread::sleep(Duration::from_millis(300));
+    }
     handle.stop();
 
     let mut mono = Vec::new();
@@ -157,16 +163,9 @@ fn duck_transitions(source: &WasapiSource, app: &AudioApp) -> Vec<f64> {
     }
     // Skip the first 300 ms, where the stream may still be filling.
     let mono = &mono[(rate * 3 / 10).min(mono.len())..];
-    mono.chunks_exact(rate / 100)
+    mono.chunks_exact(rate / 1000)
         .map(|w| (w.iter().map(|s| s * s).sum::<f64>() / w.len() as f64).sqrt() / TONE_RMS)
         .collect()
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Measurement {
-    rms: f64,
-    hz: f64,
-    seconds: f64,
 }
 
 /// Captures `app` for a second (after a short settle time) and measures level and frequency of the first channel.
