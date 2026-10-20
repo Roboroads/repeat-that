@@ -32,6 +32,11 @@ impl UtteranceSink for BufferSink<'_> {
         self.buffer.append(samples);
     }
 
+    fn split(&mut self, samples: &[f32]) {
+        self.finished += usize::from(self.buffer.open_id().is_some());
+        self.buffer.open_continuation(samples.to_vec());
+    }
+
     fn close(&mut self) {
         self.finished += usize::from(self.buffer.close().is_some());
     }

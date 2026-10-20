@@ -8,6 +8,9 @@ pub struct Utterance {
     pub id: u64,
     /// Mono samples at the buffer's sample rate.
     pub samples: Vec<f32>,
+    /// The speech goes straight on in the next utterance: this one was split off at `max_utterance`, it didn't end
+    /// at a pause.
+    pub continues: bool,
 }
 
 /// In-memory ring of the most recent utterances, capped by the total amount of *speech* it holds.
@@ -70,10 +73,25 @@ impl SpeechBuffer {
         let id = self.next_id;
         self.next_id += 1;
         self.total_samples += samples.len();
-        self.utterances.push_back(Utterance { id, samples });
+        self.utterances.push_back(Utterance {
+            id,
+            samples,
+            continues: false,
+        });
         self.open = true;
         self.evict();
         id
+    }
+
+    /// Closes the open utterance where the speech in it goes on, and opens the next one with `samples`, which
+    /// continues it without a pause. Returns the new utterance's id. With nothing open, this simply opens one.
+    pub fn open_continuation(&mut self, samples: Vec<f32>) -> u64 {
+        if self.open
+            && let Some(utterance) = self.utterances.back_mut()
+        {
+            utterance.continues = true;
+        }
+        self.open(samples)
     }
 
     /// Appends samples to the open utterance, evicting the oldest finished ones if the buffer is now over its cap.
@@ -307,6 +325,22 @@ mod tests {
         buf.set_max_speech(Duration::from_secs(1));
         assert_eq!(buf.len(), 1);
         assert_eq!(buf.speech_duration(), Duration::from_millis(3500));
+    }
+
+    #[test]
+    fn split_marks_the_part_that_continues() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(10));
+        let first = buf.open(speech(1.0, 1.0));
+        let second = buf.open_continuation(speech(0.5, 2.0));
+        assert_eq!(second, first + 1);
+        assert!(buf.get(first).unwrap().continues);
+        assert_eq!(buf.open_id(), Some(second));
+        buf.close();
+        assert!(!buf.get(second).unwrap().continues);
+        // Nothing open: a split just opens.
+        let third = buf.open_continuation(speech(0.5, 3.0));
+        assert!(!buf.get(second).unwrap().continues);
+        assert_eq!(buf.open_id(), Some(third));
     }
 
     #[test]

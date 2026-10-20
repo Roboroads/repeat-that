@@ -40,7 +40,10 @@ pub trait UtteranceSink {
     fn open(&mut self, samples: &[f32]);
     /// More audio for the open utterance.
     fn append(&mut self, samples: &[f32]);
-    /// The open utterance ended (a long pause, a split or a flush). Nothing more is appended to it.
+    /// The open utterance reached `max_utterance` while speech goes on: it ends here, and the next one, which continues
+    /// it without a pause, opens with these samples.
+    fn split(&mut self, samples: &[f32]);
+    /// The open utterance ended (a long pause or a flush). Nothing more is appended to it.
     fn close(&mut self);
 }
 
@@ -261,8 +264,7 @@ impl Segmenter {
                 }
                 if self.split_due {
                     // Split mid-speech. The next part starts right where this one ends.
-                    sink.close();
-                    sink.open(chunk);
+                    sink.split(chunk);
                     self.open_len = chunk.len();
                     self.split_due = false;
                 } else {
@@ -357,6 +359,7 @@ mod tests {
     enum SegmentEvent {
         Open(Vec<f32>),
         Append(Vec<f32>),
+        Split(Vec<f32>),
         Close,
     }
 
@@ -370,6 +373,10 @@ mod tests {
             self.push(SegmentEvent::Append(samples.to_vec()));
         }
 
+        fn split(&mut self, samples: &[f32]) {
+            self.push(SegmentEvent::Split(samples.to_vec()));
+        }
+
         fn close(&mut self) {
             self.push(SegmentEvent::Close);
         }
@@ -378,6 +385,11 @@ mod tests {
     /// Plays `events` into a list of utterances, each with whether it was closed.
     fn utterances(events: &[SegmentEvent]) -> Vec<(Vec<f32>, bool)> {
         let mut out: Vec<(Vec<f32>, bool)> = Vec::new();
+        let close = |out: &mut Vec<(Vec<f32>, bool)>| {
+            let (_, closed) = out.last_mut().expect("close an open utterance");
+            assert!(!*closed, "closed twice");
+            *closed = true;
+        };
         for event in events {
             match event {
                 SegmentEvent::Open(samples) => out.push((samples.clone(), false)),
@@ -386,11 +398,11 @@ mod tests {
                     assert!(!*closed, "append after close");
                     utterance.extend_from_slice(samples);
                 }
-                SegmentEvent::Close => {
-                    let (_, closed) = out.last_mut().expect("close an open utterance");
-                    assert!(!*closed, "closed twice");
-                    *closed = true;
+                SegmentEvent::Split(samples) => {
+                    close(&mut out);
+                    out.push((samples.clone(), false));
                 }
+                SegmentEvent::Close => close(&mut out),
             }
         }
         out
@@ -563,8 +575,14 @@ mod tests {
         let mut seg = segmenter(config);
         let mut events = Vec::new();
         seg.push(&tone(1.5), &mut events);
-        let close = events.iter().position(|e| *e == SegmentEvent::Close).expect("split");
-        assert!(matches!(&events[close + 1], SegmentEvent::Open(s) if !s.is_empty()));
+        assert!(!events.contains(&SegmentEvent::Close));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, SegmentEvent::Split(s) if !s.is_empty()))
+                .count(),
+            1
+        );
         let published = utterances(&events);
         assert_eq!(published.len(), 2);
         assert!(published[0].1 && !published[1].1);

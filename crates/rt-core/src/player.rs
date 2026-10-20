@@ -68,6 +68,8 @@ struct Playback {
     fed: usize,
     /// The whole utterance is in the stretcher: it was finished (or evicted).
     complete: bool,
+    /// The whole utterance is in the stretcher, and the speech goes straight on in the next one (a split).
+    continues: bool,
     /// Caught up with the sentence in progress. The rest of it plays at normal speed: there's nothing left to catch up,
     /// and playing faster would only run out of speech again.
     live: bool,
@@ -87,19 +89,32 @@ enum Phase {
 
 impl Playback {
     /// Pushes what's new of the utterance into the stretcher, and lets the stretcher play out its tail once the
-    /// utterance is finished.
+    /// utterance is finished. A split utterance has no tail: the next part follows in the same stream.
     fn feed(&mut self, buffer: &SpeechBuffer, stretcher: &mut Stretcher) {
-        if self.complete {
+        if self.complete || self.continues {
             return;
         }
-        if let Some(utterance) = buffer.get(self.id) {
+        let utterance = buffer.get(self.id);
+        if let Some(utterance) = utterance {
             stretcher.push(utterance.samples.get(self.fed..).unwrap_or_default());
             self.fed = utterance.samples.len();
         }
-        if buffer.open_id() != Some(self.id) {
+        if buffer.open_id() == Some(self.id) {
+            return;
+        }
+        if utterance.is_some_and(|u| u.continues) && buffer.get(self.id + 1).is_some() {
+            self.continues = true;
+        } else {
             self.complete = true;
             stretcher.finish();
         }
+    }
+
+    /// Goes on with the part a split utterance continues in, in the same stream.
+    fn continue_with_next(&mut self) {
+        self.id += 1;
+        self.fed = 0;
+        self.continues = false;
     }
 }
 
@@ -174,8 +189,10 @@ impl Player {
     pub fn behind(&self, buffer: &SpeechBuffer) -> Option<Duration> {
         let playback = self.playing.as_ref()?;
         let at_speed = |samples: usize, speed: f32| (samples as f32 / speed) as usize;
+        // Only finished utterances are followed by a gap, not the open one or one that was split.
         let gap_after = |id: u64, speed: f32| {
-            if buffer.open_id() == Some(id) {
+            let continues = buffer.get(id).is_some_and(|u| u.continues);
+            if buffer.open_id() == Some(id) || continues {
                 0
             } else {
                 at_speed(self.gap, speed)
@@ -216,6 +233,11 @@ impl Player {
                     if written == out.len() {
                         break;
                     }
+                    if playback.continues {
+                        // A split mid-speech: straight on with the next part, without a gap.
+                        playback.continue_with_next();
+                        continue;
+                    }
                     if playback.complete {
                         let gap = (self.gap as f32 / self.stretcher.speed()) as usize;
                         playback.phase = Phase::Gap(gap);
@@ -233,7 +255,7 @@ impl Player {
                 Phase::Waiting => {
                     playback.feed(buffer, &mut self.stretcher);
                     let available = self.stretcher.pending();
-                    if playback.complete || (available > 0 && available >= self.live_margin) {
+                    if playback.complete || playback.continues || (available > 0 && available >= self.live_margin) {
                         playback.phase = Phase::Speech;
                     } else {
                         out[written..].fill(0.0);
@@ -280,6 +302,7 @@ impl Player {
             id,
             fed: 0,
             complete: false,
+            continues: false,
             live: false,
             phase: Phase::Speech,
         };
@@ -637,6 +660,43 @@ mod tests {
         player.set_speed(2.0);
         let behind = player.behind(&buf).unwrap().as_millis();
         assert!((120..=135).contains(&behind), "{behind}");
+    }
+
+    #[test]
+    fn plays_split_parts_without_a_gap() {
+        let gap = PlayerConfig {
+            gap: Duration::from_millis(20),
+            ..no_gap()
+        };
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        buf.open_continuation(vec![2.0; 100]);
+        buf.open_continuation(vec![3.0; 100]);
+        buf.close();
+        let mut player = Player::new(RATE, gap.clone());
+        player.replay(&buf);
+        player.replay(&buf);
+        player.replay(&buf);
+        assert_eq!(player.current_id(), Some(0));
+        // The gap only comes once the speaker pauses.
+        assert_eq!(player.behind(&buf), Some(Duration::from_millis(320)));
+        let out = render_all(&mut player, &buf);
+        assert_eq!(
+            out,
+            [vec![1.0; 100], vec![2.0; 100], vec![3.0; 100], vec![0.0; 20]].concat()
+        );
+
+        // Also while following the speaker.
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        let mut player = Player::new(RATE, gap);
+        player.replay(&buf);
+        let mut out = render_playing(&mut player, &buf, 128);
+        buf.open_continuation(vec![2.0; 100]);
+        out.extend(render_playing(&mut player, &buf, 128));
+        assert_eq!(player.current_id(), Some(1));
+        assert_eq!(non_silent(&out[..128]), vec![1.0; 100]);
+        assert_eq!(&out[128..228], &[2.0; 100]);
     }
 
     #[test]

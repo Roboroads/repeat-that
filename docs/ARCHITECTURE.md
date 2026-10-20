@@ -69,9 +69,10 @@ apps without writing audio to disk.
   edges aren't clipped.
 - **`Segmenter`**: splits the stream into *utterances* (contiguous speech segments) while they are spoken. Once
   speech reaches 250 ms, an utterance opens and audio is appended to it as it comes in; shorter bursts (a cough, a
-  click) are dropped. A pause longer than 700 ms closes it, trimmed to the padding, and a monologue is split every
-  15 s. Silence inside a pause is held back until speech resumes or the utterance closes, so nothing published is ever
-  taken back. Detection settings (sensitivity) can change while recording, without wiping anything.
+  click) are dropped. A pause longer than 700 ms closes it, trimmed to the padding. A monologue is split every 15 s,
+  where the speech goes on, so stepping back stays fine-grained; replay plays the parts on without a gap. Silence
+  inside a pause is held back until speech resumes or the utterance closes, so nothing published is ever taken back.
+  Detection settings (sensitivity) can change while recording, without wiping anything.
 - **`SpeechBuffer`**: an in-memory ring of utterances, capped at a configurable total *speech* duration (default
   30 s). The oldest utterances are evicted first. The newest one can be *open*: the sentence still being spoken, which
   is never evicted. A *speech pending* flag says speech has started that isn't long enough to be an utterance yet.
