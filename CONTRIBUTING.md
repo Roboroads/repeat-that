@@ -12,8 +12,9 @@ Thanks for wanting to help! Bug reports, feature ideas, testing on different har
    settings window.
 4. Frontend checks, in `app/`: `npm run check` (svelte-check) and `npm test` (vitest).
 
-`tauri::generate_context!` embeds `app/dist`, the built frontend. A fresh checkout builds without it (the build script
-puts a stub page there). Run `npm run build` in `app/` to build the real one; `tauri dev` and `tauri build` do that for you.
+`tauri::generate_context!` embeds `app/dist`, the built frontend. A fresh debug build works without it (the build
+script puts a red "FRONTEND NOT BUILT" placeholder page there and warns); a release build refuses to go on. Run
+`npm run build` in `app/` to build the real one; `tauri dev` and `tauri build` do that for you.
 
 ## Project layout
 
