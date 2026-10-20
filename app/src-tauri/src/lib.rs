@@ -1,4 +1,4 @@
-//! Repeat that?! desktop shell: tray icon, hidden settings window and the plugins the rest of the app builds on.
+//! Repeat That desktop shell: tray icon, hidden settings window and the plugins the rest of the app builds on.
 
 mod actions;
 mod autostart;
@@ -72,7 +72,7 @@ pub fn run() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to build the Repeat that?! app");
+        .expect("failed to build the Repeat That app");
 
     app.run(|app, event| match event {
         RunEvent::ExitRequested { code, api, .. }
