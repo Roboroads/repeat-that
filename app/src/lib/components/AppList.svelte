@@ -24,10 +24,15 @@
     <button type="button" onclick={() => store.refreshApps()}>Refresh</button>
   {/snippet}
 
+  {#if store.appsError}
+    <p class="problem" role="status">Couldn't list the apps: {store.appsError}</p>
+  {/if}
+
   {#if rows.length === 0}
-    {#if store.appsLoaded}
+    <!-- With an error showing, an empty list would be a wrong answer: stay quiet. -->
+    {#if !store.appsError && store.appsLoaded}
       <p class="empty muted">No apps are playing audio right now. Start your call app, and it shows up here.</p>
-    {:else}
+    {:else if !store.appsError}
       <p class="empty muted">Looking for apps that play audio…</p>
     {/if}
   {:else}
@@ -52,6 +57,14 @@
 <style>
   .empty {
     padding: 0.5rem 0;
+  }
+
+  .problem {
+    padding: 0.45rem 0.7rem;
+    border-radius: 8px;
+    background: var(--warn-bg);
+    color: var(--warn);
+    font-size: 0.9rem;
   }
 
   .list {

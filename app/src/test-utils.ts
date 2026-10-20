@@ -11,9 +11,13 @@ export function installBackend(init: MockBackendInit = {}): MockBackend {
   return backend;
 }
 
-/** Renders the whole settings page against a fake backend and waits until it has loaded. */
-export async function renderApp(init: MockBackendInit = {}) {
+/**
+ * Renders the whole settings page against a fake backend and waits until it has loaded. `prepare` runs before the page
+ * starts, to make a command fail from the first call.
+ */
+export async function renderApp(init: MockBackendInit = {}, prepare?: (backend: MockBackend) => void) {
   const backend = installBackend(init);
+  prepare?.(backend);
   const view = render(App);
   await screen.findByRole('region', { name: 'Status' });
   return { backend, ...view };

@@ -145,5 +145,23 @@ describe('app list', () => {
 
     await waitFor(() => expect(argsOf(backend, 'list_apps').length).toBeGreaterThan(1));
     expect(screen.getByRole('radio', { name: 'Teams' })).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't list the apps: enumeration failed")).toBeInTheDocument();
+  });
+
+  it('shows the error, not the empty state, when the list cannot be read', async () => {
+    const { backend } = await renderApp({ apps: [] }, (b) => {
+      b.overrides.list_apps = () => {
+        throw 'enumeration failed';
+      };
+    });
+
+    expect(await screen.findByText("Couldn't list the apps: enumeration failed")).toBeInTheDocument();
+    expect(screen.queryByText(/No apps are playing audio/)).not.toBeInTheDocument();
+
+    delete backend.overrides.list_apps;
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    expect(await screen.findByText(/No apps are playing audio/)).toBeInTheDocument();
+    expect(screen.queryByText(/Couldn't list the apps/)).not.toBeInTheDocument();
   });
 });

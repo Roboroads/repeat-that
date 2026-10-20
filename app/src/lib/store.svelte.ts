@@ -19,6 +19,8 @@ export class SettingsStore {
   status = $state<Status | null>(null);
   apps = $state<AppEntry[]>([]);
   appsLoaded = $state(false);
+  /** Why the last app list refresh failed; `null` after a good one. */
+  appsError = $state<string | null>(null);
   devices = $state<OutputDevice[]>([]);
   devicesLoaded = $state(false);
   /** The backend did not answer the first load. */
@@ -150,12 +152,15 @@ export class SettingsStore {
     this.appsBusy = true;
     try {
       const apps = await api.listApps();
-      if (!this.disposed) this.apps = apps;
-    } catch {
+      if (this.disposed) return;
+      this.apps = apps;
+      this.appsLoaded = true;
+      this.appsError = null;
+    } catch (raw) {
       // Keep the list we have; the next refresh tries again.
+      if (!this.disposed) this.appsError = api.toApiError(raw).message;
     } finally {
       this.appsBusy = false;
-      this.appsLoaded = true;
     }
   }
 
