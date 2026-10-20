@@ -28,7 +28,7 @@ use windows::core::{HRESULT, IUnknown, Interface, Ref};
 use windows_core::implement;
 
 use super::{Com, backend};
-use crate::{CaptureError, CaptureFormat, CaptureHandle, DuckLevel, DuckState, FrameSink, Result, ThreadCapture};
+use crate::{CaptureError, CaptureFormat, CaptureHandle, DuckChange, DuckLevel, FrameSink, Result, ThreadCapture};
 
 /// Process loopback has no mix format of its own; the audio engine converts to whatever we ask for.
 const FORMAT: CaptureFormat = CaptureFormat {
@@ -78,14 +78,14 @@ fn run(pid: u32, level: &DuckLevel, mut sink: FrameSink, stop: &AtomicBool, read
         }
     };
     let _ = ready.send(Ok(()));
-    let mut frames = Vec::new();
+    let (mut frames, mut history) = (Vec::new(), Vec::new());
     while !stop.load(Ordering::Relaxed) {
         if unsafe { WaitForSingleObject(stream.event, STOP_POLL_MS) } != WAIT_OBJECT_0 {
             continue;
         }
         // The stream can fail later on, e.g. when the audio service restarts. The handle then reports that capture is
         // no longer running.
-        if stream.drain(level, &mut frames, &mut sink).is_err() {
+        if stream.drain(level, &mut history, &mut frames, &mut sink).is_err() {
             break;
         }
     }
@@ -146,7 +146,13 @@ impl Stream {
 
     /// Hands every waiting packet to `sink`, amplified by `1 / level`. The engine timestamps each packet, so the gain
     /// switches at the sample where the app's volume changed.
-    fn drain(&self, level: &DuckLevel, frames: &mut Vec<f32>, sink: &mut FrameSink) -> windows::core::Result<()> {
+    fn drain(
+        &self,
+        level: &DuckLevel,
+        history: &mut Vec<DuckChange>,
+        frames: &mut Vec<f32>,
+        sink: &mut FrameSink,
+    ) -> windows::core::Result<()> {
         unsafe {
             while self.capture.GetNextPacketSize()? > 0 {
                 let mut data = std::ptr::null_mut();
@@ -164,7 +170,8 @@ impl Stream {
                     let bytes = std::slice::from_raw_parts(data, len * 4);
                     frames.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_ne_bytes(b)));
                     let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
-                    compensate(frames, level.get(), timed.then_some(time));
+                    level.history(history);
+                    compensate(frames, history, timed.then_some(time));
                 }
                 self.capture.ReleaseBuffer(count)?;
                 if !frames.is_empty() {
@@ -176,29 +183,49 @@ impl Stream {
     }
 }
 
-/// Undoes ducking on a packet that starts at `time` (100 ns units): frames from before the last change were played at
-/// the previous level. Without a timestamp the whole packet gets the current level.
-fn compensate(frames: &mut [f32], duck: DuckState, time: Option<u64>) {
-    let channels = usize::from(FORMAT.channels);
-    let switch_frame = match time {
-        Some(time) if duck.since > time => {
-            let ticks = u128::from(duck.since - time) * u128::from(FORMAT.sample_rate);
-            usize::try_from(ticks.div_ceil(10_000_000)).unwrap_or(usize::MAX)
-        }
-        _ => 0,
+/// Undoes ducking on a packet that starts at `time` (100 ns units): each frame is amplified by the inverse of the
+/// level from `history` (oldest first) that applied when it was played. Without a timestamp the whole packet gets the
+/// latest level.
+fn compensate(frames: &mut [f32], history: &[DuckChange], time: Option<u64>) {
+    let Some(time) = time else {
+        let level = history.last().map_or(1.0, |c| c.level);
+        amplify(frames, level);
+        return;
     };
-    let split = switch_frame.saturating_mul(channels).min(frames.len());
-    let (before, after) = frames.split_at_mut(split);
-    for (part, level) in [(before, duck.previous), (after, duck.level)] {
-        if level < 1.0 {
-            let gain = 1.0 / level;
-            part.iter_mut().for_each(|s| *s *= gain);
-        }
+    let channels = usize::from(FORMAT.channels);
+    // The level at the start of the packet, then every change during it.
+    let first = history.iter().rposition(|c| c.since <= time).unwrap_or(0);
+    let mut level = history.get(first).map_or(1.0, |c| c.level);
+    let mut start = 0;
+    for change in history.iter().skip(first + 1) {
+        let ticks = u128::from(change.since - time) * u128::from(FORMAT.sample_rate);
+        let frame = usize::try_from(ticks.div_ceil(10_000_000)).unwrap_or(usize::MAX);
+        let end = frame.saturating_mul(channels).min(frames.len());
+        amplify(&mut frames[start..end], level);
+        (start, level) = (end, change.level);
+    }
+    amplify(&mut frames[start..], level);
+}
+
+fn amplify(frames: &mut [f32], level: f32) {
+    if level < 1.0 {
+        let gain = 1.0 / level;
+        frames.iter_mut().for_each(|s| *s *= gain);
     }
 }
 
+/// How long after `SetMasterVolume` returns the audio engine plays the app at the new volume. Windows doesn't report
+/// this; it measured 30–37 ms with a 10 ms engine period. Ducking ramps in small steps, so being a few milliseconds
+/// off is inaudible.
+const VOLUME_LATENCY: u64 = 330_000;
+
+/// When a volume set right now takes effect, on the clock of the packet timestamps.
+pub(super) fn volume_takes_effect() -> u64 {
+    now() + VOLUME_LATENCY
+}
+
 /// The current time on the clock of the packet timestamps: the performance counter in 100 ns units.
-pub(super) fn now() -> u64 {
+fn now() -> u64 {
     let (mut counter, mut frequency) = (0i64, 0i64);
     unsafe {
         let _ = QueryPerformanceCounter(&mut counter);
@@ -297,43 +324,91 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
 mod tests {
     use super::*;
 
-    const DUCKED_AT_1S: DuckState = DuckState {
-        level: 0.25,
-        previous: 1.0,
-        since: 10_000_000,
-    };
+    const SECOND: u64 = 10_000_000;
+
+    /// Full volume, ducked to 25% at 1 s.
+    const DUCKED_AT_1S: [DuckChange; 2] = [
+        DuckChange { since: 0, level: 1.0 },
+        DuckChange {
+            since: SECOND,
+            level: 0.25,
+        },
+    ];
+
+    /// The time of `frames` frames at 48 kHz, rounded down.
+    fn frames(frames: u64) -> u64 {
+        frames * SECOND / 48_000
+    }
 
     #[test]
     fn switches_gain_at_the_sample_where_the_volume_changed() {
-        // 10 stereo frames starting 5 frames (at 48 kHz) before the change.
-        let mut frames = vec![0.25f32; 20];
-        let start = 10_000_000 - 5 * 10_000_000 / 48_000;
-        compensate(&mut frames, DUCKED_AT_1S, Some(start));
-        // The engine's frame clock rounds, so the switch lands on frame 5 or 6.
-        let first_boosted = frames.iter().position(|&s| s == 1.0).unwrap();
-        assert!(first_boosted == 10 || first_boosted == 12, "{frames:?}");
-        assert!(frames[..first_boosted].iter().all(|&s| s == 0.25));
-        assert!(frames[first_boosted..].iter().all(|&s| s == 1.0));
+        // 10 stereo frames starting 5 frames before the change.
+        let mut samples = vec![0.25f32; 20];
+        compensate(&mut samples, &DUCKED_AT_1S, Some(SECOND - frames(5)));
+        // The frame clock rounds, so the switch lands on frame 5 or 6.
+        let first_boosted = samples.iter().position(|&s| s == 1.0).unwrap();
+        assert!(first_boosted == 10 || first_boosted == 12, "{samples:?}");
+        assert!(samples[..first_boosted].iter().all(|&s| s == 0.25));
+        assert!(samples[first_boosted..].iter().all(|&s| s == 1.0));
+    }
+
+    #[test]
+    fn follows_every_step_of_a_ramp() {
+        let history = [
+            DuckChange { since: 0, level: 1.0 },
+            DuckChange {
+                since: SECOND + frames(2),
+                level: 0.5,
+            },
+            DuckChange {
+                since: SECOND + frames(4),
+                level: 0.25,
+            },
+        ];
+        // Mono-equivalent check on the first channel: 1.0 → 2× → 4×.
+        let mut samples = vec![0.25f32; 12];
+        compensate(&mut samples, &history, Some(SECOND));
+        let left: Vec<f32> = samples.iter().step_by(2).copied().collect();
+        assert_eq!(left[0], 0.25);
+        assert_eq!(left[5], 1.0);
+        assert!(left.windows(2).all(|w| w[0] <= w[1]), "{left:?}");
+        assert!(left.contains(&0.5), "{left:?}");
     }
 
     #[test]
     fn packets_after_the_change_get_the_new_gain() {
-        let mut frames = vec![0.25f32; 8];
-        compensate(&mut frames, DUCKED_AT_1S, Some(20_000_000));
-        assert!(frames.iter().all(|&s| s == 1.0));
+        let mut samples = vec![0.25f32; 8];
+        compensate(&mut samples, &DUCKED_AT_1S, Some(2 * SECOND));
+        assert!(samples.iter().all(|&s| s == 1.0));
     }
 
     #[test]
     fn packets_before_the_change_keep_the_old_gain() {
-        let mut frames = vec![0.5f32; 8];
-        compensate(&mut frames, DUCKED_AT_1S, Some(1_000));
-        assert!(frames.iter().all(|&s| s == 0.5));
+        let mut samples = vec![0.5f32; 8];
+        compensate(&mut samples, &DUCKED_AT_1S, Some(1_000));
+        assert!(samples.iter().all(|&s| s == 0.5));
+    }
+
+    #[test]
+    fn late_packets_from_before_a_duck_and_restore_keep_their_gain() {
+        // Ducked at 1 s and restored at 1.1 s; a packet from 0.5 s drained afterwards was played at full volume.
+        let history = [
+            DUCKED_AT_1S[0],
+            DUCKED_AT_1S[1],
+            DuckChange {
+                since: SECOND + SECOND / 10,
+                level: 1.0,
+            },
+        ];
+        let mut samples = vec![0.5f32; 8];
+        compensate(&mut samples, &history, Some(SECOND / 2));
+        assert!(samples.iter().all(|&s| s == 0.5));
     }
 
     #[test]
     fn without_a_timestamp_the_current_level_applies() {
-        let mut frames = vec![0.25f32; 8];
-        compensate(&mut frames, DUCKED_AT_1S, None);
-        assert!(frames.iter().all(|&s| s == 1.0));
+        let mut samples = vec![0.25f32; 8];
+        compensate(&mut samples, &DUCKED_AT_1S, None);
+        assert!(samples.iter().all(|&s| s == 1.0));
     }
 }

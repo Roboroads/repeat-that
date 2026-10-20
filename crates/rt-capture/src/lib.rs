@@ -8,6 +8,7 @@
 //! [`MockSource`] plays audio from memory or a WAV file as if it were an app, so the rest of the app can be developed
 //! and tested on any OS.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,41 +146,58 @@ impl Drop for ThreadCapture {
     }
 }
 
-/// A duck level shared between [`AppAudioSource::set_app_volume`] and capture threads.
+/// A duck level shared between [`AppAudioSource::set_app_volume`] and capture threads, with its recent history so a
+/// capture can give each frame the gain for the level it was played at.
 #[derive(Clone)]
-pub(crate) struct DuckLevel(Arc<Mutex<DuckState>>);
+pub(crate) struct DuckLevel(Arc<Mutex<VecDeque<DuckChange>>>);
 
-/// The current duck level, and when it replaced the previous one.
+/// From `since` on, the app played at `level`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct DuckState {
-    pub level: f32,
-    pub previous: f32,
-    /// When `level` took effect, in the backend's clock (100 ns units on Windows). Audio from before this moment was
-    /// played at `previous`.
+pub(crate) struct DuckChange {
+    /// In the backend's clock (100 ns units on Windows).
     pub since: u64,
+    pub level: f32,
 }
+
+/// Enough for a few ramps; captures drain much faster than changes are made.
+const DUCK_HISTORY: usize = 64;
 
 impl DuckLevel {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(Mutex::new(DuckState {
-            level: 1.0,
-            previous: 1.0,
+        Self(Arc::new(Mutex::new(VecDeque::from([DuckChange {
             since: 0,
-        })))
+            level: 1.0,
+        }]))))
     }
 
-    pub(crate) fn get(&self) -> DuckState {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    /// The latest level.
+    pub(crate) fn get(&self) -> f32 {
+        self.lock().back().map_or(1.0, |c| c.level)
     }
 
-    /// Stores `level`, clamped with [`clamp_duck_level`], as of `since`.
+    /// Records that the app plays at `level` (clamped with [`clamp_duck_level`]) from `since` on.
     pub(crate) fn set(&self, level: f32, since: u64) {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        *state = DuckState {
-            level: clamp_duck_level(level),
-            previous: state.level,
+        let mut changes = self.lock();
+        // Changes are kept in time order; a change can't take effect before one that was made earlier.
+        let since = changes.back().map_or(since, |c| since.max(c.since));
+        if changes.len() == DUCK_HISTORY {
+            changes.pop_front();
+        }
+        changes.push_back(DuckChange {
             since,
-        };
+            level: clamp_duck_level(level),
+        });
+    }
+
+    /// Copies the history, oldest first, into `out`.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub(crate) fn history(&self, out: &mut Vec<DuckChange>) {
+        out.clear();
+        out.extend(self.lock().iter().copied());
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<DuckChange>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -189,5 +207,34 @@ pub(crate) fn clamp_duck_level(level: f32) -> f32 {
         1.0
     } else {
         level.clamp(MIN_DUCK_LEVEL, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duck_history_stays_in_order_and_bounded() {
+        let level = DuckLevel::new();
+        level.set(0.5, 100);
+        // A later change can't take effect before an earlier one.
+        level.set(0.25, 50);
+        let mut history = Vec::new();
+        level.history(&mut history);
+        assert_eq!(
+            history.last(),
+            Some(&DuckChange {
+                since: 100,
+                level: 0.25
+            })
+        );
+        assert!(history.windows(2).all(|w| w[0].since <= w[1].since));
+        for i in 0..200 {
+            level.set(1.0, 1_000 + i);
+        }
+        level.history(&mut history);
+        assert_eq!(history.len(), DUCK_HISTORY);
+        assert_eq!(level.get(), 1.0);
     }
 }
