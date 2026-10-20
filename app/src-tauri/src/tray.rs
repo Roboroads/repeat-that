@@ -121,22 +121,13 @@ fn whole_seconds(duration: Duration) -> u64 {
     (duration.as_millis() as u64 + 500) / 1000
 }
 
-/// The hotkeys shown next to the menu items; `None` = not bound.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The hotkeys shown next to the menu items; `None` = not bound. Nothing is bound until the hotkey registration says
+/// so, so the default shows no hotkeys rather than ones that may not work.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HotkeyLabels {
     pub replay: Option<String>,
     pub catch_up: Option<String>,
     pub stop: Option<String>,
-}
-
-impl Default for HotkeyLabels {
-    fn default() -> Self {
-        HotkeyLabels {
-            replay: Some("Ctrl+Alt+Space".into()),
-            catch_up: Some("Ctrl+Alt+Enter".into()),
-            stop: Some("Ctrl+Alt+Backspace".into()),
-        }
-    }
 }
 
 pub const STATUS_ID: &str = "status";
@@ -544,9 +535,25 @@ mod tests {
         assert_eq!(model.tooltip, "Repeat that?! - No app selected");
     }
 
+    fn bound_hotkeys() -> HotkeyLabels {
+        HotkeyLabels {
+            replay: Some("Ctrl+Alt+Space".into()),
+            catch_up: Some("Ctrl+Alt+Enter".into()),
+            stop: Some("Ctrl+Alt+Backspace".into()),
+        }
+    }
+
+    #[test]
+    fn no_hotkeys_are_shown_until_they_are_registered() {
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        assert_eq!(item(&model, AppAction::Replay.id()).label, "Replay");
+        assert_eq!(item(&model, AppAction::CatchUp.id()).label, "Catch-up");
+        assert_eq!(item(&model, AppAction::Stop.id()).label, "Stop");
+    }
+
     #[test]
     fn menu_layout() {
-        let model = build_model(&capturing("Discord", 24), &HotkeyLabels::default());
+        let model = build_model(&capturing("Discord", 24), &bound_hotkeys());
         let layout: Vec<String> = model
             .entries
             .iter()
