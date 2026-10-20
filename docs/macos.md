@@ -30,12 +30,21 @@ You need Apple's command-line tools, Rust and Node.js 20 or later.
 xcode-select --install
 curl https://sh.rustup.rs -sSf | sh
 git clone https://github.com/Roboroads/repeat-that && cd repeat-that
-# once the desktop app lands (milestone 4):
-cd app && npm install && npm run tauri build
+cd app && npm install && npm run tauri build -- --bundles app,dmg
 ```
 
-The built app ends up in `target/release/bundle/macos/`. An app you build yourself isn't quarantined, so Gatekeeper
-doesn't check it.
+The app ends up in `target/release/bundle/macos/` and the disk image in `target/release/bundle/dmg/`, at the root of
+the repository because the app crate is a member of the Cargo workspace. For a universal build (Apple Silicon and
+Intel in one app), add both Rust targets and pass the target to Tauri:
+
+```sh
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
+```
+
+That output is in `target/universal-apple-darwin/release/bundle/`, again with `macos/` and `dmg/` inside.
+
+An app you build yourself isn't quarantined, so Gatekeeper doesn't check it.
 
 It isn't signed with our Developer ID certificate either, at most ad-hoc signed, and an ad-hoc signature changes with
 every build. macOS ties the audio-capture permission to the signature, so after a rebuild it may stop honoring the
