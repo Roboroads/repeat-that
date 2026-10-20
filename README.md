@@ -51,7 +51,7 @@ The app is a [Tauri 2](https://tauri.app) application with a Rust core and a Sve
 # Rust crates and tests (any OS)
 cargo test --workspace
 
-# The desktop app, with live reload (needs Node.js 22+ and the system packages below)
+# The desktop app, with live reload (needs Node.js 22 LTS or later and the system packages below)
 cd app
 npm install
 npm run tauri dev

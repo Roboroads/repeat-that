@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Repeat that",
+  "productName": "Repeat That",
   "identifier": "me.roboroads.repeatthat",
   "build": {
     "beforeDevCommand": "npm run dev",
