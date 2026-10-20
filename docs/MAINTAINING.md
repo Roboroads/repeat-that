@@ -32,14 +32,72 @@ PRs are squash-merged only. The repo is set up so the squash commit is just the 
 on `main` is one Conventional Commits line. The `PR title` workflow rejects titles that aren't Conventional Commits.
 
 [release-please](https://github.com/googleapis/release-please) reads those commits on `main` and keeps a release PR
-open that bumps the version (`Cargo.toml` `workspace.package.version`) and updates `CHANGELOG.md`. Merging that PR tags
-the release and creates the GitHub release. Before 1.0, `feat` bumps the patch version and breaking changes (`feat!:`,
+open that bumps the version and updates `CHANGELOG.md`. Merging that PR creates a draft GitHub release, builds the
+Windows installers, attaches them and then publishes the release, which is also when its tag appears (see
+[Windows installers](#windows-installers)). Before 1.0, `feat` bumps the patch version and breaking changes (`feat!:`,
 `fix!:`) bump the minor version.
+
+The version lives in `Cargo.toml` (`workspace.package.version`, which the app crate and `tauri.conf.json` inherit) and
+`app/package.json`, and their lockfiles carry it too. All of them are listed under `extra-files` in
+`release-please-config.json`, so the release PR bumps them together: `Cargo.lock` through a filter that picks the
+workspace crates (the entries without a `source`), and `app/package-lock.json` at the top and under `packages[""]`.
+`.github/scripts/check-release-config.py` checks that the files and the manifest agree. It runs as the `Release config`
+job of the `Build Windows installers` workflow whenever a PR touches the release config or the app.
 
 Release PRs are opened with the default `GITHUB_TOKEN`, so CI doesn't run on them by itself, and once the ruleset is
 active they'd wait forever for the required checks. Before applying the ruleset, either give the release-please
 workflow a fine-grained personal access token (`token: ${{ secrets.RELEASE_PLEASE_TOKEN }}`) or close and reopen the
 release PR to trigger CI.
+
+## Windows installers
+
+[`build-windows.yml`](../.github/workflows/build-windows.yml) builds the Windows x64 installers (an NSIS `.exe` that
+installs per user, and an MSI that installs for all users) plus a `SHA256SUMS` file. Install instructions for users are
+in [`install-windows.md`](install-windows.md).
+
+- **Pull requests** that touch `app/`, `crates/`, the Cargo files or the release config run the workflow. The two
+  installers and `SHA256SUMS` are uploaded as workflow artifacts (kept for 30 days), so a change can be tried on a real
+  Windows PC before it merges.
+- **Releases.** release-please creates its GitHub release with `GITHUB_TOKEN`, and events caused by that token don't
+  start other workflows, so an `on: release` workflow would never run. `release-please.yml` therefore calls
+  `build-windows.yml` itself when its run created a release, and the `publish` job attaches the installers and
+  `SHA256SUMS` to that release.
+- **Draft first.** release-please creates the release as a draft (`"draft": true` in its config), and `publish` makes it
+  public only after the files are attached, so there is never a public release without installers. A draft has no
+  tag yet (publishing creates it at the release commit), which is why the call passes the commit as `sha`. If the build
+  fails, the draft stays: re-run the failed jobs of that `release-please` run. The release PR is already labelled as
+  released, so merging another PR doesn't retry it.
+- **Running it by hand** (Actions → Build Windows installers → Run workflow, once the workflow is on `main`): leave
+  `tag` empty for a dry run that only produces artifacts (the job summary shows the checksums). Give a `tag` to build
+  and attach the installers to that release. For a draft, also give the release commit as `sha`, because the tag doesn't
+  exist yet; the draft is published when the files are attached.
+- **No silent replacement.** The `Check release` job runs first and fails within seconds if the release doesn't exist,
+  or if it is public and already has installers: replacing those changes files people may have downloaded and
+  verified against `SHA256SUMS`. A draft has no public files, so its assets are overwritten freely. To replace the
+  installers of a published release on purpose, run the workflow by hand with `replace` ticked.
+- Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
+  spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
+
+### First release
+
+`release-please-config.json` has `"release-as": "0.1.0"`, so the first release is 0.1.0 whatever the commits suggest.
+Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again and collides with the
+tag. Release PRs get no CI, so the `release-please` workflow runs the config check with `--tags` before it acts: once
+`v0.1.0` exists and the pin is still there, that run fails and no further release PRs are opened until the pin is gone.
+(On pull requests the same check only warns.) Hold the 0.1.0 release PR until the app captures and replays audio,
+because merging it publishes the installers.
+
+### Version numbers
+
+MSI versions must be numeric, so the installers can't carry a pre-release suffix like `0.2.0-rc.1`. Keep versions and
+tags plain `X.Y.Z` / `vX.Y.Z`; the config check rejects any other `release-as`, and the build workflow rejects other
+tags.
+
+### Signing
+
+The installers aren't code-signed, so SmartScreen warns on first run (the install guide explains the click-through).
+Signing through SignPath is on the checklist below. There's no auto-updater, so there is no update signing key to look
+after.
 
 ## Going public checklist
 
