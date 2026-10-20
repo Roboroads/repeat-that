@@ -47,8 +47,12 @@ jobs:
               code=false
               while IFS= read -r file; do
                 case "$file" in
-                  # Docs only: Markdown anywhere, docs/, LICENSE and the issue templates.
-                  *.md | docs/* | LICENSE | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
+                  # Docs only: docs/, the issue templates, and Markdown or LICENSE in the repository root. Markdown
+                  # deeper in the tree sits next to code (a crate can embed its README with include_str!, which runs
+                  # the doctests), so it counts as code.
+                  docs/* | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
+                  */*) echo "code: $file"; code=true ;;
+                  *.md | LICENSE) echo "docs: $file" ;;
                   *) echo "code: $file"; code=true ;;
                 esac
               done <<< "$files"
