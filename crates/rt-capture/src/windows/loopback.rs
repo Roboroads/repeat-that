@@ -227,7 +227,8 @@ fn compensate(frames: &mut [f32], history: &[DuckChange], time: Option<u64>) {
         return;
     };
     let channels = usize::from(FORMAT.channels);
-    // The level at the start of the packet, then every change during it.
+    // The level at the start of the packet, then every change during it. The history keeps the level of any audio up
+    // to a second old (see `DuckLevel`), far older than a capture drains, so the first change kept is only a fallback.
     let first = history.iter().rposition(|c| c.since <= time).unwrap_or(0);
     let mut level = history.get(first).map_or(1.0, |c| c.level);
     let mut start = 0;
@@ -249,8 +250,8 @@ fn amplify(frames: &mut [f32], level: f32) {
 }
 
 /// How long after `SetMasterVolume` returns the audio engine plays the app at the new volume. Windows doesn't report
-/// this; it measured 30–37 ms for single steps with a 10 ms engine period, and the steps of a fade up land about 6 ms
-/// before this estimate, those down about 2 ms before. Ducking ramps in steps of under 1 dB, so that is inaudible.
+/// this, so it is the middle of what CI measured. How far off it can be, and why ducking fades because of that, is in
+/// the `ramp` module.
 const VOLUME_LATENCY: u64 = 330_000;
 
 /// When a volume set right now takes effect, on the clock of the packet timestamps.

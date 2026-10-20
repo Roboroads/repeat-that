@@ -11,8 +11,35 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
-      - uses: googleapis/release-please-action@v5
+      # Release PRs are opened with GITHUB_TOKEN, so CI never runs on them. Check the config here instead, before
+      # release-please acts: a `release-as` pin left in after its release shipped would make the next release PR
+      # propose that version again.
+      - uses: actions/checkout@v7
+      - name: Check the release config
+        run: python3 .github/scripts/check-release-config.py --tags
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # The release above is created with GITHUB_TOKEN, which doesn't trigger `on: release` workflows, so the installers
+  # are built by calling the workflow here, only when this run created a release. The release is a draft ("draft" in
+  # release-please-config.json): the called workflow attaches the installers and then publishes it, so a failed
+  # build leaves a draft instead of a public release without files. A draft has no tag yet, hence the commit.
+  windows-installers:
+    name: Windows installers
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+      sha: ${{ needs.release-please.outputs.sha }}

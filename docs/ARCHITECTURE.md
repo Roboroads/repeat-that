@@ -45,12 +45,12 @@ ducking and restores it at `1.0`, so the user's own per-app volume is kept. The 
 be captured. On Windows, process loopback captures the app *after* its volume, so captures of a ducked app are
 amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level.
 
-Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency; on CI
-it lands 27–37 ms after the call), so the compensation can only switch at an estimate. Ducking therefore fades the
-volume in steps of under 1 dB, one every 10 ms (130 ms for a duck to 25%, up to 290 ms for 5%), and each captured frame
-is amplified for the step it was played at. A few milliseconds of error then leave the capture one step off at most,
-which is inaudible; CI checks that no millisecond strays by more than 1.5 dB. Restoring fades back the same way, and
-`set_app_volume` returns once the fade is done.
+Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency), so
+the compensation can only switch at an estimate, which is milliseconds off. Ducking therefore fades the volume in
+half-dB steps on a 10 ms grid, and each captured frame is amplified for the step it was played at, so being off leaves
+the capture a step or so off for a few milliseconds, which is inaudible. Restoring fades back the same way, and
+`set_app_volume` returns once the fade is done. What CI measured, and the fade's other rules, are in
+`crates/rt-capture/src/ramp.rs`; the end-to-end test checks the result per millisecond.
 
 Windows remembers per-app volumes, so ducked apps are restored however the app ends: on a normal exit, dropping the
 source restores them; after a crash or kill, a silent duck guard process (`WasapiSource::with_duck_guard`, the app's
@@ -67,15 +67,27 @@ apps without writing audio to disk.
 - **VAD**: Silero VAD, bundled (`models/silero_vad.onnx`, MIT) and run with ONNX Runtime through `ort`, which is
   statically linked, so nothing extra ships next to the app. Frames are classified as speech or non-speech, with hangover/padding (~200 ms) so that word
   edges aren't clipped.
-- **`SpeechBuffer`**: an in-memory ring of *utterances* (contiguous speech segments), capped at a configurable
-  total *speech* duration (default 30 s). The oldest utterances are evicted first. Silences between utterances are
-  replaced by a short fixed gap (~250 ms) on playback so it still sounds natural.
-- **`Player`**: plays from a cursor positioned at an utterance boundary.
-  - *Replay*: jump to the start of the latest utterance. Pressing again within a short window steps one more
-    utterance back.
-  - *Catch-up*: playback speed from 1.0× to 2.0× with pitch-preserving time-stretch (WSOLA).
-  - Recording keeps running during playback. Speech that arrives during a replay is appended and can be played through
-    to "live".
+- **`Segmenter`**: splits the stream into *utterances* (contiguous speech segments) while they are spoken. Once
+  speech reaches 250 ms, an utterance opens and audio is appended to it as it comes in; shorter bursts (a cough, a
+  click) are dropped. A pause longer than 700 ms closes it, trimmed to the padding. A monologue is split every 15 s,
+  where the speech goes on, so stepping back stays fine-grained; replay plays the parts on without a gap. Silence
+  inside a pause is held back until speech resumes or the utterance closes, so nothing published is ever taken back.
+  Detection settings (sensitivity) can change while recording, without wiping anything.
+- **`SpeechBuffer`**: an in-memory ring of utterances, capped at a configurable total *speech* duration (default
+  30 s). The oldest utterances are evicted first. The newest one can be *open*: the sentence still being spoken, which
+  is never evicted. A *speech pending* flag says speech has started that isn't long enough to be an utterance yet.
+- **`Player`**: renders the replay in small blocks from a position inside the current utterance.
+  - *Replay*: starts at the sentence in progress if it already has 1.5 s of audio, otherwise at the last finished
+    utterance, unless that ended over 10 s ago and is unrelated to what's said now. Pressing again during a replay
+    steps one more utterance back.
+  - *Play through to live*: after each utterance it plays the next, including everything recorded during the replay.
+    Silences between utterances are replaced by a short fixed gap (~250 ms), so it still sounds natural and catches up
+    even at 1.0×. When it reaches someone still talking, it follows their sentence as it comes in, at normal speed,
+    waiting in silence until ~100 ms of new speech is in each time; it also waits while speech is pending. Waiting
+    gives up after 2 s without new audio, in case capture stopped without closing the sentence. It ends once there is
+    nothing left, and the listener is back to live audio. `Player::behind` says how long that takes.
+  - *Catch-up*: playback speed from 0.5× to 2.0× with a streaming, pitch-preserving time-stretch (WSOLA,
+    `Stretcher`). A speed change applies mid-utterance within 15 ms, without a click.
 
 ### `rt-transcribe` (planned)
 `whisper-rs` (whisper.cpp) on utterances as they finish, producing a scrollable "what was just said" transcript.
@@ -98,7 +110,7 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 
 ## Releases
 GitHub Actions builds:
-- Windows: NSIS `.exe` + `.msi` (x64, ARM64)
+- Windows: NSIS `.exe` + `.msi`, x64 only for v0.1 (ARM64 later: `ort` has no CPU build for it yet)
 - Linux: `.deb` (+ AppImage later)
 - macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
   ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization

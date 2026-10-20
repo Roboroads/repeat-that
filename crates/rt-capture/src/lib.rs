@@ -100,9 +100,8 @@ pub trait AppAudioSource: Send + Sync {
     /// per-app volume setting is never lost. Levels are clamped to [`MIN_DUCK_LEVEL`]–1.0.
     ///
     /// Captured audio keeps its full level while the app is ducked: backends whose capture is affected by the app's
-    /// volume (Windows) compensate for it. Those fade the volume in steps of under 1 dB, so the compensation can't be
-    /// audibly out of step with it, and return once the fade is done: about 130 ms for a duck to 25%, up to 300 ms
-    /// for the deepest.
+    /// volume (Windows) compensate for it. Those fade the volume in small steps, so the compensation can't be audibly
+    /// out of step with it, and return once the fade is done, a few hundred milliseconds later.
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()>;
 }
 
@@ -166,13 +165,18 @@ pub(crate) struct DuckLevel(Arc<Mutex<VecDeque<DuckChange>>>);
 /// From `since` on, the app played at `level`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DuckChange {
-    /// In the backend's clock (100 ns units on Windows).
+    /// In the backend's clock, in 100 ns units.
     pub since: u64,
     pub level: f32,
 }
 
-/// Enough for a few ramps; captures drain much faster than changes are made.
-const DUCK_HISTORY: usize = 64;
+/// How long a change is kept after the next one took over, in 100 ns units: 1 s. A capture drains audio at most its
+/// 200 ms buffer plus the time a volume change takes to reach the audio old, so the oldest change kept always covers
+/// the oldest audio it can still get.
+const DUCK_HISTORY_KEEP: u64 = 10_000_000;
+
+/// A safety net in case changes come much faster than fades make them (about 100 a second).
+const DUCK_HISTORY_MAX: usize = 1024;
 
 impl DuckLevel {
     pub(crate) fn new() -> Self {
@@ -192,13 +196,24 @@ impl DuckLevel {
         let mut changes = self.lock();
         // Changes are kept in time order; a change can't take effect before one that was made earlier.
         let since = changes.back().map_or(since, |c| since.max(c.since));
-        if changes.len() == DUCK_HISTORY {
-            changes.pop_front();
-        }
-        changes.push_back(DuckChange {
+        let change = DuckChange {
             since,
             level: clamp_duck_level(level),
-        });
+        };
+        // A change at the same moment as the latest one replaces it: nothing was played at the latest one's level.
+        match changes.back_mut() {
+            Some(latest) if latest.since == since => *latest = change,
+            _ => changes.push_back(change),
+        }
+        // Old changes go once the change after them is old enough, so the first change kept is the level of any audio
+        // a capture can still drain.
+        while changes.len() > DUCK_HISTORY_MAX
+            || changes
+                .get(1)
+                .is_some_and(|next| next.since.saturating_add(DUCK_HISTORY_KEEP) <= since)
+        {
+            changes.pop_front();
+        }
     }
 
     /// Copies the history, oldest first, into `out`.
@@ -226,27 +241,76 @@ pub(crate) fn clamp_duck_level(level: f32) -> f32 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn duck_history_stays_in_order_and_bounded() {
-        let level = DuckLevel::new();
-        level.set(0.5, 100);
-        // A later change can't take effect before an earlier one.
-        level.set(0.25, 50);
+    /// 1 ms in the backend's clock.
+    const MS: u64 = 10_000;
+
+    fn history(level: &DuckLevel) -> Vec<DuckChange> {
         let mut history = Vec::new();
         level.history(&mut history);
+        history
+    }
+
+    /// The level `history` gives audio played at `time`, as a capture looks it up.
+    fn level_at(history: &[DuckChange], time: u64) -> Option<f32> {
+        history.iter().rev().find(|c| c.since <= time).map(|c| c.level)
+    }
+
+    #[test]
+    fn duck_history_stays_in_order() {
+        let level = DuckLevel::new();
+        level.set(0.5, 100);
+        // A later change can't take effect before an earlier one, and one at the same moment replaces it.
+        level.set(0.25, 50);
+        let history = history(&level);
         assert_eq!(
-            history.last(),
-            Some(&DuckChange {
-                since: 100,
-                level: 0.25
-            })
+            history,
+            [
+                DuckChange { since: 0, level: 1.0 },
+                DuckChange {
+                    since: 100,
+                    level: 0.25
+                }
+            ]
         );
-        assert!(history.windows(2).all(|w| w[0].since <= w[1].since));
-        for i in 0..200 {
-            level.set(1.0, 1_000 + i);
+        assert_eq!(level.get(), 0.25);
+    }
+
+    #[test]
+    fn a_burst_of_changes_keeps_the_level_older_audio_was_played_at() {
+        let level = DuckLevel::new();
+        level.set(0.25, 1_000 * MS);
+        // Far more changes than a fade makes, 100 ms later.
+        for i in 0..500 {
+            level.set(if i % 2 == 0 { 0.5 } else { 0.3 }, 1_100 * MS + i);
         }
-        level.history(&mut history);
-        assert_eq!(history.len(), DUCK_HISTORY);
-        assert_eq!(level.get(), 1.0);
+        // Audio from between the two, which a capture may still be draining, keeps its level.
+        assert_eq!(level_at(&history(&level), 1_050 * MS), Some(0.25));
+    }
+
+    #[test]
+    fn changes_older_than_a_second_go_but_the_level_from_then_stays() {
+        let level = DuckLevel::new();
+        // A change every 10 ms for 3 s, alternating between two levels.
+        let played_at = |time: u64| if (time / (10 * MS)) % 2 == 1 { 0.5 } else { 0.25 };
+        for time in (1..=300).map(|i| i * 10 * MS) {
+            level.set(played_at(time), time);
+        }
+        let history = history(&level);
+        let latest = history.last().unwrap().since;
+        assert!(history.len() <= 102, "{} changes kept", history.len());
+        // Audio up to a second old still gets the level it was played at.
+        for age in [DUCK_HISTORY_KEEP, DUCK_HISTORY_KEEP - 5 * MS, 500 * MS, 0] {
+            let time = latest - age;
+            assert_eq!(level_at(&history, time), Some(played_at(time)), "{} ms old", age / MS);
+        }
+    }
+
+    #[test]
+    fn the_history_stays_bounded() {
+        let level = DuckLevel::new();
+        for i in 0..5_000 {
+            level.set(0.5, 1_000 * MS + i);
+        }
+        assert_eq!(history(&level).len(), DUCK_HISTORY_MAX);
     }
 }

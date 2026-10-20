@@ -1,4 +1,6 @@
 /target
 node_modules/
 dist/
+# Written by tauri-build
+/app/src-tauri/gen/
 .DS_Store

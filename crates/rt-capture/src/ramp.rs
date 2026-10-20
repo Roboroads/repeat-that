@@ -1,9 +1,21 @@
 //! Ducking fades an app's volume in small steps instead of changing it at once.
 //!
 //! A capture compensates each step for audio played at that step's volume, but it can only estimate when a volume
-//! change reaches the audio: Windows doesn't say, and is a few milliseconds early or late. With one big step that
-//! leaves a few milliseconds at 4× or a quarter of the level, an audible click. With steps of under 1 dB, those
-//! milliseconds are off by one step at most, which nobody hears. The fade also sounds smoother to the user.
+//! change reaches the audio, because Windows doesn't say: `VOLUME_LATENCY`, 33 ms after the call. This is the one
+//! place for what the Windows CI runner measured, with its 10 ms engine period and a 1 kHz tone checked per
+//! millisecond:
+//!
+//! - A single volume change reached the captured audio 30–37 ms after the call. As one big step, that left a few
+//!   milliseconds at 4× or a quarter of the level around every duck: an audible click.
+//! - The steps of one fade land about equally far from the estimate, but that distance changes from one fade to the
+//!   next, from 10 ms early to 8 ms late, presumably with where the fade's calls fall in the engine period. Now and
+//!   then a single step lands another 10 ms off. With 0.9 dB steps 10 ms apart, that left milliseconds two steps
+//!   (1.7 dB) off.
+//! - With the half-dB steps here on a fixed 10 ms grid, no millisecond was more than 0.7 dB off in six runs of ten
+//!   fades each. The end-to-end test fails anything over two steps (1 dB).
+//!
+//! The fade also sounds smoother to the user. All of this only holds while the steps stay apart, so a fade neither
+//! catches up on steps it fell behind on nor starts right after the one before: see [`next_due`] and [`run`].
 
 // Only the Windows backend uses this so far; the tests run everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -14,11 +26,11 @@ use std::time::{Duration, Instant};
 use crate::before_duck::{BeforeDuck, Session};
 use crate::clamp_duck_level;
 
-/// The largest change in one step, in dB.
-const MAX_STEP_DB: f64 = 0.9;
+/// The largest change in one step, in dB. Small enough that being two steps off is still inaudible.
+const MAX_STEP_DB: f64 = 0.5;
 
-/// Time between steps: one period of the Windows audio engine, so each step reaches the audio on its own, and longer
-/// than the error in when it does. A duck to 25% (−12 dB) takes 14 steps, 130 ms.
+/// Time between steps: one period of the Windows audio engine, so each step reaches the audio on its own. A duck to
+/// 25% (−12 dB) takes 25 steps, 240 ms; one to the 5% minimum 53 steps, 520 ms.
 pub(crate) const STEP_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The duck levels a ramp from `from` to `to` sets, in order: equal steps in dB of at most [`MAX_STEP_DB`], the last
@@ -41,17 +53,41 @@ pub(crate) fn steps(from: f32, to: f32) -> Vec<f32> {
 }
 
 /// Ramps from duck level `from` to `to`: calls `step(level, duck_new)` for each of [`steps`], one every `interval`,
-/// and returns after the last one. `duck_new` says whether sessions that aren't ducked yet join at this step: from the
-/// first step of a ramp down, but only at the last step of a ramp up, so they never dip and come back up.
-pub(crate) fn run(from: f32, to: f32, interval: Duration, mut step: impl FnMut(f32, bool)) {
+/// and returns after the last one. See [`next_due`] for a ramp that falls behind. `duck_new` says whether sessions
+/// that aren't ducked yet join at this step: from the first step of a ramp down, but only at the last step of a ramp
+/// up, so they never dip and come back up.
+///
+/// `last_step` is when the latest step of any ramp started. The first step keeps an interval's distance from it too,
+/// so a ramp right after another doesn't make two steps at once; it is updated with every step.
+pub(crate) fn run(
+    from: f32,
+    to: f32,
+    interval: Duration,
+    last_step: &mut Option<Instant>,
+    mut step: impl FnMut(f32, bool),
+) {
     let levels = steps(from, to);
     let down = clamp_duck_level(to) < clamp_duck_level(from);
-    let start = Instant::now();
+    let mut due = last_step.map_or_else(Instant::now, |last| last + interval);
     for (i, &level) in levels.iter().enumerate() {
-        // Paced from the start, so time spent in a step doesn't stretch the ramp.
-        let due = start + interval * i as u32;
         thread::sleep(due.saturating_duration_since(Instant::now()));
+        let started = Instant::now();
         step(level, down || i + 1 == levels.len());
+        *last_step = Some(started);
+        due = next_due(due, started, interval);
+    }
+}
+
+/// When the step after one that was due at `due` and started at `started` is due. Normally one `interval` later, so
+/// neither a sleep that overshoots a little nor the time a step takes stretches the ramp. A step that started more
+/// than half an interval late, because the thread didn't get to run, moves the schedule instead: catching up would
+/// make overdue steps at once, which reach the audio as one big step. So steps are always at least half an interval
+/// apart.
+fn next_due(due: Instant, started: Instant, interval: Duration) -> Instant {
+    if started > due + interval / 2 {
+        started + interval
+    } else {
+        due + interval
     }
 }
 
@@ -87,7 +123,10 @@ mod tests {
                 let path: Vec<f32> = std::iter::once(from).chain(steps.iter().copied()).collect();
                 for pair in path.windows(2) {
                     let change = db(pair[1]) - db(pair[0]);
-                    assert!(change.abs() < 1.0, "{from} → {to}: step of {change:.2} dB in {steps:?}");
+                    assert!(
+                        change.abs() <= MAX_STEP_DB + 1e-6,
+                        "{from} → {to}: step of {change:.2} dB in {steps:?}"
+                    );
                     if to < from {
                         assert!(pair[1] < pair[0], "{from} → {to}: {steps:?}");
                     } else if to > from {
@@ -99,11 +138,11 @@ mod tests {
     }
 
     #[test]
-    fn a_duck_to_a_quarter_takes_about_fifteen_steps() {
-        assert_eq!(steps(1.0, 0.25).len(), 14);
-        assert_eq!(steps(0.25, 1.0).len(), 14);
+    fn a_duck_to_a_quarter_takes_a_quarter_second() {
+        assert_eq!(steps(1.0, 0.25).len(), 25);
+        assert_eq!(steps(0.25, 1.0).len(), 25);
         // The deepest duck needs more steps to keep each one small.
-        assert_eq!(steps(1.0, MIN_DUCK_LEVEL).len(), 29);
+        assert_eq!(steps(1.0, MIN_DUCK_LEVEL).len(), 53);
     }
 
     #[test]
@@ -118,7 +157,7 @@ mod tests {
     fn new_sessions_join_a_ramp_down_at_once_and_a_ramp_up_at_the_end() {
         let joins = |from, to| {
             let mut joins = Vec::new();
-            run(from, to, Duration::ZERO, |_, duck_new| joins.push(duck_new));
+            run(from, to, Duration::ZERO, &mut None, |_, duck_new| joins.push(duck_new));
             joins
         };
         assert!(joins(1.0, 0.25).iter().all(|&j| j));
@@ -132,9 +171,59 @@ mod tests {
     fn steps_are_paced() {
         let start = Instant::now();
         let mut count = 0;
-        run(1.0, 0.25, Duration::from_millis(2), |_, _| count += 1);
-        assert_eq!(count, 14);
-        assert!(start.elapsed() >= Duration::from_millis(26));
+        run(1.0, 0.25, Duration::from_millis(2), &mut None, |_, _| count += 1);
+        assert_eq!(count, 25);
+        assert!(start.elapsed() >= Duration::from_millis(48));
+    }
+
+    #[test]
+    fn steps_stay_on_their_grid() {
+        let interval = Duration::from_millis(10);
+        let start = Instant::now();
+        let ms = |ms| Duration::from_millis(ms);
+        // Each step is due one interval after the one before, however late within half an interval that one started.
+        let mut due = start;
+        for late in [0, 1, 4, 0, 3, 2] {
+            due = next_due(due, due + ms(late), interval);
+        }
+        assert_eq!(due, start + 6 * interval);
+        // A step that started further behind moves the rest of the schedule.
+        assert_eq!(next_due(start, start + ms(6), interval), start + ms(16));
+        assert_eq!(next_due(start, start + ms(45), interval), start + ms(55));
+    }
+
+    #[test]
+    fn a_ramp_keeps_its_distance_from_the_one_before() {
+        let interval = Duration::from_millis(10);
+        let mut last_step = None;
+        run(1.0, 0.9, interval, &mut last_step, |_, _| {});
+        let previous = last_step.expect("the first ramp made a step");
+        let mut first = None;
+        run(0.9, 1.0, interval, &mut last_step, |_, _| {
+            first.get_or_insert_with(Instant::now);
+        });
+        let first = first.expect("the second ramp made a step");
+        assert!(first - previous >= interval, "{:?} apart", first - previous);
+        assert!(last_step > Some(previous));
+    }
+
+    #[test]
+    fn a_ramp_that_falls_behind_doesnt_catch_up() {
+        let interval = Duration::from_millis(10);
+        let mut starts = Vec::new();
+        run(1.0, 0.5, interval, &mut None, |_, _| {
+            starts.push(Instant::now());
+            // The thread doesn't get to run for a while after the second step.
+            if starts.len() == 2 {
+                thread::sleep(interval * 4);
+            }
+        });
+        assert!(starts.len() > 4);
+        // Overdue steps aren't made back to back. The times here are taken a moment after each step starts, so they
+        // are checked with room to spare.
+        for pair in starts.windows(2) {
+            assert!(pair[1] - pair[0] >= interval / 4, "steps {:?} apart", pair[1] - pair[0]);
+        }
     }
 
     /// A session that remembers its volume and how often ducking read it.
@@ -173,7 +262,7 @@ mod tests {
     /// Ramps `sessions` like the Windows backend does, and returns the journal entries after each step.
     fn ramp(sessions: &[FakeSession], from: f32, to: f32, before: &mut BeforeDuck) -> Vec<Vec<JournalEntry>> {
         let mut journals = Vec::new();
-        run(from, to, Duration::ZERO, |level, duck_new| {
+        run(from, to, Duration::ZERO, &mut None, |level, duck_new| {
             apply(sessions, level, duck_new, before);
             journals.push(before.entries().cloned().collect());
         });
@@ -211,7 +300,7 @@ mod tests {
         let mut before = BeforeDuck::default();
         let journals = ramp(&sessions, 1.0, 0.25, &mut before);
         let ducked: Vec<f32> = journals.iter().map(|j| j[0].ducked).collect();
-        assert_eq!(ducked.len(), 14);
+        assert_eq!(ducked.len(), 25);
         assert!(ducked.windows(2).all(|w| w[1] < w[0]), "{ducked:?}");
         assert_eq!(ducked.last(), Some(&(0.8 * 0.25)));
         // A restore ramp keeps the session in the journal until its last step.
@@ -229,7 +318,7 @@ mod tests {
         // The app started a session at full volume while ducked.
         let sessions = [ducked, FakeSession::new("new", 1.0)];
         let mut new_volumes = Vec::new();
-        run(0.25, 0.5, Duration::ZERO, |level, duck_new| {
+        run(0.25, 0.5, Duration::ZERO, &mut None, |level, duck_new| {
             apply(&sessions, level, duck_new, &mut before);
             new_volumes.push(sessions[1].volume.get());
         });

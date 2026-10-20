@@ -8,11 +8,33 @@
     ".": {
       "package-name": "repeat-that",
       "changelog-path": "CHANGELOG.md",
+      "draft": true,
+      "release-as": "0.1.0",
       "extra-files": [
         {
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(!@.source)].version"
+        },
+        {
+          "type": "json",
+          "path": "app/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "app/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "app/package-lock.json",
+          "jsonpath": "$.packages[''].version"
         }
       ]
     }
