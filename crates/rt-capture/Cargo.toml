@@ -1,0 +1,8 @@
+[package]
+name = "rt-capture"
+description = "Per-application audio capture backends for Repeat that?!"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
