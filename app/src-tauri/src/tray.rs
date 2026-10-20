@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::actions::{self, AppAction};
@@ -212,6 +212,56 @@ const TRAY_ID: &str = "main";
 /// The tray menu, kept to update its items in place.
 struct TrayMenu<R: Runtime>(Menu<R>);
 
+/// The three tray icons, decoded once at startup, and the one the tray shows now. Decoding a PNG and handing the tray
+/// an icon on every status change (about once a second while capturing) costs more than it is worth.
+struct TrayIcons {
+    idle: Image<'static>,
+    capturing: Image<'static>,
+    paused: Image<'static>,
+    shown: Mutex<TrayIconKind>,
+}
+
+impl TrayIcons {
+    /// Decodes the icons; `initial` is the one the tray is created with.
+    fn load(initial: TrayIconKind) -> tauri::Result<Self> {
+        Ok(TrayIcons {
+            idle: Image::from_bytes(include_bytes!("../icons/tray/idle.png"))?,
+            capturing: Image::from_bytes(include_bytes!("../icons/tray/capturing.png"))?,
+            paused: Image::from_bytes(include_bytes!("../icons/tray/paused.png"))?,
+            shown: Mutex::new(initial),
+        })
+    }
+
+    fn image(&self, kind: TrayIconKind) -> Image<'static> {
+        match kind {
+            TrayIconKind::Idle => &self.idle,
+            TrayIconKind::Capturing => &self.capturing,
+            TrayIconKind::Paused => &self.paused,
+        }
+        .clone()
+    }
+
+    fn shown(&self) -> MutexGuard<'_, TrayIconKind> {
+        self.shown.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Puts `kind` on the tray, unless it is already there. The lock is never held across the call into the tray,
+    /// which waits for the main thread. A failed update is not recorded, so the next refresh tries again.
+    fn show<R: Runtime>(&self, tray: &TrayIcon<R>, kind: TrayIconKind) {
+        self.show_with(kind, |image| tray.set_icon(Some(image)).is_ok());
+    }
+
+    /// [`show`](Self::show) with the tray replaced by `set_icon`, which says whether it worked.
+    fn show_with(&self, kind: TrayIconKind, set_icon: impl FnOnce(Image<'static>) -> bool) {
+        if *self.shown() == kind {
+            return;
+        }
+        if set_icon(self.image(kind)) {
+            *self.shown() = kind;
+        }
+    }
+}
+
 /// The shared status the tray shows. Locked briefly; never held across a call into the UI toolkit.
 pub type SharedStatus = Mutex<TrayStatus>;
 
@@ -224,8 +274,9 @@ pub fn lock_status(status: &SharedStatus) -> MutexGuard<'_, TrayStatus> {
 pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let model = current_model(app);
     let menu = build_menu(app, &model)?;
+    let icons = TrayIcons::load(model.icon)?;
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon_image(model.icon)?)
+        .icon(icons.image(model.icon))
         .tooltip(&model.tooltip)
         .menu(&menu)
         // Windows: a left click opens the settings, the menu is on the right click. Linux (appindicator) doesn't send
@@ -248,6 +299,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         })
         .build(app)?;
     app.manage(TrayMenu(menu));
+    app.manage(icons);
     Ok(())
 }
 
@@ -273,8 +325,8 @@ pub fn refresh<R: Runtime>(app: &AppHandle<R>) {
         }
     }
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(image) = icon_image(model.icon) {
-            let _ = tray.set_icon(Some(image));
+        if let Some(icons) = app.try_state::<TrayIcons>() {
+            icons.show(&tray, model.icon);
         }
         let _ = tray.set_tooltip(Some(model.tooltip));
     }
@@ -311,15 +363,6 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, model: &TrayModel) -> tauri::Resul
         }
     }
     Ok(menu)
-}
-
-fn icon_image(kind: TrayIconKind) -> tauri::Result<Image<'static>> {
-    let png: &[u8] = match kind {
-        TrayIconKind::Idle => include_bytes!("../icons/tray/idle.png"),
-        TrayIconKind::Capturing => include_bytes!("../icons/tray/capturing.png"),
-        TrayIconKind::Paused => include_bytes!("../icons/tray/paused.png"),
-    };
-    Image::from_bytes(png)
 }
 
 #[cfg(test)]
@@ -541,5 +584,43 @@ mod tests {
         let mut status = capturing("Discord", 30);
         status.set_paused(false);
         assert_eq!(status, capturing("Discord", 30));
+    }
+
+    /// Shows `kind` and counts how often the tray was asked to change.
+    fn show(icons: &TrayIcons, kind: TrayIconKind, works: bool) -> u32 {
+        let mut calls = 0;
+        icons.show_with(kind, |_| {
+            calls += 1;
+            works
+        });
+        calls
+    }
+
+    #[test]
+    fn all_tray_icons_decode_to_distinct_images() {
+        let icons = TrayIcons::load(TrayIconKind::Idle).expect("the embedded icons decode");
+        let rgba = |kind| icons.image(kind).rgba().to_vec();
+        assert_ne!(rgba(TrayIconKind::Idle), rgba(TrayIconKind::Capturing));
+        assert_ne!(rgba(TrayIconKind::Idle), rgba(TrayIconKind::Paused));
+        assert_ne!(rgba(TrayIconKind::Capturing), rgba(TrayIconKind::Paused));
+    }
+
+    #[test]
+    fn the_tray_is_only_touched_when_the_icon_changes() {
+        let icons = TrayIcons::load(TrayIconKind::Idle).unwrap();
+        assert_eq!(show(&icons, TrayIconKind::Idle, true), 0);
+        assert_eq!(show(&icons, TrayIconKind::Capturing, true), 1);
+        assert_eq!(show(&icons, TrayIconKind::Capturing, true), 0);
+        assert_eq!(show(&icons, TrayIconKind::Paused, true), 1);
+        assert_eq!(show(&icons, TrayIconKind::Idle, true), 1);
+    }
+
+    #[test]
+    fn a_failed_icon_update_is_tried_again() {
+        let icons = TrayIcons::load(TrayIconKind::Idle).unwrap();
+        assert_eq!(show(&icons, TrayIconKind::Paused, false), 1);
+        assert_eq!(*icons.shown(), TrayIconKind::Idle);
+        assert_eq!(show(&icons, TrayIconKind::Paused, true), 1);
+        assert_eq!(*icons.shown(), TrayIconKind::Paused);
     }
 }
