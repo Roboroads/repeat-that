@@ -168,6 +168,13 @@ fn duck_transitions(source: &WasapiSource, app: &AudioApp) -> Vec<f64> {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Measurement {
+    rms: f64,
+    hz: f64,
+    seconds: f64,
+}
+
 /// Captures `app` for a second (after a short settle time) and measures level and frequency of the first channel.
 fn measure(source: &WasapiSource, app: &AudioApp) -> Measurement {
     let (tx, rx) = mpsc::channel::<(Vec<f32>, CaptureFormat)>();
