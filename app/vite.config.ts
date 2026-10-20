@@ -19,5 +19,7 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.ts'],
     setupFiles: ['src/test-setup.ts'],
+    // Component styles are not needed in tests, but a test reads app.css as text (`?raw`) to check the theme.
+    css: { include: [/\.css\?raw$/] },
   },
 });
