@@ -35,7 +35,10 @@ connections, accents, background noise, or just a moment of distraction.
 | macOS (Intel + Apple Silicon, universal) | macOS 14.2 | Core Audio process taps | 🗺️ Planned |
 
 **macOS note:** macOS releases will be signed with a Developer ID certificate and notarized by Apple, so they open like
-any other app.
+any other app. The audio-capture permission and the steps to build on macOS (Xcode command-line tools, Rust,
+Node.js) are in [docs/macos.md](docs/macos.md).
+
+Each release has a `SHA256SUMS` file. See [docs/verify-downloads.md](docs/verify-downloads.md) to check a download.
 
 ## Privacy
 
