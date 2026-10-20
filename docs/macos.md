@@ -6,11 +6,21 @@ certificate and notarized by Apple, so the app opens like any other once it is i
 ## Audio-capture permission
 
 Repeat that?! needs permission to capture other apps' audio. The first time you start capturing, macOS asks for it. If
-you clicked "Don't Allow", open System Settings → Privacy & Security, go to **Screen & System Audio Recording** on recent
-versions, and turn the switch on for Repeat that?!. Then start capturing again.
+you clicked "Don't Allow", open System Settings → Privacy & Security and turn the switch on for Repeat that?! in the
+pane that covers audio capture. On macOS 15 and later that pane is **Screen & System Audio Recording**. On macOS 14 it
+is called **Screen Recording** or **Screen & System Audio Recording**, depending on the release. Then start capturing
+again.
 
-If the app is listed there and capture still returns silence, remove its entry with the minus button and start capturing
-again, so macOS asks once more.
+If Repeat that?! isn't listed there, or capture still returns silence with the switch on, reset the permission from
+Terminal and start capturing again, so macOS asks once more:
+
+```sh
+tccutil reset AudioCapture me.roboroads.repeatthat
+```
+
+`AudioCapture` is the service name that Apple's
+[tccutil documentation](https://developer.apple.com/documentation/xcode/resetting-access-to-protected-resources-in-macos)
+lists for capturing system audio, and `me.roboroads.repeatthat` is the app's bundle identifier.
 
 ## Build from source
 
