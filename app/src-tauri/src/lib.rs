@@ -8,7 +8,7 @@ mod window;
 
 use std::sync::Mutex;
 
-use tauri::RunEvent;
+use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 use crate::tray::{SharedStatus, TrayStatus};
@@ -41,11 +41,41 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build the Repeat that?! app");
 
-    app.run(|_app, event| {
-        // The window only hides, so the app never runs out of windows; keep it alive if something asks anyway. Quit
-        // calls `exit` with a code and gets through.
-        if let RunEvent::ExitRequested { code: None, api, .. } = event {
+    app.run(|app, event| {
+        if let RunEvent::ExitRequested { code, api, .. } = event
+            && keep_running_after_exit_request(code, app.webview_windows().len())
+        {
             api.prevent_exit();
         }
     });
+}
+
+/// Whether to veto an exit request. Only the loss of the last window is vetoed, so the tray keeps the app alive.
+/// Everything else goes through: Quit in the tray asks with an exit code, and while the settings window still exists
+/// (it only ever hides) a request without a code is not that case, so an OS-driven quit is never blocked. Tauri has
+/// already dropped a closed window from its list when it asks about the exit that follows.
+fn keep_running_after_exit_request(code: Option<i32>, windows_left: usize) -> bool {
+    code.is_none() && windows_left == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn losing_the_last_window_does_not_end_the_app() {
+        assert!(keep_running_after_exit_request(None, 0));
+    }
+
+    #[test]
+    fn quit_from_the_tray_gets_through() {
+        assert!(!keep_running_after_exit_request(Some(0), 0));
+        assert!(!keep_running_after_exit_request(Some(0), 1));
+    }
+
+    #[test]
+    fn a_request_while_the_window_exists_gets_through() {
+        // The OS asking the app to quit (Cmd+Q, Dock Quit, logoff) must not be vetoed.
+        assert!(!keep_running_after_exit_request(None, 1));
+    }
 }
