@@ -22,6 +22,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
 
 - `crates/rt-core` — platform-independent buffering, voice activity detection, and playback logic.
 - `crates/rt-capture` — per-OS application audio capture backends behind one trait.
+- `crates/rt-engine` — the audio engine: capture, speech buffer, playback and ducking on their own threads.
 - `app/` — the Tauri desktop app: the Svelte UI in `app/src`, the Rust shell (tray, windows, plugins) in `app/src-tauri`.
 
 ## Guidelines
