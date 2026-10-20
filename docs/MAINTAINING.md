@@ -12,9 +12,9 @@ Notes for maintainers. Contributors don't need any of this.
   resolved
 - 0 required approvals, so a solo maintainer can merge their own PRs
 
-The repository is public, so GitHub enforces rulesets on it. It is not applied yet: apply it once #9 (which adds the
-required `Frontend` check) is on `main` and the `RELEASE_PLEASE_TOKEN` secret exists (see below). To apply it, or to
-update it after editing the JSON:
+The repository is public, so GitHub enforces rulesets on it. It is not applied yet, see the
+[going public checklist](#going-public-checklist) for when to apply it. To apply it, or to update it after editing the
+JSON:
 
 ```sh
 # first time
@@ -44,7 +44,7 @@ release PR to trigger CI.
 ## Going public checklist
 
 - [x] Make the repository public (2026-10-20)
-- [ ] Apply the branch ruleset (see above), but only once #9 (which adds the required `Frontend` check) is on `main` and
+- [ ] Apply the branch ruleset (see above), but only once the `Frontend` CI job (added by #9) is on `main` and
   release-please has a token in `RELEASE_PLEASE_TOKEN`. Applied earlier, PRs wait forever for a check that never runs.
 - [x] Turn on private vulnerability reporting (Settings → Security) and add a `SECURITY.md`
 - [x] Turn on Dependabot alerts and security updates (version updates are already set up in `.github/dependabot.yml`)
