@@ -16,8 +16,8 @@ disagrees with the release tag, so this fails when:
 A `release-as` that is not above the manifest version any more (the pinned release shipped) only warns; remove it.
 
 With --tags (release-please.yml, before release-please acts) it also fails when `release-as` names a version that
-already has a `vX.Y.Z` tag on origin. Release PRs are opened with GITHUB_TOKEN, so CI never runs on them, and a
-leftover pin would make the next release PR propose that version again and collide with the tag.
+already has a `vX.Y.Z` tag on origin. CI runs on release PRs, but there this check only warns about a spent pin,
+and a leftover pin would make the next release PR propose that version again and collide with the tag.
 """
 
 import json

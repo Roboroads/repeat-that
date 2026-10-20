@@ -4,9 +4,10 @@ on:
   push:
     branches: [main]
 
+# The GITHUB_TOKEN of this workflow only checks out the repository. release-please acts with RELEASE_PLEASE_TOKEN
+# (below), and the installer job asks for its own write access.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
@@ -16,9 +17,23 @@ jobs:
       tag_name: ${{ steps.release.outputs.tag_name }}
       sha: ${{ steps.release.outputs.sha }}
     steps:
-      # Release PRs are opened with GITHUB_TOKEN, so CI never runs on them. Check the config here instead, before
-      # release-please acts: a `release-as` pin left in after its release shipped would make the next release PR
-      # propose that version again.
+      # release-please opens its PRs with a personal access token instead of GITHUB_TOKEN: PRs and pushes made with
+      # GITHUB_TOKEN don't start other workflows, so CI would never run on a release PR (and with the branch ruleset
+      # on, it would wait forever for the required checks). Fail here, pointing at the docs, when the secret is
+      # missing or empty. An expired token fails in release-please itself with an authentication error. How to renew
+      # it is in docs/MAINTAINING.md.
+      - name: Check the release token
+        env:
+          RELEASE_PLEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_PLEASE_TOKEN" ]; then
+            echo "::error::The RELEASE_PLEASE_TOKEN secret is empty. See Release token in docs/MAINTAINING.md."
+            exit 1
+          fi
+
+      # CI runs on release PRs, but there the config check only warns about a `release-as` pin left in after its
+      # release shipped. Check it here too, before release-please acts: such a pin makes the next release PR propose
+      # that version again.
       - uses: actions/checkout@v7
       - name: Check the release config
         run: python3 .github/scripts/check-release-config.py --tags
@@ -26,13 +41,15 @@ jobs:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # The release above is created with GITHUB_TOKEN, which doesn't trigger `on: release` workflows, so the installers
-  # are built by calling the workflow here, only when this run created a release. The release is a draft ("draft" in
-  # release-please-config.json): the called workflow attaches the installers and then publishes it, so a failed
-  # build leaves a draft instead of a public release without files. A draft has no tag yet, hence the commit.
+  # The installers are built by calling the workflow here, only when this run created a release, rather than from an
+  # `on: release` trigger. The release is a draft ("draft" in release-please-config.json): the called workflow
+  # attaches the installers and then publishes it, so a failed build leaves a draft instead of a public release
+  # without files. A draft has no tag yet, hence the commit. This job uses GITHUB_TOKEN, not the personal access
+  # token, since attaching files and publishing the draft need nothing more.
   windows-installers:
     name: Windows installers
     needs: release-please
