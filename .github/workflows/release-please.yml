@@ -8,6 +8,11 @@ permissions:
   contents: write
   pull-requests: write
 
+# One run at a time. Queue instead of cancelling: a run cancelled halfway could leave a release PR or draft half-made.
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
