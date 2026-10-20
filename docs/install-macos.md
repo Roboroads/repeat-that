@@ -1,6 +1,6 @@
 # Installing on macOS
 
-Repeat that?! is a free, volunteer-run project, and we don't pay Apple's $99/year for a Developer ID. The macOS builds are
+Repeat That is a free, volunteer-run project, and we don't pay Apple's $99/year for a Developer ID. The macOS builds are
 therefore **ad-hoc signed but not notarized**. They work fine, but the first time you open the app macOS will say it
 "cannot verify" the app or that it "is damaged". That message comes from Gatekeeper, not from a problem with the app.
 
@@ -10,9 +10,9 @@ quarantined, so Gatekeeper never complains.
 ## Option 1 — "Open Anyway" (no Terminal)
 
 1. Download the `.dmg` from the [Releases page](https://github.com/Roboroads/repeat-that/releases) and drag
-   **Repeat that?!** into **Applications**.
+   **Repeat That** into **Applications**.
 2. Open the app. macOS blocks it. Click **Done** (or **OK**), not "Move to Trash".
-3. Open **System Settings → Privacy & Security** and scroll down to **Security**. You'll see *"Repeat that?! was
+3. Open **System Settings → Privacy & Security** and scroll down to **Security**. You'll see *"Repeat That was
    blocked to protect your Mac"*. Click **Open Anyway** and confirm with your password or Touch ID.
 4. Open the app again and click **Open** in the dialog that follows.
 
@@ -27,7 +27,7 @@ macOS marks downloaded files with a "quarantine" attribute. Removing it from the
 check:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/Repeat that.app"
+xattr -dr com.apple.quarantine "/Applications/Repeat That.app"
 ```
 
 Use this if you get *"is damaged and can't be opened"*, which Option 1 doesn't always fix.
@@ -37,14 +37,14 @@ Use this if you get *"is damaged and can't be opened"*, which Option 1 doesn't a
 Each release publishes a `SHA256SUMS` file. Check that your download matches before you bypass Gatekeeper:
 
 ```sh
-shasum -a 256 ~/Downloads/Repeat-that_*_universal.dmg
+shasum -a 256 ~/Downloads/Repeat\ That_*_universal.dmg
 ```
 
 Compare the output with the matching line in `SHA256SUMS` on the release page.
 
 ## Permissions
 
-Repeat that?! needs permission to capture other apps' audio. The first time you start capturing, macOS asks for it.
+Repeat That needs permission to capture other apps' audio. The first time you start capturing, macOS asks for it.
 If you clicked "Don't Allow", turn it back on in **System Settings → Privacy & Security** under audio capture
 (**Screen & System Audio Recording** on recent versions).
 

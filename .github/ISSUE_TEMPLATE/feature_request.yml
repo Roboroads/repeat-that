@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an idea for Repeat that?!
+description: Suggest an idea for Repeat That
 labels: [enhancement]
 body:
   - type: textarea

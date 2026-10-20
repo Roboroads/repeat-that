@@ -1,4 +1,4 @@
-//! Per-application audio capture for Repeat that?!.
+//! Per-application audio capture for Repeat That.
 //!
 //! Each OS gets its own backend behind [`AppAudioSource`]:
 //! - Windows: WASAPI process loopback (Windows 10 2004+), see `WasapiSource`

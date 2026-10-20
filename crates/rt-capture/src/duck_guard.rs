@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn guard_arguments_round_trip() {
-        let journal = Path::new("C:\\Users\\me\\AppData\\Roaming\\repeat that\\duck.journal");
+        let journal = Path::new("C:\\Users\\me\\AppData\\Roaming\\repeat-that\\duck.journal");
         assert_eq!(requested(&args(journal, 1234)), Some((journal.to_owned(), 1234)));
     }
 

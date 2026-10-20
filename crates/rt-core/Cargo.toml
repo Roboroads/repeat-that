@@ -1,6 +1,6 @@
 [package]
 name = "rt-core"
-description = "Platform-independent speech buffering and playback for Repeat that?!"
+description = "Platform-independent speech buffering and playback for Repeat That"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

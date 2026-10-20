@@ -1,8 +1,8 @@
-# Repeat that?!
+# Repeat That
 
 **Missed what someone just said on a call? Press a key and hear it again.**
 
-Repeat that?! keeps a short rolling buffer of the audio coming out of one app — Discord, Teams, Zoom, Slack, your browser —
+Repeat That keeps a short rolling buffer of the audio coming out of one app — Discord, Teams, Zoom, Slack, your browser —
 skips the silence, and replays the last thing that was said whenever you press a hotkey. No awkward
 "sorry, could you repeat that?" needed.
 
@@ -64,4 +64,4 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Pleas
 
 ## License
 
-Repeat that?! is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE).
+Repeat That is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE).
