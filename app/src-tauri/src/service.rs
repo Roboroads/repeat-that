@@ -704,7 +704,11 @@ mod tests {
 
 /// The settings file, on the real store plugin and the mock runtime, in a directory of its own under the system temp
 /// dir. Nothing here touches audio or the user's real settings.
-#[cfg(test)]
+///
+/// Not on Windows: the mock runtime pulls in the menu code, which needs the Common Controls v6 manifest, and the test
+/// executable of this library has none (it fails to start with `STATUS_ENTRYPOINT_NOT_FOUND`). Only binaries get the
+/// manifest from `tauri-build`.
+#[cfg(all(test, not(windows)))]
 mod store_tests {
     use std::fs;
     use std::path::PathBuf;
