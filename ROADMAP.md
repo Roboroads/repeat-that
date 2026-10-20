@@ -58,8 +58,8 @@ This milestone starts after milestone 4, because the site needs the v0.1 release
 The demo video never contains audio captured from someone else's call. It uses the mock backend with synthetic or
 licensed speech, or a staged conversation recorded outside the app with everyone's consent. That is a consented
 exception for marketing material only, and the app itself still never writes audio to disk (see
-[PRIVACY.md](PRIVACY.md)). Large media stays out of git history: the video is hosted as a release asset or on YouTube,
-and any other big files go on a Pages-only branch.
+[PRIVACY.md](PRIVACY.md)). Large media stays out of git history, Pages-only branches included: the video and any other big files go to release
+assets or an external host.
 
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
