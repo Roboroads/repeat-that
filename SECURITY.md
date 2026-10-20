@@ -24,7 +24,7 @@ In scope:
 - the capture backends (WASAPI on Windows today, PipeWire and Core Audio once they exist)
 - the duck guard process and the duck journal
 - the auto-updater, once it exists
-- release artifacts and their `SHA256SUMS` files
+- release artifacts and their checksums (from v0.1)
 
 Bugs in a third-party dependency belong upstream unless Repeat That uses it in a way that makes it exploitable.
 Dependabot alerts are on for known advisories in our dependencies. Recording laws are not a security matter, see
