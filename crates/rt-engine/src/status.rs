@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
+use crate::lock;
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Status {
     pub capture: CaptureState,
@@ -63,12 +65,12 @@ pub(crate) struct StatusHub {
 
 impl StatusHub {
     pub(crate) fn get(&self) -> Status {
-        self.lock().clone()
+        lock(&self.current).clone()
     }
 
     pub(crate) fn subscribe(&self) -> Receiver<Status> {
         let (tx, rx) = mpsc::sync_channel(SUBSCRIBER_BACKLOG);
-        let mut subscribers = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subscribers = lock(&self.subscribers);
         // Sent while holding the subscriber list, so no change can come in between.
         let _ = tx.try_send(self.get());
         subscribers.push(tx);
@@ -77,9 +79,9 @@ impl StatusHub {
 
     /// Changes the status with `change`, and tells every subscriber if that changed anything. Returns whether it did.
     pub(crate) fn update(&self, change: impl FnOnce(&mut Status)) -> bool {
-        let mut subscribers = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subscribers = lock(&self.subscribers);
         let status = {
-            let mut current = self.lock();
+            let mut current = lock(&self.current);
             let before = current.clone();
             change(&mut current);
             if *current == before {
@@ -93,13 +95,9 @@ impl StatusHub {
 
     /// Sends the status to every subscriber, changed or not.
     pub(crate) fn broadcast(&self) {
-        let mut subscribers = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut subscribers = lock(&self.subscribers);
         let status = self.get();
         send(&mut subscribers, &status);
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Status> {
-        self.current.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

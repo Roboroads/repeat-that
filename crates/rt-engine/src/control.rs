@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureFormat, CaptureHandle, FrameSink};
 
-use crate::TargetApp;
 use crate::duck::DuckCmd;
 use crate::playback::PlayCmd;
 use crate::status::{CaptureState, StatusHub};
-use crate::worker::{CaptureQueue, FormatChange, SharedCore, WorkerCmd, lock};
+use crate::worker::{CaptureQueue, FormatChange, SharedCore, WorkerCmd};
+use crate::{TargetApp, lock};
 
 /// How often a missing target is looked for.
 const POLL_EVERY: Duration = Duration::from_secs(2);

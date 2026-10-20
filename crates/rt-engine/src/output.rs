@@ -212,7 +212,7 @@ impl OutputBackend for CpalOutput {
                 // Glitches and a default device that was followed to another one aren't the end of the stream.
                 use cpal::ErrorKind::{DeviceChanged, RealtimeDenied, Xrun};
                 if !matches!(e.kind(), Xrun | DeviceChanged | RealtimeDenied) {
-                    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.to_string());
+                    *crate::lock(&failure) = Some(e.to_string());
                 }
             }
         };
@@ -283,7 +283,7 @@ impl OutputStream for CpalStream {
     }
 
     fn failure(&self) -> Option<String> {
-        self.failure.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        crate::lock(&self.failure).clone()
     }
 }
 
@@ -525,7 +525,7 @@ impl TestOutput {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, TestState> {
-        self.inner.state.lock().unwrap_or_else(|e| e.into_inner())
+        crate::lock(&self.inner.state)
     }
 }
 

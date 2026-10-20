@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use rt_capture::CaptureFormat;
 use rt_core::{AudioFormat, EnergyVad, Recorder, SegmenterConfig, SileroVad, Vad};
 
+use crate::lock;
 use crate::status::StatusHub;
 use crate::{EngineConfig, Sensitivity};
 
@@ -32,10 +33,6 @@ pub(crate) struct Core {
 }
 
 pub(crate) type SharedCore = Arc<Mutex<Core>>;
-
-pub(crate) fn lock(core: &SharedCore) -> std::sync::MutexGuard<'_, Core> {
-    core.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 /// The worker's end of a capture's queues: interleaved samples, and where in them the format changes.
 pub(crate) struct CaptureQueue {
@@ -88,21 +85,15 @@ struct SharedVad(Arc<Mutex<Box<dyn Vad>>>);
 
 impl Vad for SharedVad {
     fn frame_len(&self) -> usize {
-        self.lock().frame_len()
+        lock(&self.0).frame_len()
     }
 
     fn speech_probability(&mut self, frame: &[f32]) -> f32 {
-        self.lock().speech_probability(frame)
+        lock(&self.0).speech_probability(frame)
     }
 
     fn reset(&mut self) {
-        self.lock().reset();
-    }
-}
-
-impl SharedVad {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Box<dyn Vad>> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        lock(&self.0).reset();
     }
 }
 

@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 use rt_core::resample::LinearResampler;
 use rt_core::{Player, PlayerConfig};
 
-use crate::EngineConfig;
 use crate::beep::beep;
 use crate::duck::DuckCmd;
 use crate::output::{FeedWriter, OutputBackend, OutputFeed, OutputStream};
 use crate::status::{PlaybackState, StatusHub};
-use crate::worker::{Core, SharedCore, lock};
+use crate::worker::{Core, SharedCore};
+use crate::{EngineConfig, lock};
 
 /// How often the player tops up the output while a stream is open.
 const TICK: Duration = Duration::from_millis(5);

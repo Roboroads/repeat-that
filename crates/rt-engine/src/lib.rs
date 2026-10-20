@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -42,6 +42,12 @@ use duck::DuckCmd;
 use playback::PlayCmd;
 use status::StatusHub;
 use worker::{Core, VadSource, WorkerCmd};
+
+/// Locks `mutex`, also when a thread panicked while holding it: the data is still usable, and one failing thread
+/// shouldn't take the engine down with it.
+pub(crate) fn lock<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// How sure the voice activity detector must be before audio counts as speech.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
