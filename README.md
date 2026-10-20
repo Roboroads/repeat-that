@@ -34,6 +34,9 @@ connections, accents, background noise, or just a moment of distraction.
 | Linux (Debian/Ubuntu, `.deb`) | Debian 12 / Ubuntu 22.04 with PipeWire | PipeWire per-stream capture | 🗺️ Planned |
 | macOS (Intel + Apple Silicon, universal) | macOS 14.2 | Core Audio process taps | 🗺️ Planned |
 
+**macOS note:** the builds are not notarized by Apple (that costs $99/year), so macOS blocks the app the first time you
+open it. [Here's how to open it anyway](docs/install-macos.md). It takes one click in System Settings.
+
 ## Privacy
 
 Recorded audio **only ever lives in memory**. It is never written to disk, never sent anywhere, and is wiped as soon as you

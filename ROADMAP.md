@@ -31,7 +31,9 @@
 
 ## Milestone 6 — macOS
 - [ ] Core Audio process tap backend (macOS 14.2+)
-- [ ] Universal binary, signed and notarized `.dmg`
+- [ ] Universal binary, ad-hoc signed `.dmg` (no paid Apple notarization)
+- [ ] `SHA256SUMS` published with every release
+- [ ] Detect a missing or reset audio-capture permission and show how to fix it
 
 ## Milestone 7 — Live transcript
 - [ ] `whisper-rs` transcription of finished utterances (local models, downloaded on demand)
@@ -40,7 +42,7 @@
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
 - [ ] Auto-update
-- [ ] Code signing (SignPath for Windows)
+- [ ] Windows code signing (free via SignPath Foundation for OSS)
 - [ ] Auto-detect which app is in an active call
 - [ ] Capture multiple apps at once
 - [ ] Small always-on-top mini player / waveform timeline
