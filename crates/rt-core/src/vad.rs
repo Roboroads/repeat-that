@@ -51,11 +51,7 @@ impl Vad for EnergyVad {
     }
 
     fn speech_probability(&mut self, frame: &[f32]) -> f32 {
-        if rms(frame) >= self.threshold_rms {
-            1.0
-        } else {
-            0.0
-        }
+        if rms(frame) >= self.threshold_rms { 1.0 } else { 0.0 }
     }
 
     fn reset(&mut self) {}

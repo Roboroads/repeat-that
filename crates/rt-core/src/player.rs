@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::buffer::{duration_to_samples, SpeechBuffer};
+use crate::buffer::{SpeechBuffer, duration_to_samples};
 use crate::stretch::time_stretch;
 
 pub const MIN_SPEED: f32 = 0.5;

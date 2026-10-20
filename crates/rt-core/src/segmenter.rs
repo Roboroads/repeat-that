@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::buffer::duration_to_samples;
 use crate::resample::LinearResampler;
-use crate::vad::{Vad, VAD_SAMPLE_RATE};
+use crate::vad::{VAD_SAMPLE_RATE, Vad};
 
 #[derive(Debug, Clone)]
 pub struct SegmenterConfig {

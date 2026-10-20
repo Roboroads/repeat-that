@@ -7,7 +7,7 @@ use ort::environment::Environment;
 use ort::session::Session;
 use ort::value::Tensor;
 
-use super::{Vad, VAD_SAMPLE_RATE};
+use super::{VAD_SAMPLE_RATE, Vad};
 
 static MODEL: &[u8] = include_bytes!("../../models/silero_vad.onnx");
 
@@ -109,7 +109,9 @@ mod tests {
             .map(|i| 0.3 * (i as f32 * 2.0 * std::f32::consts::PI * 1000.0 / VAD_SAMPLE_RATE as f32).sin())
             .collect();
         let last = tone
-            .chunks_exact(FRAME_LEN)
+            .as_chunks::<FRAME_LEN>()
+            .0
+            .iter()
             .map(|f| vad.speech_probability(f))
             .last()
             .unwrap();

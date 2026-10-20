@@ -1,0 +1,297 @@
+//! Audio sessions: which apps are playing audio, and their per-app volume (`ISimpleAudioVolume`) for ducking.
+
+use std::collections::HashMap;
+use std::ffi::c_void;
+use std::path::{Path, PathBuf};
+
+use windows::Win32::Foundation::{CloseHandle, HANDLE, S_OK};
+use windows::Win32::Media::Audio::{
+    AudioSessionStateExpired, DEVICE_STATE_ACTIVE, IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator,
+    ISimpleAudioVolume, MMDeviceEnumerator, eRender,
+};
+use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+};
+use windows::core::{HSTRING, Interface, PWSTR, w};
+
+use super::backend;
+use crate::before_duck::{self, BeforeDuck};
+use crate::duck_journal::{self, JournalEntry};
+use crate::process_tree::{Process, ProcessTable};
+use crate::{AudioApp, Result};
+
+/// Apps with an audio session on any active output device, one entry per process tree, sorted by name.
+pub(super) fn list_apps() -> Result<Vec<AudioApp>> {
+    let processes = process_table()?;
+    let own_root = processes.app_root(std::process::id());
+    let mut roots = Vec::new();
+    for_each_session(|session| {
+        let pid = unsafe { session.GetProcessId() }.unwrap_or(0);
+        let root = processes.app_root(pid);
+        if pid != 0 && root != own_root && !roots.contains(&root) {
+            roots.push(root);
+        }
+    })?;
+
+    let mut apps: Vec<AudioApp> = roots
+        .into_iter()
+        .map(|pid| {
+            let exe_path = exe_path(pid);
+            let name = exe_path
+                .as_deref()
+                .and_then(file_description)
+                .or_else(|| {
+                    exe_path
+                        .as_deref()
+                        .and_then(Path::file_stem)
+                        .map(|s| s.to_string_lossy().into_owned())
+                })
+                .or_else(|| processes.0.get(&pid).map(|p| p.exe.trim_end_matches(".exe").to_owned()))
+                .unwrap_or_else(|| format!("PID {pid}"));
+            AudioApp { pid, name, exe_path }
+        })
+        .collect();
+    apps.sort_by_cached_key(|app| app.name.to_lowercase());
+    Ok(apps)
+}
+
+/// An audio session of the app being ducked, looked up once so a ramp doesn't enumerate sessions on every step.
+pub(super) struct Session {
+    id: String,
+    control: IAudioSessionControl2,
+    volume: ISimpleAudioVolume,
+}
+
+impl Session {
+    fn new(control: &IAudioSessionControl2) -> windows::core::Result<Self> {
+        Ok(Self {
+            id: take_co_string(unsafe { control.GetSessionInstanceIdentifier() }?),
+            volume: control.cast()?,
+            control: control.clone(),
+        })
+    }
+}
+
+impl before_duck::Session for Session {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn identity(&self) -> Option<(String, f32)> {
+        unsafe {
+            let current = self.volume.GetMasterVolume().ok()?;
+            Some((take_co_string(self.control.GetSessionIdentifier().ok()?), current))
+        }
+    }
+
+    fn set_volume(&self, volume: f32) -> bool {
+        unsafe { self.volume.SetMasterVolume(volume, std::ptr::null()) }.is_ok()
+    }
+}
+
+/// The audio sessions in `root`'s process tree. A session that fails, e.g. because it was torn down meanwhile, is
+/// skipped so the others still get ducked.
+pub(super) fn tree_sessions(root: u32) -> Result<Vec<Session>> {
+    let processes = process_table()?;
+    let mut sessions = Vec::new();
+    for_each_session(|session| {
+        let pid = unsafe { session.GetProcessId() }.unwrap_or(0);
+        if pid != 0
+            && processes.is_in_tree(pid, root)
+            && let Ok(session) = Session::new(session)
+        {
+            sessions.push(session);
+        }
+    })?;
+    Ok(sessions)
+}
+
+/// Ducks only the sessions in `root`'s process tree that started after it was ducked to `level`. Sessions that are
+/// already ducked keep their volume, including any the user gave them since.
+pub(super) fn duck_new_sessions(root: u32, level: f32, before_duck: &mut BeforeDuck) -> Result<()> {
+    for session in tree_sessions(root)? {
+        if !before_duck.contains(&session.id) {
+            before_duck.apply(&session, level);
+        }
+    }
+    Ok(())
+}
+
+/// Gives every session in `before_duck` its volume from before ducking back, whichever process it belongs to now.
+pub(super) fn restore_all(before_duck: &mut BeforeDuck) -> Result<()> {
+    for_each_session(|session| {
+        if let Ok(session) = Session::new(session) {
+            before_duck.apply(&session, 1.0);
+        }
+    })
+}
+
+/// Restores the sessions a duck journal from an earlier run lists, if their volume is still the one we set. Returns the
+/// entries without a live session yet, because their app isn't running.
+pub(crate) fn recover(journal: Vec<JournalEntry>) -> Result<Vec<JournalEntry>> {
+    let mut seen = vec![false; journal.len()];
+    for_each_session(|session| {
+        let Ok(identifier) = unsafe { session.GetSessionIdentifier() }.map(take_co_string) else {
+            return;
+        };
+        let Ok(volume) = session.cast::<ISimpleAudioVolume>() else {
+            return;
+        };
+        for (entry, seen) in journal.iter().zip(&mut seen) {
+            if entry.identifier != identifier {
+                continue;
+            }
+            let Ok(current) = (unsafe { volume.GetMasterVolume() }) else {
+                continue;
+            };
+            *seen = true;
+            if duck_journal::should_restore(entry, current) {
+                let _ = unsafe { volume.SetMasterVolume(entry.original, std::ptr::null()) };
+            }
+        }
+    })?;
+    Ok(journal
+        .into_iter()
+        .zip(seen)
+        .filter(|(_, seen)| !seen)
+        .map(|(entry, _)| entry)
+        .collect())
+}
+
+/// Calls `f` for every live, non-system audio session on every active output device. Fails only when the devices
+/// can't be listed.
+fn for_each_session(mut f: impl FnMut(&IAudioSessionControl2)) -> Result<()> {
+    unsafe {
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(backend("MMDeviceEnumerator"))?;
+        let devices = enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(backend("EnumAudioEndpoints"))?;
+        for d in 0..devices.GetCount().map_err(backend("device count"))? {
+            // A device can disappear while we look at it; skip it rather than failing the whole list.
+            let Ok(device) = devices.Item(d) else { continue };
+            let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else {
+                continue;
+            };
+            let Ok(sessions) = manager.GetSessionEnumerator() else {
+                continue;
+            };
+            for s in 0..sessions.GetCount().unwrap_or(0) {
+                let Ok(session) = sessions.GetSession(s).and_then(|s| s.cast::<IAudioSessionControl2>()) else {
+                    continue;
+                };
+                if session.IsSystemSoundsSession() == S_OK
+                    || session.GetState().is_ok_and(|state| state == AudioSessionStateExpired)
+                {
+                    continue;
+                }
+                f(&session);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A snapshot of all processes with their parent and executable name.
+fn process_table() -> Result<ProcessTable> {
+    let mut table = HashMap::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).map_err(backend("CreateToolhelp32Snapshot"))?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = Process32FirstW(snapshot, &mut entry);
+        while found.is_ok() {
+            table.insert(
+                entry.th32ProcessID,
+                Process {
+                    parent: entry.th32ParentProcessID,
+                    exe: wide_to_string(&entry.szExeFile),
+                },
+            );
+            found = Process32NextW(snapshot, &mut entry);
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    Ok(ProcessTable(table))
+}
+
+/// Full path of `pid`'s executable, if we may see it.
+fn exe_path(pid: u32) -> Option<PathBuf> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let path = query_image_name(process);
+        let _ = CloseHandle(process);
+        path
+    }
+}
+
+unsafe fn query_image_name(process: HANDLE) -> Option<PathBuf> {
+    let mut buf = vec![0u16; 32_768];
+    let mut len = buf.len() as u32;
+    unsafe { QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len) }.ok()?;
+    Some(PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+}
+
+/// The "File description" from an executable's version info, e.g. "Microsoft Teams".
+fn file_description(exe: &Path) -> Option<String> {
+    let path = HSTRING::from(exe.as_os_str());
+    unsafe {
+        let size = GetFileVersionInfoSizeW(&path, None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u8; size as usize];
+        GetFileVersionInfoW(&path, None, size, data.as_mut_ptr().cast()).ok()?;
+
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        if !VerQueryValueW(
+            data.as_ptr().cast(),
+            w!("\\VarFileInfo\\Translation"),
+            &mut ptr,
+            &mut len,
+        )
+        .as_bool()
+            || len < 4
+        {
+            return None;
+        }
+        // The pointers point into a byte buffer, so they need not be aligned for u16.
+        let [lang, codepage] = ptr.cast::<[u16; 2]>().read_unaligned();
+        let key = HSTRING::from(format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"));
+        if !VerQueryValueW(data.as_ptr().cast(), &key, &mut ptr, &mut len).as_bool() || len == 0 {
+            return None;
+        }
+        let wide: Vec<u16> = (0..len as usize)
+            .map(|i| ptr.cast::<u16>().add(i).read_unaligned())
+            .collect();
+        let text = wide_to_string(&wide);
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+}
+
+/// A string from a NUL-terminated (or full) UTF-16 buffer.
+fn wide_to_string(wide: &[u16]) -> String {
+    let len = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+    String::from_utf16_lossy(&wide[..len])
+}
+
+/// Copies a string that COM allocated for us, then frees it.
+fn take_co_string(s: PWSTR) -> String {
+    if s.is_null() {
+        return String::new();
+    }
+    unsafe {
+        let text = s.to_string().unwrap_or_default();
+        CoTaskMemFree(Some(s.0 as *const c_void));
+        text
+    }
+}

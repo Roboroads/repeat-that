@@ -14,14 +14,18 @@
 - [x] Tests with synthetic audio and a real speech fixture; `trim_wav` example to hear the result
 
 ## Milestone 3 — Windows capture
-- [ ] Mock WAV capture backend (for developing the app on any OS)
-- [ ] Enumerate audio sessions → list of apps (name, icon, PID)
-- [ ] WASAPI process loopback capture (include process tree)
-- [ ] Per-app volume for ducking (`ISimpleAudioVolume`)
+- [x] Mock WAV capture backend (for developing the app on any OS)
+- [x] Enumerate audio sessions → list of apps (name, exe path for the icon, PID), grouped by process tree
+- [x] WASAPI process loopback capture (include process tree)
+- [x] Per-app volume for ducking (`ISimpleAudioVolume`), faded, with the capture kept at full level
+- [x] Ducked apps restored after a crash (duck guard process, duck journal)
+- [x] End-to-end test on a virtual audio device in CI
+- [ ] Verified on real Windows hardware with the `probe` example (Discord, Teams, a browser)
 
 ## Milestone 4 — Desktop app → **v0.1 (Windows)**
 - [ ] Tauri 2 shell, tray icon and menu
 - [ ] Global hotkeys (replay/step back, stop, catch-up)
+- [ ] App icons extracted from the executable for the app picker
 - [ ] Settings UI: app picker, buffer length, VAD sensitivity, output device, hotkeys, speed, ducking, autostart
 - [ ] Windows installers from CI
 
