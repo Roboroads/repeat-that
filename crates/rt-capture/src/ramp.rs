@@ -159,6 +159,22 @@ mod tests {
     }
 
     #[test]
+    fn steps_stay_on_their_grid() {
+        let interval = Duration::from_millis(10);
+        let start = Instant::now();
+        let ms = |ms| Duration::from_millis(ms);
+        // Each step is due one interval after the one before, however late within half an interval that one started.
+        let mut due = start;
+        for late in [0, 1, 4, 0, 3, 2] {
+            due = next_due(due, due + ms(late), interval);
+        }
+        assert_eq!(due, start + 6 * interval);
+        // A step that started further behind moves the rest of the schedule.
+        assert_eq!(next_due(start, start + ms(6), interval), start + ms(16));
+        assert_eq!(next_due(start, start + ms(45), interval), start + ms(55));
+    }
+
+    #[test]
     fn a_ramp_that_falls_behind_doesnt_catch_up() {
         let interval = Duration::from_millis(10);
         let mut starts = Vec::new();
