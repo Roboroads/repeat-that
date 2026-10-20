@@ -94,8 +94,8 @@ impl AppAudioSource for WasapiSource {
         let duck_level = level.clone();
         let reduck = move || {
             // Locked before reading the level, like `set_app_volume` holds it while changing the level, so this can't
-            // duck sessions an unduck just restored. While a ramp holds it, this round is skipped: waiting would stall
-            // the capture for the whole ramp, and the next round is only 500 ms away.
+            // duck sessions an unduck just restored. While a fade holds it, this round is skipped: waiting would stall
+            // the capture for the whole fade, and `set_app_volume` ducks sessions started meanwhile when it is done.
             let mut ducking = match ducking.try_lock() {
                 Ok(ducking) => ducking,
                 Err(TryLockError::Poisoned(e)) => e.into_inner(),
@@ -130,6 +130,12 @@ impl AppAudioSource for WasapiSource {
             // Every step, so the journal knows the volume the sessions are at even if we die mid-ramp.
             ducking.save();
         });
+        // Sessions the app started during the fade aren't in it. Until they are ducked they play at full volume, and
+        // captures boost them too, so this doesn't wait for a capture's next look, which may be most of a second away.
+        if level < 1.0 {
+            let _ = sessions::duck_new_sessions(app.pid, level, &mut ducking.before_duck);
+            ducking.save();
+        }
         Ok(())
     }
 }
