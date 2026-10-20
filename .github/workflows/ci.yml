@@ -65,7 +65,7 @@ jobs:
     # `changes` is skipped on pushes, and if it fails the build should still run, so this job runs unless the whole run
     # is cancelled. Only `code == 'false'` skips the build: then every leg runs on the plentiful Linux runner instead of
     # queueing for its own OS, and finishes without running any steps.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 30
     strategy:
