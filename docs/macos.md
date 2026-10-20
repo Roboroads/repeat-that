@@ -24,7 +24,7 @@ lists for capturing system audio, and `me.roboroads.repeatthat` is the app's bun
 
 ## Build from source
 
-You need Apple's command-line tools, Rust and Node.js 20 or later.
+You need Apple's command-line tools, Rust and Node.js 22 LTS or later.
 
 ```sh
 xcode-select --install
