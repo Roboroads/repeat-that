@@ -20,7 +20,7 @@ pub struct Utterance {
 ///
 /// The most recent utterance can be *open*: someone is still talking, and audio is appended to it as it comes in, so a
 /// replay can follow the sentence in progress. There is at most one open utterance, it is always the newest, and it is
-/// never evicted.
+/// never evicted. Only the [`Recorder`](crate::Recorder) opens and writes it.
 #[derive(Debug)]
 pub struct SpeechBuffer {
     sample_rate: u32,
@@ -57,10 +57,14 @@ impl SpeechBuffer {
     }
 
     /// Appends a finished utterance, evicts the oldest ones until the buffer fits its cap again, and returns the new
-    /// utterance's id. An open utterance is closed first.
+    /// utterance's id.
     ///
     /// The newest utterance is always kept, even if it alone exceeds the cap.
+    ///
+    /// Pushing while an utterance is open is a bug: the [`Recorder`](crate::Recorder) is still writing it, and would
+    /// lose the rest of the sentence. Debug builds panic; release builds close the open utterance.
     pub fn push(&mut self, samples: Vec<f32>) -> u64 {
+        debug_assert!(!self.open, "push while an utterance is open");
         let id = self.open(samples);
         self.close();
         id
@@ -68,7 +72,7 @@ impl SpeechBuffer {
 
     /// Starts a new open utterance with `samples` and returns its id. The previous one is closed first if it was still
     /// open.
-    pub fn open(&mut self, samples: Vec<f32>) -> u64 {
+    pub(crate) fn open(&mut self, samples: Vec<f32>) -> u64 {
         self.close();
         let id = self.next_id;
         self.next_id += 1;
@@ -85,7 +89,7 @@ impl SpeechBuffer {
 
     /// Closes the open utterance where the speech in it goes on, and opens the next one with `samples`, which
     /// continues it without a pause. Returns the new utterance's id. With nothing open, this simply opens one.
-    pub fn open_continuation(&mut self, samples: Vec<f32>) -> u64 {
+    pub(crate) fn open_continuation(&mut self, samples: Vec<f32>) -> u64 {
         if self.open
             && let Some(utterance) = self.utterances.back_mut()
         {
@@ -96,7 +100,7 @@ impl SpeechBuffer {
 
     /// Appends samples to the open utterance, evicting the oldest finished ones if the buffer is now over its cap.
     /// Does nothing if no utterance is open.
-    pub fn append(&mut self, samples: &[f32]) {
+    pub(crate) fn append(&mut self, samples: &[f32]) {
         if !self.open {
             return;
         }
@@ -108,7 +112,7 @@ impl SpeechBuffer {
     }
 
     /// Finishes the open utterance: nothing more is appended to it. Returns its id, or `None` if none was open.
-    pub fn close(&mut self) -> Option<u64> {
+    pub(crate) fn close(&mut self) -> Option<u64> {
         let id = self.open_id();
         self.open = false;
         id
@@ -302,13 +306,23 @@ mod tests {
         assert_eq!(buf.latest_finished_id(), None);
         let open = buf.open(speech(0.5, 1.0));
         assert_eq!(buf.latest_finished_id(), None);
-        // Opening or pushing another one closes the open one first.
+        // Opening another one closes the open one first.
         let next = buf.open(speech(0.5, 2.0));
         assert_eq!(buf.latest_finished_id(), Some(open));
+        buf.close();
         let pushed = buf.push(speech(0.5, 3.0));
         assert_eq!(buf.open_id(), None);
         assert_eq!(buf.latest_finished_id(), Some(pushed));
         assert_eq!(buf.get(next).unwrap().samples[0], 2.0);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "while an utterance is open")]
+    fn pushing_while_an_utterance_is_open_is_a_bug() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(10));
+        buf.open(speech(0.5, 1.0));
+        buf.push(speech(0.5, 2.0));
     }
 
     #[test]
