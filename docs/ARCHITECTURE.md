@@ -36,8 +36,10 @@ Ducking (`set_app_volume`) also lives here, because it is per-OS and per-app (Wi
 app's audio session).
 
 ### `rt-core` — platform-independent logic
-- **Resampling** of captured audio to 16 kHz mono for the VAD. The original stream is kept for playback.
-- **VAD**: Silero VAD (ONNX). Frames are classified as speech or non-speech, with hangover/padding (~200 ms) so that word
+- **Downmix and resampling**: captured audio is mixed to mono (kept at the capture rate for playback) and resampled
+  to 16 kHz for the VAD.
+- **VAD**: Silero VAD, bundled (`models/silero_vad.onnx`, MIT) and run with ONNX Runtime through `ort`, which is
+  statically linked, so nothing extra ships next to the app. Frames are classified as speech or non-speech, with hangover/padding (~200 ms) so that word
   edges aren't clipped.
 - **`SpeechBuffer`**: an in-memory ring of *utterances* (contiguous speech segments), capped at a configurable
   total *speech* duration (default 30 s). The oldest utterances are evicted first. Silences between utterances are

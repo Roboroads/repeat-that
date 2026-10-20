@@ -5,15 +5,16 @@
 - [x] Architecture doc, roadmap, issue templates
 - [x] Cargo workspace skeleton and CI (fmt, clippy, test on Linux/Windows/macOS)
 
-## Milestone 2 — Core engine (`rt-core`)
-- [ ] Resampler to 16 kHz mono
-- [ ] Silero VAD integration with padding/hangover
-- [ ] `SpeechBuffer`: utterance ring, capped by speech duration
-- [ ] `Player`: replay latest, step back per press, play through to live
-- [ ] Pitch-preserving time-stretch for catch-up (1.0–2.0×)
-- [ ] Mock WAV capture backend + fixture-based tests
+## Milestone 2 — Core engine (`rt-core`) ✅
+- [x] Resampler to 16 kHz mono for the VAD
+- [x] Silero VAD integration (bundled model, ONNX Runtime) with padding, hysteresis and pause tolerance
+- [x] `SpeechBuffer`: utterance ring, capped by speech duration, stable ids
+- [x] `Player`: replay latest, step back per press, play through to live, gaps between utterances
+- [x] Pitch-preserving time-stretch (WSOLA) for catch-up (0.5–2.0×)
+- [x] Tests with synthetic audio and a real speech fixture; `trim_wav` example to hear the result
 
 ## Milestone 3 — Windows capture
+- [ ] Mock WAV capture backend (for developing the app on any OS)
 - [ ] Enumerate audio sessions → list of apps (name, icon, PID)
 - [ ] WASAPI process loopback capture (include process tree)
 - [ ] Per-app volume for ducking (`ISimpleAudioVolume`)
