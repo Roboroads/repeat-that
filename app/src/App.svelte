@@ -1,5 +1,10 @@
+<script lang="ts">
+  // The app icon's source file: the same SVG the PNG and ICO app icons are rendered from.
+  import icon from '../src-tauri/icons/svg/app.svg';
+</script>
+
 <main>
-  <img class="logo" src="/icon.svg" alt="" width="72" height="72" />
+  <img class="logo" src={icon} alt="" width="72" height="72" />
   <h1>Repeat that?!</h1>
   <p>Settings are coming soon.</p>
   <p class="hint">Closing this window keeps the app running in the tray. Use the tray menu to quit.</p>
