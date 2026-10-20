@@ -68,9 +68,11 @@ in [`install-windows.md`](install-windows.md).
 ### First release
 
 `release-please-config.json` has `"release-as": "0.1.0"`, so the first release is 0.1.0 whatever the commits suggest.
-Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again (the config check warns
-when the pin is stale). Hold the 0.1.0 release PR until the app captures and replays audio, because merging it publishes
-the installers.
+Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again and collides with the
+tag. Release PRs get no CI, so the `release-please` workflow runs the config check with `--tags` before it acts: once
+`v0.1.0` exists and the pin is still there, that run fails and no further release PRs are opened until the pin is gone.
+(On pull requests the same check only warns.) Hold the 0.1.0 release PR until the app captures and replays audio,
+because merging it publishes the installers.
 
 ### Version numbers
 
