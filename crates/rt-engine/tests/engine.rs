@@ -561,6 +561,35 @@ fn plays_through_to_live() {
 }
 
 #[test]
+fn a_replay_started_while_the_beep_plays_out_goes_on() {
+    // The beep plays slowly, so it's still playing out when the next replay starts, of a capture at another rate.
+    let output = TestOutput::new(RATE).speed(0.1);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    handle.set_paused(true);
+    wait_for(&handle, secs(1.0), "paused", |s| s.capture == CaptureState::Paused);
+    handle.replay();
+    wait_until(secs(1.0), "the beep", || output.open_streams() == 1);
+
+    let mono = CaptureFormat {
+        sample_rate: 16_000,
+        channels: 1,
+    };
+    source.set_format(mono);
+    handle.set_paused(false);
+    wait_for(&handle, secs(1.0), "capturing", |s| {
+        s.capture == CaptureState::Capturing
+    });
+    source.play(&[tone_in(mono, 1.0, 0.5), vec![0.0; 16_000]].concat());
+    source.wait_played();
+    assert_eq!(output.open_streams(), 1, "the beep still plays");
+
+    handle.replay();
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(handle.status().playback, PlaybackState::Replaying);
+    assert_eq!(source.levels(), [0.2]);
+}
+
+#[test]
 fn beeps_when_there_is_nothing_to_replay() {
     let source = FakeSource::new(vec![]);
     let output = TestOutput::new(RATE);

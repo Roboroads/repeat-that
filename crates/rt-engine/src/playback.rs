@@ -252,12 +252,17 @@ impl PlayerThread {
         if let Some((player, _)) = &mut self.player {
             player.stop();
         }
+        self.close_output();
+        self.block.fill(0.0);
+        self.resampled.fill(0.0);
+    }
+
+    /// Fades out the output and closes it shortly after.
+    fn close_output(&mut self) {
         if let Some(output) = self.output.take() {
             output.writer.stop();
             self.closing = Some((output.stream, Instant::now() + CLOSE_AFTER_STOP));
         }
-        self.block.fill(0.0);
-        self.resampled.fill(0.0);
     }
 
     /// The replay is over: back to replay speed, and the app's volume comes back.
@@ -277,8 +282,8 @@ impl PlayerThread {
     fn open_output(&mut self) -> bool {
         let rate = self.capture_rate();
         if self.output.as_ref().is_some_and(|o| o.capture_rate != rate) {
-            // Still playing out audio of a capture in another format.
-            self.stop_now();
+            // Still playing out audio of a capture in another format; the replay that just started goes on.
+            self.close_output();
         }
         if self.output.is_some() {
             return true;
