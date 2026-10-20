@@ -32,6 +32,10 @@ pub fn run() {
         .manage::<SharedStatus>(Mutex::new(TrayStatus::default()))
         .on_window_event(window::on_window_event)
         .setup(|app| {
+            // A tray app: no Dock icon and no app menu bar on macOS. The tray menu and `RunEvent::Reopen` (the app
+            // opened again from Finder or Spotlight) are the ways in.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let handle = app.handle();
             tray::setup(handle)?;
             let args: Vec<String> = std::env::args().collect();
@@ -41,12 +45,17 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build the Repeat that?! app");
 
-    app.run(|app, event| {
-        if let RunEvent::ExitRequested { code, api, .. } = event
-            && keep_running_after_exit_request(code, app.webview_windows().len())
+    app.run(|app, event| match event {
+        RunEvent::ExitRequested { code, api, .. }
+            if keep_running_after_exit_request(code, app.webview_windows().len()) =>
         {
             api.prevent_exit();
         }
+        // Opening the app again while it runs (Finder, Spotlight, `open`) shows the settings, as a second launch does
+        // on the other systems.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => window::show_settings(app),
+        _ => {}
     });
 }
 
