@@ -25,7 +25,8 @@ On macOS 15 and later you can also turn the permission on in System Settings →
 
 ## Build from source
 
-You need Apple's command-line tools, Rust and Node.js 22 LTS or later.
+You need Apple's command-line tools, Rust and Node.js 22 LTS or later. The `app/` directory these steps use isn't on
+`main` yet (milestone 4), so they work once it lands.
 
 ```sh
 xcode-select --install
