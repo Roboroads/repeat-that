@@ -33,6 +33,10 @@ impl BeforeDuck {
         self.0.contains_key(id)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Forgets session `id` once its volume from before ducking is back.
     pub fn restored(&mut self, id: &str) {
         self.0.remove(id);

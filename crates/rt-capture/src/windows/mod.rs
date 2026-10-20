@@ -72,6 +72,24 @@ impl AppAudioSource for WasapiSource {
     }
 }
 
+impl Drop for WasapiSource {
+    /// Restores every app that is still ducked. Windows remembers per-app volumes, so it would stay quiet otherwise.
+    fn drop(&mut self) {
+        let mut before_duck = self.before_duck.lock().unwrap_or_else(|e| e.into_inner());
+        if before_duck.is_empty() {
+            return;
+        }
+        // Captures that outlive the source stop ducking new sessions and boosting.
+        let levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
+        for level in levels.values() {
+            level.set(1.0, loopback::now());
+        }
+        if let Ok(_com) = Com::init() {
+            let _ = sessions::restore_all(&mut before_duck);
+        }
+    }
+}
+
 /// COM for the current thread, for as long as this lives. Threads that already use COM, like a UI thread in a
 /// single-threaded apartment, are left as they are.
 pub(crate) struct Com {

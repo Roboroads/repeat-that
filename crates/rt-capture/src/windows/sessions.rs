@@ -73,6 +73,13 @@ pub(super) fn duck_new_sessions(root: u32, level: f32, before_duck: &mut BeforeD
     duck_tree(root, level, before_duck, true)
 }
 
+/// Gives every session in `before_duck` its volume from before ducking back, whichever process it belongs to now.
+pub(super) fn restore_all(before_duck: &mut BeforeDuck) -> Result<()> {
+    for_each_session(|session| {
+        let _ = duck_session(session, 1.0, before_duck, false);
+    })
+}
+
 fn duck_tree(root: u32, level: f32, before_duck: &mut BeforeDuck, new_only: bool) -> Result<()> {
     let processes = process_table()?;
     for_each_session(|session| {
