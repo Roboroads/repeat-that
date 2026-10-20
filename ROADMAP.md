@@ -49,7 +49,7 @@
 ## Milestone 8 — Website and going public
 This milestone can run in parallel with 5–7.
 
-- [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release, and a link to `SHA256SUMS` with how to verify it
+- [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release (whose `SHA256SUMS` ships with the installers from milestone 4), and a link to [how to verify a download](docs/verify-downloads.md)
 - [ ] Short demo video of a replay in a call (Discord or Teams)
 - [ ] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary
 - [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist)
