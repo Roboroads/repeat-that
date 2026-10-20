@@ -84,6 +84,8 @@ pub struct Segmenter {
     held: Vec<f32>,
     /// While open: samples reported for the open utterance so far.
     open_len: usize,
+    /// While open: it reached `max_utterance`, and is split as soon as speech goes on.
+    split_due: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +122,7 @@ impl Segmenter {
             trailing_silence: 0,
             held: Vec::new(),
             open_len: 0,
+            split_due: false,
         };
         segmenter.set_config(&config);
         segmenter
@@ -215,6 +218,7 @@ impl Segmenter {
         self.trailing_silence = 0;
         self.held.clear();
         self.open_len = 0;
+        self.split_due = false;
     }
 
     fn on_frame(&mut self, chunk: &[f32], is_speech: bool, sink: &mut impl UtteranceSink) {
@@ -252,11 +256,20 @@ impl Segmenter {
                 // The pause was inside the utterance after all.
                 if !self.held.is_empty() {
                     sink.append(&self.held);
+                    self.open_len += self.held.len();
+                    self.held.clear();
                 }
-                sink.append(chunk);
-                self.open_len += self.held.len() + chunk.len();
-                self.held.clear();
-                self.split_if_too_long(sink);
+                if self.split_due {
+                    // Split mid-speech. The next part starts right where this one ends.
+                    sink.close();
+                    sink.open(chunk);
+                    self.open_len = chunk.len();
+                    self.split_due = false;
+                } else {
+                    sink.append(chunk);
+                    self.open_len += chunk.len();
+                }
+                self.split_if_too_long();
             }
             State::Open => {
                 self.held.extend_from_slice(chunk);
@@ -277,17 +290,14 @@ impl Segmenter {
         self.pending.clear();
         self.held.clear();
         self.state = State::Open;
-        self.split_if_too_long(sink);
+        self.split_due = false;
+        self.split_if_too_long();
     }
 
-    fn split_if_too_long(&mut self, sink: &mut impl UtteranceSink) {
-        if self.open_len >= self.max_utterance {
-            // Split mid-speech. The next part starts right where this one ends, and is open at once so a replay
-            // following the speech doesn't stop in between.
-            sink.close();
-            sink.open(&[]);
-            self.open_len = 0;
-        }
+    /// Splits the open utterance once it reaches `max_utterance`, at its next speech frame: if it ends instead (a
+    /// pause, a flush), no part with only silence or nothing at all is left behind.
+    fn split_if_too_long(&mut self) {
+        self.split_due = self.open_len >= self.max_utterance;
     }
 
     /// Closes the open utterance after a pause, keeping `padding` of the held silence.
@@ -303,6 +313,7 @@ impl Segmenter {
         self.held = held;
         self.held.clear();
         self.open_len = 0;
+        self.split_due = false;
         self.state = State::Silent;
     }
 
@@ -553,10 +564,23 @@ mod tests {
         let mut events = Vec::new();
         seg.push(&tone(1.5), &mut events);
         let close = events.iter().position(|e| *e == SegmentEvent::Close).expect("split");
-        assert_eq!(events[close + 1], SegmentEvent::Open(Vec::new()));
+        assert!(matches!(&events[close + 1], SegmentEvent::Open(s) if !s.is_empty()));
         let published = utterances(&events);
         assert_eq!(published.len(), 2);
         assert!(published[0].1 && !published[1].1);
+    }
+
+    #[test]
+    fn splits_only_when_speech_goes_on() {
+        let config = SegmenterConfig {
+            max_utterance: Duration::from_secs(1),
+            ..Default::default()
+        };
+        // Speech that stops right at the limit, by a pause or because capture ends, leaves no silent or empty part.
+        let out = segment(&[tone(1.0), silence(2.0)], config.clone());
+        assert_eq!(out.len(), 1);
+        let out = segment(&[tone(1.0)], config);
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
