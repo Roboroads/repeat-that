@@ -171,8 +171,8 @@ pub(crate) struct DuckChange {
     pub level: f32,
 }
 
-/// 640 ms of fade steps: well past the oldest audio a capture still has to drain, its 200 ms buffer plus the time a
-/// volume change takes to reach the audio.
+/// Fade steps stay on a 10 ms grid, also from one fade to the next, so 64 of them span over 600 ms: well past the
+/// oldest audio a capture still has to drain, its 200 ms buffer plus the time a volume change takes to reach the audio.
 const DUCK_HISTORY: usize = 64;
 
 impl DuckLevel {

@@ -48,14 +48,24 @@ pub(crate) fn steps(from: f32, to: f32) -> Vec<f32> {
 /// and returns after the last one. See [`next_due`] for a ramp that falls behind. `duck_new` says whether sessions
 /// that aren't ducked yet join at this step: from the first step of a ramp down, but only at the last step of a ramp
 /// up, so they never dip and come back up.
-pub(crate) fn run(from: f32, to: f32, interval: Duration, mut step: impl FnMut(f32, bool)) {
+///
+/// `last_step` is when the latest step of any ramp started. The first step keeps an interval's distance from it too,
+/// so a ramp right after another doesn't make two steps at once; it is updated with every step.
+pub(crate) fn run(
+    from: f32,
+    to: f32,
+    interval: Duration,
+    last_step: &mut Option<Instant>,
+    mut step: impl FnMut(f32, bool),
+) {
     let levels = steps(from, to);
     let down = clamp_duck_level(to) < clamp_duck_level(from);
-    let mut due = Instant::now();
+    let mut due = last_step.map_or_else(Instant::now, |last| last + interval);
     for (i, &level) in levels.iter().enumerate() {
         thread::sleep(due.saturating_duration_since(Instant::now()));
         let started = Instant::now();
         step(level, down || i + 1 == levels.len());
+        *last_step = Some(started);
         due = next_due(due, started, interval);
     }
 }
@@ -139,7 +149,7 @@ mod tests {
     fn new_sessions_join_a_ramp_down_at_once_and_a_ramp_up_at_the_end() {
         let joins = |from, to| {
             let mut joins = Vec::new();
-            run(from, to, Duration::ZERO, |_, duck_new| joins.push(duck_new));
+            run(from, to, Duration::ZERO, &mut None, |_, duck_new| joins.push(duck_new));
             joins
         };
         assert!(joins(1.0, 0.25).iter().all(|&j| j));
@@ -153,7 +163,7 @@ mod tests {
     fn steps_are_paced() {
         let start = Instant::now();
         let mut count = 0;
-        run(1.0, 0.25, Duration::from_millis(2), |_, _| count += 1);
+        run(1.0, 0.25, Duration::from_millis(2), &mut None, |_, _| count += 1);
         assert_eq!(count, 25);
         assert!(start.elapsed() >= Duration::from_millis(48));
     }
@@ -175,10 +185,25 @@ mod tests {
     }
 
     #[test]
+    fn a_ramp_keeps_its_distance_from_the_one_before() {
+        let interval = Duration::from_millis(10);
+        let mut last_step = None;
+        run(1.0, 0.9, interval, &mut last_step, |_, _| {});
+        let previous = last_step.expect("the first ramp made a step");
+        let mut first = None;
+        run(0.9, 1.0, interval, &mut last_step, |_, _| {
+            first.get_or_insert_with(Instant::now);
+        });
+        let first = first.expect("the second ramp made a step");
+        assert!(first - previous >= interval, "{:?} apart", first - previous);
+        assert!(last_step > Some(previous));
+    }
+
+    #[test]
     fn a_ramp_that_falls_behind_doesnt_catch_up() {
         let interval = Duration::from_millis(10);
         let mut starts = Vec::new();
-        run(1.0, 0.5, interval, |_, _| {
+        run(1.0, 0.5, interval, &mut None, |_, _| {
             starts.push(Instant::now());
             // The thread doesn't get to run for a while after the second step.
             if starts.len() == 2 {
@@ -229,7 +254,7 @@ mod tests {
     /// Ramps `sessions` like the Windows backend does, and returns the journal entries after each step.
     fn ramp(sessions: &[FakeSession], from: f32, to: f32, before: &mut BeforeDuck) -> Vec<Vec<JournalEntry>> {
         let mut journals = Vec::new();
-        run(from, to, Duration::ZERO, |level, duck_new| {
+        run(from, to, Duration::ZERO, &mut None, |level, duck_new| {
             apply(sessions, level, duck_new, before);
             journals.push(before.entries().cloned().collect());
         });
@@ -285,7 +310,7 @@ mod tests {
         // The app started a session at full volume while ducked.
         let sessions = [ducked, FakeSession::new("new", 1.0)];
         let mut new_volumes = Vec::new();
-        run(0.25, 0.5, Duration::ZERO, |level, duck_new| {
+        run(0.25, 0.5, Duration::ZERO, &mut None, |level, duck_new| {
             apply(&sessions, level, duck_new, &mut before);
             new_volumes.push(sessions[1].volume.get());
         });

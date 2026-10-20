@@ -10,6 +10,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, TryLockError};
+use std::time::Instant;
 
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
@@ -123,16 +124,24 @@ impl AppAudioSource for WasapiSource {
         let duck_level = self.level(app.pid);
         // Blocks for the ramp, holding the lock, so a second call or a capture ducking new sessions can't interleave
         // with it. The callers are already off the UI thread, because the session calls block too.
-        ramp::run(duck_level.get(), level, ramp::STEP_INTERVAL, |step, duck_new| {
-            ramp::apply(&sessions, step, duck_new, &mut ducking.before_duck);
-            // Captures switch their compensation for audio the engine plays from this step's volume on.
-            duck_level.set(step, loopback::volume_takes_effect());
-            // Every step: recovery only restores sessions still at the volume the journal holds, so a journal saved
-            // less often would leave an app we die on mid-fade where it was. It comes after the step's volume and
-            // compensation, so a slow write can't misalign them; one that runs past the next step's time only
-            // stretches the fade (see `ramp::next_due`).
-            ducking.save();
-        });
+        let mut last_step = ducking.last_step;
+        ramp::run(
+            duck_level.get(),
+            level,
+            ramp::STEP_INTERVAL,
+            &mut last_step,
+            |step, duck_new| {
+                ramp::apply(&sessions, step, duck_new, &mut ducking.before_duck);
+                // Captures switch their compensation for audio the engine plays from this step's volume on.
+                duck_level.set(step, loopback::volume_takes_effect());
+                // Every step: recovery only restores sessions still at the volume the journal holds, so a journal saved
+                // less often would leave an app we die on mid-fade where it was. It comes after the step's volume and
+                // compensation, so a slow write can't misalign them; one that runs past the next step's time only
+                // stretches the fade (see `ramp::next_due`).
+                ducking.save();
+            },
+        );
+        ducking.last_step = last_step;
         // Sessions the app started during the fade aren't in it. Until they are ducked they play at full volume, and
         // captures boost them too, so this doesn't wait for a capture's next look, which may be most of a second away.
         if level < 1.0 {
@@ -177,6 +186,8 @@ struct Ducking {
     /// What the journal holds, if known, to skip writes that change nothing.
     written: Option<String>,
     guard: Guard,
+    /// When the latest fade step started, so the next fade keeps its distance.
+    last_step: Option<Instant>,
 }
 
 #[derive(Default, PartialEq)]
