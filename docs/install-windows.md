@@ -15,7 +15,7 @@ Get the installer from the [Releases page](https://github.com/Roboroads/repeat-t
 | --- | --- |
 | `Repeat-that_<version>_x64-setup.exe` | The normal installer. Installs for your user only and doesn't ask for administrator rights. |
 | `Repeat-that_<version>_x64_en-US.msi` | For managed PCs and scripted installs. Installs for all users, so it asks for administrator rights. |
-| `SHA256SUMS` | Checksums of the two installers, to [verify your download](#verify-your-download). |
+| `SHA256SUMS` | Checksums of the two installers, to [verify your download](verify-downloads.md). |
 
 If you aren't sure, take the `.exe`.
 
@@ -33,14 +33,7 @@ Captured audio stays in memory and is never written to disk; see [PRIVACY.md](..
 
 ## Verify your download
 
-Each release publishes a `SHA256SUMS` file. Compare your download with it before you run the installer. In PowerShell:
-
-```powershell
-Get-FileHash "$HOME\Downloads\Repeat-that_*_x64-setup.exe" -Algorithm SHA256
-```
-
-The `Hash` column must match the line for that file in `SHA256SUMS` (letter case doesn't matter). Do the same for the
-`.msi` if you use it.
+Compare your download with the release's `SHA256SUMS` before you run it; see [verify-downloads.md](verify-downloads.md).
 
 ## Updating and uninstalling
 
