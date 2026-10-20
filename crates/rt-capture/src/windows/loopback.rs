@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Media::Audio::{
     AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
@@ -21,7 +21,7 @@ use windows::Win32::System::Com::BLOB;
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{
-    CreateEventW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    CreateEventW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForMultipleObjects,
 };
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{HRESULT, IUnknown, Interface, Owned, Ref};
@@ -76,7 +76,8 @@ fn ensure_process_exists(pid: u32) -> Result<()> {
     Ok(())
 }
 
-/// The capture thread. Reports setup through `ready`, then delivers audio until `stop` is set or the stream fails.
+/// The capture thread. Reports setup through `ready`, then delivers audio until `stop` is set, the stream fails or the
+/// process exits.
 fn run(
     pid: u32,
     level: &DuckLevel,
@@ -85,6 +86,14 @@ fn run(
     stop: &AtomicBool,
     ready: Sender<Result<()>>,
 ) {
+    // The stream outlives the process and just goes silent, so the thread watches the process itself.
+    let process = match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+        Ok(process) => unsafe { Owned::new(process) },
+        Err(_) => {
+            let _ = ready.send(Err(CaptureError::AppNotFound(pid)));
+            return;
+        }
+    };
     let stream = match Stream::open(pid) {
         Ok(stream) => stream,
         Err(e) => {
@@ -93,6 +102,7 @@ fn run(
         }
     };
     let _ = ready.send(Ok(()));
+    let waits = [*stream.event, *process];
     let (mut frames, mut history) = (Vec::new(), Vec::new());
     let mut reducked = Instant::now();
     while !stop.load(Ordering::Relaxed) {
@@ -100,8 +110,11 @@ fn run(
             reduck();
             reducked = Instant::now();
         }
-        if unsafe { WaitForSingleObject(*stream.event, STOP_POLL_MS) } != WAIT_OBJECT_0 {
-            continue;
+        match unsafe { WaitForMultipleObjects(&waits, false, STOP_POLL_MS) } {
+            WAIT_OBJECT_0 => {}
+            WAIT_TIMEOUT => continue,
+            // The process exited (or waiting failed). The handle then reports that capture is no longer running.
+            _ => break,
         }
         // The stream can fail later on, e.g. when the audio service restarts. The handle then reports that capture is
         // no longer running.
