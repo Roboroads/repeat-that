@@ -6,7 +6,7 @@
 //! - macOS: Core Audio process taps (macOS 14.2+, planned)
 //!
 //! [`MockSource`] plays audio from memory or a WAV file as if it were an app, so the rest of the app can be developed
-//! and tested on any OS.
+//! and tested on any OS. [`app_icon`] reads the icon of an app's executable for the app list.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -18,12 +18,14 @@ use std::thread::JoinHandle;
 mod before_duck;
 pub mod duck_guard;
 mod duck_journal;
+mod icon;
 pub mod mock;
 mod process_tree;
 mod ramp;
 #[cfg(windows)]
 mod windows;
 
+pub use icon::{IconImage, app_icon};
 pub use mock::MockSource;
 #[cfg(windows)]
 pub use windows::WasapiSource;
@@ -35,7 +37,7 @@ pub struct AudioApp {
     pub pid: u32,
     /// Human-readable name, e.g. "Discord".
     pub name: String,
-    /// The executable, if known. The UI takes the app's icon from it.
+    /// The executable, if known. The UI takes the app's icon from it, see [`app_icon`].
     pub exe_path: Option<PathBuf>,
 }
 
