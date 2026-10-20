@@ -21,9 +21,12 @@ use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, WasapiSource};
 const TONE_HZ: f64 = 1000.0;
 /// The player's sine has an amplitude of 0.5, so an RMS of about 0.35 at full volume.
 const TONE_RMS: f64 = 0.354;
-/// How far the compensated capture of a ducked app may stray from its level, in any 1 ms window: one ramp step is
-/// under 1 dB.
+/// How far the compensated capture of a ducked app may stray from its level, in any 1 ms window. A fade step is under
+/// 0.5 dB and 10 ms long, and a volume change lands up to 10 ms early or 7 ms late (measured on CI), so a window can be
+/// two steps off. Three steps would take an error of over 20 ms.
 const MAX_OFF_DB: f64 = 1.5;
+/// How many times the test fades down and back up: every fade lands at its own offset from the estimate.
+const FADES: usize = 5;
 
 /// Plays a looping 1 kHz tone through `System.Media.SoundPlayer`, built in memory.
 const PLAYER: &str = "\
@@ -127,12 +130,12 @@ fn lists_captures_and_ducks_a_playing_process() {
     assert_tone(ducked, 0.9);
     assert_tone(restored, 0.9);
 
-    // Around each volume change, compensation and the actual volume can be a few milliseconds out of step. Ducking
-    // ramps in steps of under 1 dB, so no millisecond of the capture is off by more than about one step.
+    // Around each volume change, compensation and the actual volume can be up to about 10 ms out of step. Ducking fades
+    // in half-dB steps, so no millisecond of the capture is off by more than two steps.
     let profile = duck_transitions(&source, &app, full.rms);
     let mut off = Vec::new();
     for (ms, &ratio) in profile.iter().enumerate() {
-        if (ratio - 1.0).abs() > 0.05 {
+        if (ratio - 1.0).abs() > 0.04 {
             match off.last_mut() {
                 Some((start, len, lo, hi)) if *start + *len == ms => {
                     *len += 1;
@@ -143,7 +146,7 @@ fn lists_captures_and_ducks_a_playing_process() {
             }
         }
     }
-    println!("1 ms windows off by more than 5% (start ms, length ms, min×, max×): {off:.2?}");
+    println!("1 ms windows off by more than 4% (start ms, length ms, min×, max×): {off:.2?}");
     let lo = profile.iter().copied().fold(f64::INFINITY, f64::min);
     let hi = profile.iter().copied().fold(0.0, f64::max);
     let db = |ratio: f64| 20.0 * ratio.log10();
@@ -224,7 +227,7 @@ fn the_duck_guard_restores_an_app_ducked_by_a_killed_process() {
         .expect("the duck guard removes the journal once everything is restored");
 }
 
-/// Captures continuously while ducking to 25% and back three times, and returns the RMS of each 1 ms window (one
+/// Captures continuously while ducking to 25% and back [`FADES`] times, and returns the RMS of each 1 ms window (one
 /// period of the tone) relative to `full_rms`, the level of an undisturbed capture.
 fn duck_transitions(source: &WasapiSource, app: &AudioApp, full_rms: f64) -> Vec<f64> {
     let (tx, rx) = mpsc::channel::<(Vec<f32>, CaptureFormat)>();
@@ -237,7 +240,7 @@ fn duck_transitions(source: &WasapiSource, app: &AudioApp, full_rms: f64) -> Vec
         )
         .expect("capture starts");
     thread::sleep(Duration::from_millis(500));
-    for _ in 0..3 {
+    for _ in 0..FADES {
         source.set_app_volume(app, 0.25).unwrap();
         thread::sleep(Duration::from_millis(300));
         source.set_app_volume(app, 1.0).unwrap();

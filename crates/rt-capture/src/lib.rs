@@ -98,8 +98,8 @@ pub trait AppAudioSource: Send + Sync {
     /// per-app volume setting is never lost. Levels are clamped to [`MIN_DUCK_LEVEL`]–1.0.
     ///
     /// Captured audio keeps its full level while the app is ducked: backends whose capture is affected by the app's
-    /// volume (Windows) compensate for it. Those fade the volume in steps of under 1 dB, so the compensation can't be
-    /// audibly out of step with it, and return once the fade is done: about 130 ms for a duck to 25%, up to 300 ms
+    /// volume (Windows) compensate for it. Those fade the volume in half-dB steps, so the compensation can't be
+    /// audibly out of step with it, and return once the fade is done: about 240 ms for a duck to 25%, up to 520 ms
     /// for the deepest.
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()>;
 }
@@ -169,7 +169,8 @@ pub(crate) struct DuckChange {
     pub level: f32,
 }
 
-/// Enough for a few ramps; captures drain much faster than changes are made.
+/// 640 ms of fade steps: well past the oldest audio a capture still has to drain, its 200 ms buffer plus the time a
+/// volume change takes to reach the audio.
 const DUCK_HISTORY: usize = 64;
 
 impl DuckLevel {

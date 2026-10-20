@@ -1,9 +1,10 @@
 //! Ducking fades an app's volume in small steps instead of changing it at once.
 //!
 //! A capture compensates each step for audio played at that step's volume, but it can only estimate when a volume
-//! change reaches the audio: Windows doesn't say, and is a few milliseconds early or late. With one big step that
-//! leaves a few milliseconds at 4× or a quarter of the level, an audible click. With steps of under 1 dB, those
-//! milliseconds are off by one step at most, which nobody hears. The fade also sounds smoother to the user.
+//! change reaches the audio: Windows doesn't say, and on CI it came up to 10 ms early or 7 ms late, by a different
+//! amount in every fade. With one big step that leaves milliseconds at 4× or a quarter of the level, an audible click.
+//! With half-dB steps 10 ms apart, an error of up to 20 ms leaves the capture two steps (1 dB) off at most, for a few
+//! milliseconds, which nobody hears. The fade also sounds smoother to the user.
 
 // Only the Windows backend uses this so far; the tests run everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -14,11 +15,11 @@ use std::time::{Duration, Instant};
 use crate::before_duck::{BeforeDuck, Session};
 use crate::clamp_duck_level;
 
-/// The largest change in one step, in dB.
-const MAX_STEP_DB: f64 = 0.9;
+/// The largest change in one step, in dB. Small enough that being two steps off is still inaudible.
+const MAX_STEP_DB: f64 = 0.5;
 
-/// Time between steps: one period of the Windows audio engine, so each step reaches the audio on its own, and longer
-/// than the error in when it does. A duck to 25% (−12 dB) takes 14 steps, 130 ms.
+/// Time between steps: one period of the Windows audio engine, so each step reaches the audio on its own. A duck to
+/// 25% (−12 dB) takes 25 steps, 240 ms; one to the 5% minimum 53 steps, 520 ms.
 pub(crate) const STEP_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The duck levels a ramp from `from` to `to` sets, in order: equal steps in dB of at most [`MAX_STEP_DB`], the last
@@ -87,7 +88,10 @@ mod tests {
                 let path: Vec<f32> = std::iter::once(from).chain(steps.iter().copied()).collect();
                 for pair in path.windows(2) {
                     let change = db(pair[1]) - db(pair[0]);
-                    assert!(change.abs() < 1.0, "{from} → {to}: step of {change:.2} dB in {steps:?}");
+                    assert!(
+                        change.abs() <= MAX_STEP_DB + 1e-6,
+                        "{from} → {to}: step of {change:.2} dB in {steps:?}"
+                    );
                     if to < from {
                         assert!(pair[1] < pair[0], "{from} → {to}: {steps:?}");
                     } else if to > from {
@@ -99,11 +103,11 @@ mod tests {
     }
 
     #[test]
-    fn a_duck_to_a_quarter_takes_about_fifteen_steps() {
-        assert_eq!(steps(1.0, 0.25).len(), 14);
-        assert_eq!(steps(0.25, 1.0).len(), 14);
+    fn a_duck_to_a_quarter_takes_a_quarter_second() {
+        assert_eq!(steps(1.0, 0.25).len(), 25);
+        assert_eq!(steps(0.25, 1.0).len(), 25);
         // The deepest duck needs more steps to keep each one small.
-        assert_eq!(steps(1.0, MIN_DUCK_LEVEL).len(), 29);
+        assert_eq!(steps(1.0, MIN_DUCK_LEVEL).len(), 53);
     }
 
     #[test]
@@ -133,8 +137,8 @@ mod tests {
         let start = Instant::now();
         let mut count = 0;
         run(1.0, 0.25, Duration::from_millis(2), |_, _| count += 1);
-        assert_eq!(count, 14);
-        assert!(start.elapsed() >= Duration::from_millis(26));
+        assert_eq!(count, 25);
+        assert!(start.elapsed() >= Duration::from_millis(48));
     }
 
     /// A session that remembers its volume and how often ducking read it.
@@ -211,7 +215,7 @@ mod tests {
         let mut before = BeforeDuck::default();
         let journals = ramp(&sessions, 1.0, 0.25, &mut before);
         let ducked: Vec<f32> = journals.iter().map(|j| j[0].ducked).collect();
-        assert_eq!(ducked.len(), 14);
+        assert_eq!(ducked.len(), 25);
         assert!(ducked.windows(2).all(|w| w[1] < w[0]), "{ducked:?}");
         assert_eq!(ducked.last(), Some(&(0.8 * 0.25)));
         // A restore ramp keeps the session in the journal until its last step.

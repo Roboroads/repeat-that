@@ -45,10 +45,11 @@ ducking and restores it at `1.0`, so the user's own per-app volume is kept. The 
 be captured. On Windows, process loopback captures the app *after* its volume, so captures of a ducked app are
 amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level.
 
-Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency; on CI
-it lands 27–37 ms after the call), so the compensation can only switch at an estimate. Ducking therefore fades the
-volume in steps of under 1 dB, one every 10 ms (130 ms for a duck to 25%, up to 290 ms for 5%), and each captured frame
-is amplified for the step it was played at. A few milliseconds of error then leave the capture one step off at most,
+Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency), so
+the compensation can only switch at an estimate: 33 ms after the call. On CI the steps of a fade landed anywhere from
+10 ms before that to 7 ms after it, by a different amount in every fade. Ducking therefore fades the volume in half-dB
+steps, one every 10 ms (240 ms for a duck to 25%, 520 ms for 5%), and each captured frame is amplified for the step it
+was played at. An error of up to 20 ms then leaves the capture two steps (1 dB) off at most, for a few milliseconds,
 which is inaudible; CI checks that no millisecond strays by more than 1.5 dB. Restoring fades back the same way, and
 `set_app_volume` returns once the fade is done.
 
