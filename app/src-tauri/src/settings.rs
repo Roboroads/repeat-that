@@ -141,27 +141,38 @@ fn read_hotkeys(value: Option<&Value>) -> HotkeyBindings {
         catch_up: None,
     };
     let mut taken: Vec<Shortcut> = Vec::new();
+    let mut missing = Vec::new();
+    // What the file says first: a combination that is readable and not yet used is kept. `null` is unbound, and so is
+    // anything unreadable, so it can't take back a default that another action has been moved onto.
     for (action, field) in HOTKEY_ACTIONS.into_iter().zip(HOTKEY_FIELDS) {
-        let candidate = match stored.and_then(|object| object.get(field)) {
-            Some(Value::Null) => None,
-            Some(Value::String(accel)) if parse_accel(accel).is_ok() => Some(accel.trim().to_string()),
-            _ => defaults.accel(action).map(String::from),
-        };
-        // Whatever clashes with an earlier action is left unbound rather than guessed at.
-        let accepted = candidate.filter(|accel| match parse_accel(accel) {
-            Ok(shortcut) if !taken.contains(&shortcut) => {
-                taken.push(shortcut);
-                true
+        match stored.and_then(|object| object.get(field)) {
+            None => missing.push(action),
+            Some(Value::String(accel)) => {
+                if let Ok(shortcut) = parse_accel(accel)
+                    && !taken.contains(&shortcut)
+                {
+                    taken.push(shortcut);
+                    bindings.set(action, Some(accel.trim().to_string()));
+                }
             }
-            _ => false,
-        });
-        bindings.set(action, accepted);
+            Some(_) => {}
+        }
+    }
+    // Then the defaults of the actions the file doesn't mention, unless something else uses the combination now.
+    for action in missing {
+        if let Some(default) = defaults.accel(action)
+            && let Ok(shortcut) = parse_accel(default)
+            && !taken.contains(&shortcut)
+        {
+            taken.push(shortcut);
+            bindings.set(action, Some(default.to_string()));
+        }
     }
     bindings
 }
 
 /// Settings from whatever the file held: every field that is missing or of the wrong type falls back to its default,
-/// numbers are clamped into their range and a hotkey that can't be used is dropped. Always returns usable settings.
+/// numbers are clamped into their range and a hotkey that can't be used is unbound. Always returns usable settings.
 pub fn sanitize(stored: &Value) -> Settings {
     let defaults = Settings::default();
     let Some(object) = stored.as_object() else {
@@ -474,7 +485,8 @@ mod tests {
         );
         assert_eq!(
             settings.hotkeys,
-            hotkeys(Some("Ctrl+Alt+Space"), Some("Ctrl+Alt+Backspace"), Some("Ctrl+Shift+C"))
+            hotkeys(None, None, Some("Ctrl+Shift+C")),
+            "a hotkey that can't be read is unbound, not reset to the default"
         );
         assert!(!settings.autostart);
         assert!(settings.first_run_done);
@@ -562,6 +574,26 @@ mod tests {
         assert_eq!(
             settings.hotkeys,
             hotkeys(Some("Ctrl+Shift+R"), None, Some("Ctrl+Alt+Enter"))
+        );
+    }
+
+    #[test]
+    fn an_unreadable_hotkey_does_not_take_the_default_from_another_action() {
+        // Stop sits on replay's default combination and replay's own entry is garbage: replay must not grab it back.
+        let settings = sanitize(&json!({ "hotkeys": { "replay": "Ctrl+Alt+Frobnicate", "stop": "Ctrl+Alt+Space" } }));
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys(None, Some("Ctrl+Alt+Space"), Some("Ctrl+Alt+Enter"))
+        );
+    }
+
+    #[test]
+    fn a_missing_hotkey_gives_way_to_another_actions_explicit_binding() {
+        // Replay has no entry, so it would default to the combination stop was moved to.
+        let settings = sanitize(&json!({ "hotkeys": { "stop": "Ctrl+Alt+Space" } }));
+        assert_eq!(
+            settings.hotkeys,
+            hotkeys(None, Some("Ctrl+Alt+Space"), Some("Ctrl+Alt+Enter"))
         );
     }
 
