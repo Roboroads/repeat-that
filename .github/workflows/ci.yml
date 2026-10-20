@@ -30,7 +30,8 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
-      - id: filter
+      - name: Classify changed files
+        id: filter
         env:
           EVENT: ${{ github.event_name }}
         run: |
