@@ -1,6 +1,8 @@
 //! `AppAction`: what the tray menu, the hotkeys and the settings window can ask the app to do. Everything funnels
 //! through [`dispatch`].
 
+use std::sync::Arc;
+
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::tray::{self, SharedStatus};
@@ -44,12 +46,41 @@ impl AppAction {
     }
 }
 
+/// What the playback actions drive. Calls return at once; the audio engine implements this, and until it is connected
+/// [`NoEngine`] stands in.
+pub trait EngineControl: Send + Sync {
+    fn replay(&self);
+    fn stop(&self);
+    fn toggle_catch_up(&self);
+}
+
+/// The engine as managed app state.
+pub type SharedEngine = Arc<dyn EngineControl>;
+
+/// Stands in for the audio engine: logs and does nothing.
+pub struct NoEngine;
+
+impl EngineControl for NoEngine {
+    fn replay(&self) {
+        eprintln!("Replay: no audio engine connected yet");
+    }
+
+    fn stop(&self) {
+        eprintln!("Stop: no audio engine connected yet");
+    }
+
+    fn toggle_catch_up(&self) {
+        eprintln!("CatchUp: no audio engine connected yet");
+    }
+}
+
 /// What actions need from the app. The real implementation drives the windows and the tray; tests use a fake.
 pub trait ActionHost {
     fn show_settings(&self);
     fn quit(&self);
     /// Flips between paused and not paused as one step, so two toggles at once end up back where they started.
     fn toggle_paused(&self);
+    fn engine(&self) -> SharedEngine;
 }
 
 impl<R: Runtime> ActionHost for AppHandle<R> {
@@ -71,17 +102,21 @@ impl<R: Runtime> ActionHost for AppHandle<R> {
         }
         tray::refresh(self);
     }
+
+    fn engine(&self) -> SharedEngine {
+        Arc::clone(&self.state::<SharedEngine>())
+    }
 }
 
-/// Runs `action`. Replay, stop and catch-up have no engine behind them yet and only log.
+/// Runs `action`.
 pub fn dispatch(action: AppAction, host: &dyn ActionHost) {
     match action {
         AppAction::OpenSettings => host.show_settings(),
         AppAction::Quit => host.quit(),
         AppAction::TogglePause => host.toggle_paused(),
-        AppAction::Replay | AppAction::Stop | AppAction::CatchUp => {
-            eprintln!("{action:?}: no audio engine connected yet");
-        }
+        AppAction::Replay => host.engine().replay(),
+        AppAction::Stop => host.engine().stop(),
+        AppAction::CatchUp => host.engine().toggle_catch_up(),
     }
 }
 
@@ -89,11 +124,32 @@ pub fn dispatch(action: AppAction, host: &dyn ActionHost) {
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct FakeEngine {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl EngineControl for FakeEngine {
+        fn replay(&self) {
+            self.calls.lock().unwrap().push("replay");
+        }
+
+        fn stop(&self) {
+            self.calls.lock().unwrap().push("stop");
+        }
+
+        fn toggle_catch_up(&self) {
+            self.calls.lock().unwrap().push("toggle_catch_up");
+        }
+    }
 
     #[derive(Default)]
     struct FakeHost {
         paused: Cell<bool>,
         calls: RefCell<Vec<String>>,
+        engine: Arc<FakeEngine>,
     }
 
     impl FakeHost {
@@ -114,6 +170,10 @@ mod tests {
         fn toggle_paused(&self) {
             self.paused.set(!self.paused.get());
             self.calls.borrow_mut().push("toggle_paused".into());
+        }
+
+        fn engine(&self) -> SharedEngine {
+            self.engine.clone()
         }
     }
 
@@ -143,10 +203,32 @@ mod tests {
     }
 
     #[test]
-    fn playback_actions_do_nothing_until_the_engine_is_connected() {
+    fn playback_actions_reach_the_engine_and_nothing_else() {
+        let host = FakeHost::default();
         for action in [AppAction::Replay, AppAction::Stop, AppAction::CatchUp] {
-            assert!(run(action, &FakeHost::default()).is_empty(), "{action:?}");
+            assert!(run(action, &host).is_empty(), "{action:?} must not touch the windows");
         }
+        assert_eq!(
+            *host.engine.calls.lock().unwrap(),
+            ["replay", "stop", "toggle_catch_up"]
+        );
+    }
+
+    #[test]
+    fn window_actions_leave_the_engine_alone() {
+        let host = FakeHost::default();
+        for action in [AppAction::OpenSettings, AppAction::TogglePause, AppAction::Quit] {
+            dispatch(action, &host);
+        }
+        assert!(host.engine.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_placeholder_engine_ignores_every_call() {
+        let engine = NoEngine;
+        engine.replay();
+        engine.stop();
+        engine.toggle_catch_up();
     }
 
     #[test]
