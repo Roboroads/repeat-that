@@ -528,8 +528,8 @@ mod tests {
             .update(json!({ "hotkeys": { "replay": "Ctrl+Shift+R" } }))
             .unwrap();
         assert_eq!(
-            s.backend.registered(),
-            ["Ctrl+Shift+R", "Ctrl+Alt+Backspace", "Ctrl+Alt+Enter"]
+            s.backend.registered_sorted(),
+            ["Ctrl+Alt+Backspace", "Ctrl+Alt+Enter", "Ctrl+Shift+R"]
         );
         s.backend.send("Ctrl+Shift+R", KeyEdge::Pressed);
         assert_eq!(*s.actions.lock().unwrap(), [AppAction::Replay]);

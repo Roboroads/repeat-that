@@ -157,8 +157,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            h.backend.registered(),
-            ["Ctrl+Shift+R", "Ctrl+Alt+Backspace", "Ctrl+Alt+Enter"]
+            h.backend.registered_sorted(),
+            ["Ctrl+Alt+Backspace", "Ctrl+Alt+Enter", "Ctrl+Shift+R"]
         );
     }
 

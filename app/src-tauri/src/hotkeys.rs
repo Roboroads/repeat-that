@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tauri::{AppHandle, Runtime};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::actions::AppAction;
 use crate::ipc::{HotkeyBindings, HotkeyState, HotkeyStates};
@@ -73,9 +73,11 @@ impl PressTracker {
         }
     }
 
-    /// Forgets every held key, for when the registrations change under it.
-    pub fn reset(&mut self) {
-        self.held = [false; HOTKEY_ACTIONS.len()];
+    /// Forgets that `action`'s key is held, for when its registration is replaced under it.
+    pub fn release(&mut self, action: AppAction) {
+        if let Some(slot) = HOTKEY_ACTIONS.iter().position(|&a| a == action) {
+            self.held[slot] = false;
+        }
     }
 }
 
@@ -101,11 +103,37 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// One hotkey action's place in the manager.
+struct Slot {
+    /// The combination registered with the OS right now, and the spelling it was registered under.
+    live: Option<(Shortcut, String)>,
+    /// The combination that `state` was found for. A suspended manager keeps the last real answer for it.
+    tried: Option<Shortcut>,
+    state: HotkeyState,
+}
+
+impl Slot {
+    fn new() -> Self {
+        Slot {
+            live: None,
+            tried: None,
+            state: HotkeyState::Unbound,
+        }
+    }
+}
+
+/// What the settings ask of one action's hotkey.
+enum Wanted {
+    Unbound,
+    /// An accelerator that can't be understood.
+    Invalid,
+    /// A combination, with the accelerator as it is spelled.
+    Bound(Shortcut, String),
+}
+
 struct Inner {
     desired: HotkeyBindings,
-    /// Accelerators currently registered with the backend.
-    registered: Vec<String>,
-    states: HotkeyStates,
+    slots: [Slot; HOTKEY_ACTIONS.len()],
     suspended: bool,
 }
 
@@ -130,20 +158,21 @@ impl HotkeyManager {
                     stop: None,
                     catch_up: None,
                 },
-                registered: Vec::new(),
-                states: HotkeyStates::UNBOUND,
+                slots: std::array::from_fn(|_| Slot::new()),
                 suspended: false,
             }),
         }
     }
 
-    /// Makes `bindings` the registered hotkeys, replacing the old ones. While suspended it only remembers them.
+    /// Makes `bindings` the registered hotkeys. Only the combinations that changed are unregistered and registered, the
+    /// others stay as they are (so nothing else can grab them in between); combinations another app held are tried
+    /// again. While suspended it only remembers them.
     ///
     /// Registering hops to the main thread and waits for it, so don't call this from a thread the main thread waits on.
     pub fn apply(&self, bindings: &HotkeyBindings) {
         let mut inner = lock(&self.inner);
         inner.desired = bindings.clone();
-        self.register_desired(&mut inner);
+        self.reconcile(&mut inner);
     }
 
     /// Unregisters every hotkey (`true`, while the window records a combination) or registers the wanted ones again
@@ -154,47 +183,80 @@ impl HotkeyManager {
             return;
         }
         inner.suspended = suspended;
-        self.register_desired(&mut inner);
+        self.reconcile(&mut inner);
     }
 
     /// Where each hotkey stands.
     // `Status.hotkeys` reads this once the audio engine fills in the rest of the status; tested until then.
     #[allow(dead_code)]
     pub fn states(&self) -> HotkeyStates {
-        lock(&self.inner).states
+        let inner = lock(&self.inner);
+        let mut states = HotkeyStates::UNBOUND;
+        for (action, slot) in HOTKEY_ACTIONS.into_iter().zip(&inner.slots) {
+            states.set(action, slot.state);
+        }
+        states
     }
 
-    /// Drops every registration and registers `inner.desired` again, unless suspended.
-    fn register_desired(&self, inner: &mut Inner) {
-        for accel in inner.registered.drain(..) {
-            self.backend.unregister(&accel);
-        }
-        lock(&self.tracker).reset();
+    /// Brings the OS registrations to `inner.desired`, touching only what differs.
+    fn reconcile(&self, inner: &mut Inner) {
+        let Inner {
+            desired,
+            slots,
+            suspended,
+        } = inner;
+        let wanted: Vec<Wanted> = HOTKEY_ACTIONS
+            .iter()
+            .map(|&action| match desired.accel(action) {
+                None => Wanted::Unbound,
+                Some(accel) => match parse_accel(accel) {
+                    Ok(shortcut) => Wanted::Bound(shortcut, accel.trim().to_string()),
+                    Err(_) => Wanted::Invalid,
+                },
+            })
+            .collect();
 
-        let mut states = HotkeyStates::UNBOUND;
-        for action in HOTKEY_ACTIONS {
-            let state = match inner.desired.accel(action) {
-                None => HotkeyState::Unbound,
-                Some(accel) if parse_accel(accel).is_err() => HotkeyState::Invalid,
-                // While suspended nothing is registered; the window is recording and the keys are free.
-                Some(_) if inner.suspended => HotkeyState::Ok,
-                Some(accel) => {
-                    let accel = accel.trim().to_string();
-                    match self.backend.register(&accel, self.edge_handler(action)) {
+        // First let go of what is no longer wanted, so a combination can move from one action to another.
+        for ((&action, slot), wanted) in HOTKEY_ACTIONS.iter().zip(slots.iter_mut()).zip(&wanted) {
+            let still_wanted = match (&slot.live, wanted) {
+                (Some((live, _)), Wanted::Bound(shortcut, _)) => !*suspended && live == shortcut,
+                _ => false,
+            };
+            if !still_wanted && let Some((_, accel)) = slot.live.take() {
+                self.backend.unregister(&accel);
+                lock(&self.tracker).release(action);
+            }
+        }
+
+        for ((&action, slot), wanted) in HOTKEY_ACTIONS.iter().zip(slots.iter_mut()).zip(&wanted) {
+            match wanted {
+                Wanted::Unbound => (slot.state, slot.tried) = (HotkeyState::Unbound, None),
+                Wanted::Invalid => (slot.state, slot.tried) = (HotkeyState::Invalid, None),
+                Wanted::Bound(shortcut, _) if slot.live.is_some() => {
+                    (slot.state, slot.tried) = (HotkeyState::Ok, Some(*shortcut))
+                }
+                // Nothing is registered while suspended. A combination that was found out before keeps its answer
+                // (a real "in use" must not turn into "ok"), one that was just chosen has none yet.
+                Wanted::Bound(shortcut, _) if *suspended => {
+                    if slot.tried != Some(*shortcut) {
+                        (slot.state, slot.tried) = (HotkeyState::Ok, Some(*shortcut));
+                    }
+                }
+                Wanted::Bound(shortcut, accel) => {
+                    slot.tried = Some(*shortcut);
+                    match self.backend.register(accel, self.edge_handler(action)) {
                         Ok(()) => {
-                            inner.registered.push(accel);
-                            HotkeyState::Ok
+                            slot.live = Some((*shortcut, accel.clone()));
+                            slot.state = HotkeyState::Ok;
                         }
                         Err(err) => {
                             eprintln!("could not register the {action:?} hotkey {accel}: {err}");
-                            HotkeyState::InUse
+                            slot.state = HotkeyState::InUse;
                         }
                     }
                 }
-            };
-            states.set(action, state);
+            }
         }
-        inner.states = states;
     }
 
     fn edge_handler(&self, action: AppAction) -> EdgeHandler {
@@ -243,6 +305,13 @@ pub mod fake {
 
         pub fn registered(&self) -> Vec<String> {
             self.handlers.lock().unwrap().iter().map(|(a, _)| a.clone()).collect()
+        }
+
+        /// Like [`registered`](Self::registered), in a fixed order: which registration happened first doesn't matter.
+        pub fn registered_sorted(&self) -> Vec<String> {
+            let mut registered = self.registered();
+            registered.sort();
+            registered
         }
 
         pub fn send(&self, accel: &str, edge: KeyEdge) {
@@ -360,11 +429,16 @@ mod tests {
     }
 
     #[test]
-    fn reset_forgets_held_keys() {
+    fn release_forgets_the_held_key_of_one_action() {
         let mut tracker = PressTracker::default();
         tracker.on_edge(AppAction::Replay, KeyEdge::Pressed);
-        tracker.reset();
+        tracker.on_edge(AppAction::Stop, KeyEdge::Pressed);
+        tracker.release(AppAction::Replay);
         assert!(tracker.on_edge(AppAction::Replay, KeyEdge::Pressed));
+        assert!(
+            !tracker.on_edge(AppAction::Stop, KeyEdge::Pressed),
+            "stop is still held"
+        );
     }
 
     #[test]
@@ -473,7 +547,7 @@ mod tests {
         s.manager.apply(&HotkeyBindings::default());
         s.backend.clear_log();
         s.manager.apply(&bindings(Some("Ctrl+Shift+R"), Some(BACKSPACE), None));
-        assert_eq!(s.backend.registered(), ["Ctrl+Shift+R", BACKSPACE]);
+        assert_eq!(s.backend.registered_sorted(), [BACKSPACE, "Ctrl+Shift+R"]);
         assert!(s.backend.log().contains(&format!("unregister {SPACE}")));
         assert_eq!(
             s.manager.states(),
@@ -482,6 +556,70 @@ mod tests {
         // The old combination is dead, the new one works.
         s.backend.send("Ctrl+Shift+R", KeyEdge::Pressed);
         assert_eq!(*s.fired.lock().unwrap(), [AppAction::Replay]);
+    }
+
+    #[test]
+    fn combinations_that_did_not_change_are_never_released() {
+        // Between an unregister and the next register another app could take the combination.
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.clear_log();
+        s.manager
+            .apply(&bindings(Some("Ctrl+Shift+R"), Some(BACKSPACE), Some(ENTER)));
+        let log = s.backend.log();
+        assert_eq!(
+            log,
+            [format!("unregister {SPACE}"), "register Ctrl+Shift+R".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_swap_leaves_the_third_combination_alone() {
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.clear_log();
+        s.manager.apply(&bindings(Some(BACKSPACE), Some(SPACE), Some(ENTER)));
+        assert!(
+            s.backend.log().iter().all(|entry| !entry.ends_with(ENTER)),
+            "{:?}",
+            s.backend.log()
+        );
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::Ok, HotkeyState::Ok)
+        );
+    }
+
+    #[test]
+    fn the_same_combination_in_another_spelling_is_left_alone() {
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.clear_log();
+        s.manager
+            .apply(&bindings(Some("alt + CTRL + space"), Some(BACKSPACE), Some(ENTER)));
+        assert!(s.backend.log().is_empty(), "{:?}", s.backend.log());
+    }
+
+    #[test]
+    fn a_held_key_stays_held_when_only_another_action_changes() {
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.send(SPACE, KeyEdge::Pressed);
+        s.manager
+            .apply(&bindings(Some(SPACE), Some("Ctrl+Shift+S"), Some(ENTER)));
+        s.backend.send(SPACE, KeyEdge::Pressed); // key repeat
+        assert_eq!(*s.fired.lock().unwrap(), [AppAction::Replay]);
+    }
+
+    #[test]
+    fn a_combination_another_app_held_is_tried_again_on_the_next_apply() {
+        let s = setup();
+        s.backend.refuse(SPACE);
+        s.manager.apply(&HotkeyBindings::default());
+        assert_eq!(s.manager.states().replay, HotkeyState::InUse);
+        s.backend.allow(SPACE);
+        s.manager.apply(&HotkeyBindings::default());
+        assert_eq!(s.manager.states().replay, HotkeyState::Ok);
     }
 
     #[test]
@@ -543,6 +681,44 @@ mod tests {
             s.manager.states(),
             states(HotkeyState::Ok, HotkeyState::Unbound, HotkeyState::Invalid)
         );
+    }
+
+    #[test]
+    fn suspending_keeps_the_last_real_state() {
+        let s = setup();
+        s.backend.refuse(BACKSPACE);
+        s.manager.apply(&HotkeyBindings::default());
+        s.manager.set_suspended(true);
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::InUse, HotkeyState::Ok),
+            "a combination another app holds is not reported as fine just because it is not registered right now"
+        );
+        s.manager.set_suspended(false);
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::InUse, HotkeyState::Ok)
+        );
+        s.backend.allow(BACKSPACE);
+        s.manager.set_suspended(true);
+        s.manager.set_suspended(false);
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::Ok, HotkeyState::Ok)
+        );
+    }
+
+    #[test]
+    fn a_combination_changed_while_suspended_has_no_real_state_yet() {
+        let s = setup();
+        s.backend.refuse(BACKSPACE);
+        s.manager.apply(&HotkeyBindings::default());
+        s.manager.set_suspended(true);
+        s.manager
+            .apply(&bindings(Some(SPACE), Some("Ctrl+Shift+S"), Some(ENTER)));
+        assert_eq!(s.manager.states().stop, HotkeyState::Ok);
+        s.manager.set_suspended(false);
+        assert_eq!(s.manager.states().stop, HotkeyState::Ok);
     }
 
     #[test]
