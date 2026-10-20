@@ -2,10 +2,11 @@
 //! and pushed to the hotkeys and the OS autostart entry.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime};
 use tauri_plugin_store::{Store, StoreExt};
 
 use crate::actions;
@@ -32,6 +33,8 @@ pub struct SettingsService {
     autostart: Arc<dyn Autostart>,
     hotkeys: Arc<HotkeyManager>,
     on_change: ChangeListener,
+    /// Whether this run opened the settings window because it is the first run.
+    first_run_window: AtomicBool,
 }
 
 impl SettingsService {
@@ -60,6 +63,7 @@ impl SettingsService {
             autostart,
             hotkeys,
             on_change,
+            first_run_window: AtomicBool::new(false),
         }
     }
 
@@ -105,13 +109,27 @@ impl SettingsService {
         Ok(next)
     }
 
-    /// The first run ends when the user picks an app or closes the window.
+    /// The first run ends when the user picks an app or closes the window, and at the latest when the app ends
+    /// ([`end_first_run_session`](Self::end_first_run_session)).
     pub fn mark_first_run_done(&self) {
         if self.get().first_run_done {
             return;
         }
         if let Err(err) = self.update(json!({ "firstRunDone": true })) {
             eprintln!("could not remember the first run: {err}");
+        }
+    }
+
+    /// This run opened the settings window because it is the first run.
+    pub fn begin_first_run_session(&self) {
+        self.first_run_window.store(true, Ordering::SeqCst);
+    }
+
+    /// The app is ending. If this run showed the first-run window, the first run is over now, even when the window was
+    /// never closed (Quit in the tray, a logoff) and the next launch should start in the tray.
+    pub fn end_first_run_session(&self) {
+        if self.first_run_window.swap(false, Ordering::SeqCst) {
+            self.mark_first_run_done();
         }
     }
 
@@ -232,6 +250,24 @@ pub fn install_with<R: Runtime>(
         }),
     );
     app.manage(service);
+
+    // The settings window's close button is not the only way the first run ends: Quit in the tray and a logoff skip it.
+    // A plugin hears the app's run events by itself, so nothing has to forward them.
+    let lifecycle = tauri::plugin::Builder::<R>::new("settings-lifecycle")
+        .on_event(end_first_run_on_exit)
+        .build();
+    if let Err(err) = app.plugin(lifecycle) {
+        eprintln!("could not watch for the app ending: {err}");
+    }
+}
+
+/// On the app's exit, ends the first run if this run opened the first-run window.
+fn end_first_run_on_exit<R: Runtime>(app: &AppHandle<R>, event: &RunEvent) {
+    if matches!(event, RunEvent::Exit)
+        && let Some(settings) = app.try_state::<SettingsService>()
+    {
+        settings.end_first_run_session();
+    }
 }
 
 /// The event that carries the new [`Settings`] after every change.
@@ -676,6 +712,34 @@ mod tests {
     }
 
     #[test]
+    fn the_app_ending_during_the_first_run_session_ends_the_first_run() {
+        // Quit in the tray and a logoff never close the window, so this is what remembers the first run.
+        let s = setup();
+        s.service.begin_first_run_session();
+        s.service.end_first_run_session();
+        assert!(s.service.get().first_run_done);
+        assert_eq!(s.persistence.saves().len(), 1);
+        assert_eq!(s.changes.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_session_that_never_showed_the_first_run_window_leaves_the_first_run_alone() {
+        let s = setup();
+        s.service.end_first_run_session();
+        assert!(!s.service.get().first_run_done);
+        assert!(s.persistence.saves().is_empty());
+    }
+
+    #[test]
+    fn ending_the_session_after_the_first_run_was_already_done_writes_nothing() {
+        let s = setup();
+        s.service.begin_first_run_session();
+        s.service.mark_first_run_done();
+        s.service.end_first_run_session();
+        assert_eq!(s.persistence.saves().len(), 1);
+    }
+
+    #[test]
     fn marking_the_first_run_done_keeps_the_other_settings() {
         let s = setup_with(
             MemoryPersistence::holding(json!({ "bufferSeconds": 45 })),
@@ -831,6 +895,33 @@ mod store_tests {
         let app = app();
         let persistence = open(&app, &dir);
         assert!(persistence.save(&Settings::default()).is_err());
+    }
+
+    #[test]
+    fn the_app_exiting_remembers_the_first_run_across_runs() {
+        let dir = TempDir::new();
+        let start = |app: &tauri::App<MockRuntime>| {
+            install_with(
+                app.handle(),
+                Arc::new(open(app, &dir)),
+                Arc::new(FakeAutostart::default()),
+                Box::new(Arc::new(FakeBackend::default())),
+            );
+        };
+        {
+            let app = app();
+            start(&app);
+            let settings = app.state::<SettingsService>();
+            settings.begin_first_run_session();
+            // Other run events change nothing; only the exit does.
+            end_first_run_on_exit(app.handle(), &RunEvent::Ready);
+            assert!(!settings.get().first_run_done);
+            end_first_run_on_exit(app.handle(), &RunEvent::Exit);
+            assert!(settings.get().first_run_done);
+        }
+        let app = app();
+        start(&app);
+        assert!(app.state::<SettingsService>().get().first_run_done);
     }
 
     #[test]

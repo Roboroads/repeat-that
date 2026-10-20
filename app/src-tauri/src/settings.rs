@@ -210,6 +210,8 @@ fn finite(value: f64, field: &str) -> Result<f64, CommandError> {
 /// nothing is applied.
 pub fn apply_patch(current: &Settings, patch: SettingsPatch) -> Result<Settings, CommandError> {
     let mut next = current.clone();
+    // Picking an app ends the first run, whatever sends the patch (the window, or a command of the audio engine).
+    let picked_an_app = matches!(patch.target, Some(Some(_)));
 
     if let Some(target) = patch.target {
         next.target = match target {
@@ -282,6 +284,9 @@ pub fn apply_patch(current: &Settings, patch: SettingsPatch) -> Result<Settings,
     }
     if let Some(autostart) = patch.autostart {
         next.autostart = autostart;
+    }
+    if picked_an_app {
+        next.first_run_done = true;
     }
     if let Some(done) = patch.first_run_done {
         next.first_run_done = done;
@@ -622,6 +627,23 @@ mod tests {
                 level: 0.2
             }
         );
+    }
+
+    #[test]
+    fn picking_an_app_ends_the_first_run() {
+        let settings = apply(json!({ "target": { "name": "Discord" } })).unwrap();
+        assert!(settings.first_run_done);
+    }
+
+    #[test]
+    fn clearing_the_app_does_not_end_the_first_run() {
+        assert!(!apply(json!({ "target": null })).unwrap().first_run_done);
+    }
+
+    #[test]
+    fn an_explicit_first_run_flag_wins_over_picking_an_app() {
+        let settings = apply(json!({ "target": { "name": "Discord" }, "firstRunDone": false })).unwrap();
+        assert!(!settings.first_run_done);
     }
 
     #[test]

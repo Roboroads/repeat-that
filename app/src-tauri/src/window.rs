@@ -30,8 +30,10 @@ pub fn show_settings<R: Runtime>(app: &AppHandle<R>) {
 /// Opens the settings window on the first launch and keeps it closed otherwise, and always with `--hidden`. Needs the
 /// [`SettingsService`] in the managed state.
 pub fn apply_startup_visibility<R: Runtime>(app: &AppHandle<R>, args: &[String]) {
-    let first_run_done = app.state::<SettingsService>().get().first_run_done;
-    if should_show_at_startup(args, first_run_done) {
+    let settings = app.state::<SettingsService>();
+    if should_show_at_startup(args, settings.get().first_run_done) {
+        // Remembered even if this run ends without the window being closed, see `end_first_run_session`.
+        settings.begin_first_run_session();
         show_settings(app);
     }
 }
