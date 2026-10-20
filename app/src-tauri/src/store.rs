@@ -82,8 +82,20 @@ impl<R: Runtime> SettingsPersistence for StorePersistence<R> {
 
     fn save(&self, settings: &Settings) -> Result<(), String> {
         let value = serde_json::to_value(settings).map_err(|err| err.to_string())?;
+        let previous = self.store.get(SETTINGS_KEY);
         self.store.set(SETTINGS_KEY, value);
-        self.store.save().map_err(|err| err.to_string())
+        if let Err(err) = self.store.save() {
+            // The plugin writes every open store again when the app exits, so a change that was refused must not stay
+            // in memory to be persisted by that.
+            match previous {
+                Some(previous) => self.store.set(SETTINGS_KEY, previous),
+                None => {
+                    self.store.delete(SETTINGS_KEY);
+                }
+            }
+            return Err(err.to_string());
+        }
+        Ok(())
     }
 }
 
@@ -308,6 +320,30 @@ mod store_tests {
         let app = app();
         assert_eq!(open(&app, &dir).load(), None);
         assert!(!backup_of(&dir).exists());
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_trace_in_the_store() {
+        // The plugin writes every open store when the app exits, so a rejected change must not stay in memory.
+        let dir = TempDir::new();
+        let app = app();
+        let persistence = open(&app, &dir);
+        fs::create_dir_all(dir.file()).unwrap(); // a folder where the file should go
+        assert!(persistence.save(&settings()).is_err());
+        assert_eq!(persistence.load(), None);
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_last_good_settings() {
+        let dir = TempDir::new();
+        let app = app();
+        let persistence = open(&app, &dir);
+        persistence.save(&Settings::default()).unwrap();
+        fs::remove_file(dir.file()).unwrap();
+        fs::create_dir_all(dir.file()).unwrap();
+        assert!(persistence.save(&settings()).is_err());
+        let kept = persistence.load().expect("the earlier settings are still there");
+        assert_eq!(sanitize(&kept), Settings::default());
     }
 
     #[test]
