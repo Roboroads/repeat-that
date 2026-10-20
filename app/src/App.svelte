@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  // The app icon's source file: the same SVG the PNG and ICO app icons are rendered from.
+  import icon from '../src-tauri/icons/svg/app.svg';
   import AppList from './lib/components/AppList.svelte';
   import DetectionSection from './lib/components/DetectionSection.svelte';
   import DuckingSection from './lib/components/DuckingSection.svelte';
@@ -20,7 +22,7 @@
 
 <main>
   <header class="brand">
-    <img src="/icon.svg" alt="" width="28" height="28" />
+    <img class="logo" src={icon} alt="" width="28" height="28" />
     <h1>Repeat that?!</h1>
   </header>
 

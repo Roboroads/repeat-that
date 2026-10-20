@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::actions::{self, AppAction};
@@ -121,22 +121,13 @@ fn whole_seconds(duration: Duration) -> u64 {
     (duration.as_millis() as u64 + 500) / 1000
 }
 
-/// The hotkeys shown next to the menu items; `None` = not bound.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The hotkeys shown next to the menu items; `None` = not bound. Nothing is bound until the hotkey registration says
+/// so, so the default shows no hotkeys rather than ones that may not work.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HotkeyLabels {
     pub replay: Option<String>,
     pub catch_up: Option<String>,
     pub stop: Option<String>,
-}
-
-impl Default for HotkeyLabels {
-    fn default() -> Self {
-        HotkeyLabels {
-            replay: Some("Ctrl+Alt+Space".into()),
-            catch_up: Some("Ctrl+Alt+Enter".into()),
-            stop: Some("Ctrl+Alt+Backspace".into()),
-        }
-    }
 }
 
 pub const STATUS_ID: &str = "status";
@@ -209,8 +200,118 @@ pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
 
 const TRAY_ID: &str = "main";
 
-/// The tray menu, kept to update its items in place.
-struct TrayMenu<R: Runtime>(Menu<R>);
+/// Windows: a left click on the icon opens the settings and the menu is on the right click. On macOS a click on a
+/// menu bar item opens its menu (Settings is in it), and Linux's appindicator sends no click events, only the menu.
+const LEFT_CLICK_OPENS_SETTINGS: bool = cfg!(windows);
+
+/// The three tray icons, decoded once at startup. Decoding a PNG on every status change (about once a second while
+/// capturing) costs more than it is worth.
+struct TrayIcons {
+    idle: Image<'static>,
+    capturing: Image<'static>,
+    paused: Image<'static>,
+}
+
+impl TrayIcons {
+    fn load() -> tauri::Result<Self> {
+        Ok(TrayIcons {
+            idle: Image::from_bytes(include_bytes!("../icons/tray/idle.png"))?,
+            capturing: Image::from_bytes(include_bytes!("../icons/tray/capturing.png"))?,
+            paused: Image::from_bytes(include_bytes!("../icons/tray/paused.png"))?,
+        })
+    }
+
+    fn image(&self, kind: TrayIconKind) -> Image<'static> {
+        match kind {
+            TrayIconKind::Idle => &self.idle,
+            TrayIconKind::Capturing => &self.capturing,
+            TrayIconKind::Paused => &self.paused,
+        }
+        .clone()
+    }
+}
+
+/// The real tray with what [`refresh`] needs to update it, and what it shows now (`applied`).
+struct TrayView<R: Runtime> {
+    menu: Menu<R>,
+    icons: TrayIcons,
+    applied: Mutex<TrayModel>,
+}
+
+/// What can be changed on the tray. Each call says whether it worked. The real one is [`LiveTray`]; the tests use a
+/// recording fake.
+trait TrayTarget {
+    fn set_icon(&mut self, kind: TrayIconKind) -> bool;
+    fn set_tooltip(&mut self, tooltip: &str) -> bool;
+    /// Sets the text, enabled state and (for a checkbox) checked state of the menu item `item.id`.
+    fn set_item(&mut self, item: &MenuItemModel) -> bool;
+}
+
+/// Brings `tray` from `applied` to `next` by changing only what differs: a status update every second touches the
+/// tooltip and the status line, not the icon or the other items. `applied` records what the tray shows. It is locked
+/// from the comparison to the record, so it always matches the tray even if two updates overlap. Whatever fails to
+/// change keeps its old value in `applied`, so the next update tries it again.
+///
+/// The lock is held across calls into the tray, which wait for the main thread. That is fine because only the main
+/// thread gets here (see [`refresh`]), so nothing else waits on the lock.
+fn sync(applied: &Mutex<TrayModel>, next: &TrayModel, tray: &mut impl TrayTarget) {
+    let mut applied = applied.lock().unwrap_or_else(PoisonError::into_inner);
+    if applied.icon != next.icon && tray.set_icon(next.icon) {
+        applied.icon = next.icon;
+    }
+    if applied.tooltip != next.tooltip && tray.set_tooltip(&next.tooltip) {
+        applied.tooltip.clone_from(&next.tooltip);
+    }
+    for entry in &next.entries {
+        let MenuEntry::Item(item) = entry else { continue };
+        if let Some(shown) = find_item(&mut applied.entries, item.id)
+            && shown != item
+            && tray.set_item(item)
+        {
+            shown.clone_from(item);
+        }
+    }
+}
+
+fn find_item<'a>(entries: &'a mut [MenuEntry], id: &str) -> Option<&'a mut MenuItemModel> {
+    entries.iter_mut().find_map(|entry| match entry {
+        MenuEntry::Item(item) if item.id == id => Some(item),
+        _ => None,
+    })
+}
+
+struct LiveTray<'a, R: Runtime> {
+    tray: &'a TrayIcon<R>,
+    view: &'a TrayView<R>,
+}
+
+impl<R: Runtime> TrayTarget for LiveTray<'_, R> {
+    fn set_icon(&mut self, kind: TrayIconKind) -> bool {
+        self.tray.set_icon(Some(self.view.icons.image(kind))).is_ok()
+    }
+
+    fn set_tooltip(&mut self, tooltip: &str) -> bool {
+        self.tray.set_tooltip(Some(tooltip)).is_ok()
+    }
+
+    fn set_item(&mut self, item: &MenuItemModel) -> bool {
+        match self.view.menu.get(item.id) {
+            Some(MenuItemKind::MenuItem(menu_item)) => {
+                let text = menu_item.set_text(&item.label);
+                let enabled = menu_item.set_enabled(item.enabled);
+                text.is_ok() && enabled.is_ok()
+            }
+            Some(MenuItemKind::Check(check)) => {
+                let text = check.set_text(&item.label);
+                let enabled = check.set_enabled(item.enabled);
+                let checked = check.set_checked(item.checked.unwrap_or(false));
+                text.is_ok() && enabled.is_ok() && checked.is_ok()
+            }
+            // The menu is built from the same model, so every item is there; nothing to retry otherwise.
+            _ => true,
+        }
+    }
+}
 
 /// The shared status the tray shows. Locked briefly; never held across a call into the UI toolkit.
 pub type SharedStatus = Mutex<TrayStatus>;
@@ -224,60 +325,63 @@ pub fn lock_status(status: &SharedStatus) -> MutexGuard<'_, TrayStatus> {
 pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let model = current_model(app);
     let menu = build_menu(app, &model)?;
+    let icons = TrayIcons::load()?;
     TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon_image(model.icon)?)
+        .icon(icons.image(model.icon))
         .tooltip(&model.tooltip)
         .menu(&menu)
-        // Windows: a left click opens the settings, the menu is on the right click. Linux (appindicator) doesn't send
-        // click events and only has the menu.
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(!LEFT_CLICK_OPENS_SETTINGS)
         .on_menu_event(|app, event| {
             if let Some(action) = AppAction::from_id(event.id().as_ref()) {
                 actions::dispatch(action, app);
             }
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
+            if LEFT_CLICK_OPENS_SETTINGS
+                && let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
             {
                 actions::dispatch(AppAction::OpenSettings, tray.app_handle());
             }
         })
         .build(app)?;
-    app.manage(TrayMenu(menu));
+    app.manage(TrayView {
+        menu,
+        icons,
+        applied: Mutex::new(model),
+    });
     Ok(())
 }
 
 /// Shows the current [`SharedStatus`] in the tray: icon, tooltip and menu items.
+///
+/// The update runs on the main thread, in the order the requests came in, and reads the status when it runs, not when
+/// it was asked for. So two refreshes from different threads can't land out of order and leave the tray on a stale
+/// state: the last one to run always shows the latest status. It also makes the icon bookkeeping single-threaded.
 pub fn refresh<R: Runtime>(app: &AppHandle<R>) {
-    let model = current_model(app);
-    if let Some(menu) = app.try_state::<TrayMenu<R>>() {
-        for entry in &model.entries {
-            let MenuEntry::Item(item) = entry else { continue };
-            // Best effort: a menu item that can't be updated keeps its old text.
-            match menu.0.get(item.id) {
-                Some(MenuItemKind::MenuItem(menu_item)) => {
-                    let _ = menu_item.set_text(&item.label);
-                    let _ = menu_item.set_enabled(item.enabled);
-                }
-                Some(MenuItemKind::Check(check)) => {
-                    let _ = check.set_text(&item.label);
-                    let _ = check.set_enabled(item.enabled);
-                    let _ = check.set_checked(item.checked.unwrap_or(false));
-                }
-                _ => {}
-            }
-        }
-    }
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        if let Ok(image) = icon_image(model.icon) {
-            let _ = tray.set_icon(Some(image));
-        }
-        let _ = tray.set_tooltip(Some(model.tooltip));
-    }
+    let handle = app.clone();
+    // Best effort: without an event loop there is no tray to update.
+    let _ = app.run_on_main_thread(move || apply_status(&handle));
+}
+
+/// The body of [`refresh`]; main thread only.
+fn apply_status<R: Runtime>(app: &AppHandle<R>) {
+    let next = current_model(app);
+    // Before `setup` (and in tests without a tray) there is nothing to update.
+    let (Some(view), Some(tray)) = (app.try_state::<TrayView<R>>(), app.tray_by_id(TRAY_ID)) else {
+        return;
+    };
+    sync(
+        &view.applied,
+        &next,
+        &mut LiveTray {
+            tray: &tray,
+            view: &view,
+        },
+    );
 }
 
 fn current_model<R: Runtime>(app: &AppHandle<R>) -> TrayModel {
@@ -311,15 +415,6 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, model: &TrayModel) -> tauri::Resul
         }
     }
     Ok(menu)
-}
-
-fn icon_image(kind: TrayIconKind) -> tauri::Result<Image<'static>> {
-    let png: &[u8] = match kind {
-        TrayIconKind::Idle => include_bytes!("../icons/tray/idle.png"),
-        TrayIconKind::Capturing => include_bytes!("../icons/tray/capturing.png"),
-        TrayIconKind::Paused => include_bytes!("../icons/tray/paused.png"),
-    };
-    Image::from_bytes(png)
 }
 
 #[cfg(test)]
@@ -440,9 +535,25 @@ mod tests {
         assert_eq!(model.tooltip, "Repeat that?! - No app selected");
     }
 
+    fn bound_hotkeys() -> HotkeyLabels {
+        HotkeyLabels {
+            replay: Some("Ctrl+Alt+Space".into()),
+            catch_up: Some("Ctrl+Alt+Enter".into()),
+            stop: Some("Ctrl+Alt+Backspace".into()),
+        }
+    }
+
+    #[test]
+    fn no_hotkeys_are_shown_until_they_are_registered() {
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        assert_eq!(item(&model, AppAction::Replay.id()).label, "Replay");
+        assert_eq!(item(&model, AppAction::CatchUp.id()).label, "Catch-up");
+        assert_eq!(item(&model, AppAction::Stop.id()).label, "Stop");
+    }
+
     #[test]
     fn menu_layout() {
-        let model = build_model(&capturing("Discord", 24), &HotkeyLabels::default());
+        let model = build_model(&capturing("Discord", 24), &bound_hotkeys());
         let layout: Vec<String> = model
             .entries
             .iter()
@@ -541,5 +652,155 @@ mod tests {
         let mut status = capturing("Discord", 30);
         status.set_paused(false);
         assert_eq!(status, capturing("Discord", 30));
+    }
+
+    #[test]
+    fn all_tray_icons_decode_to_distinct_images() {
+        let icons = TrayIcons::load().expect("the embedded icons decode");
+        let rgba = |kind| icons.image(kind).rgba().to_vec();
+        assert_ne!(rgba(TrayIconKind::Idle), rgba(TrayIconKind::Capturing));
+        assert_ne!(rgba(TrayIconKind::Idle), rgba(TrayIconKind::Paused));
+        assert_ne!(rgba(TrayIconKind::Capturing), rgba(TrayIconKind::Paused));
+    }
+
+    /// A tray that records what it was asked to change. `fail` makes the call that matches fail.
+    #[derive(Default)]
+    struct FakeTray {
+        calls: Vec<String>,
+        fail: Option<&'static str>,
+    }
+
+    impl FakeTray {
+        fn call(&mut self, call: String) -> bool {
+            let works = self.fail != Some(call.as_str());
+            self.calls.push(call);
+            works
+        }
+    }
+
+    impl TrayTarget for FakeTray {
+        fn set_icon(&mut self, kind: TrayIconKind) -> bool {
+            self.call(format!("icon {kind:?}"))
+        }
+
+        fn set_tooltip(&mut self, _tooltip: &str) -> bool {
+            self.call("tooltip".into())
+        }
+
+        fn set_item(&mut self, item: &MenuItemModel) -> bool {
+            self.call(format!("item {}", item.id))
+        }
+    }
+
+    fn model(status: &TrayStatus) -> TrayModel {
+        build_model(status, &HotkeyLabels::default())
+    }
+
+    /// Syncs a tray showing `from` to `to` and returns what was changed.
+    fn changes(from: &TrayStatus, to: &TrayStatus) -> Vec<String> {
+        let mut tray = FakeTray::default();
+        sync(&Mutex::new(model(from)), &model(to), &mut tray);
+        tray.calls
+    }
+
+    #[test]
+    fn nothing_is_touched_when_nothing_changed() {
+        assert!(changes(&capturing("Discord", 30), &capturing("Discord", 30)).is_empty());
+    }
+
+    #[test]
+    fn a_tick_of_speech_only_touches_the_tooltip_and_the_status_line() {
+        assert_eq!(
+            changes(&capturing("Discord", 30), &capturing("Discord", 31)),
+            ["tooltip", "item status"]
+        );
+    }
+
+    #[test]
+    fn pausing_touches_the_icon_the_status_line_and_the_checkbox() {
+        let mut paused = capturing("Discord", 30);
+        paused.set_paused(true);
+        assert_eq!(
+            changes(&capturing("Discord", 30), &paused),
+            ["icon Paused", "tooltip", "item status", "item toggle_pause"]
+        );
+    }
+
+    #[test]
+    fn changed_hotkey_labels_touch_only_their_items() {
+        let status = TrayStatus::default();
+        let hotkeys = HotkeyLabels {
+            replay: Some("Ctrl+R".into()),
+            ..HotkeyLabels::default()
+        };
+        let mut tray = FakeTray::default();
+        sync(&Mutex::new(model(&status)), &build_model(&status, &hotkeys), &mut tray);
+        assert_eq!(tray.calls, ["item replay"]);
+    }
+
+    #[test]
+    fn a_failed_change_is_tried_again_and_the_rest_is_not() {
+        let mut paused = capturing("Discord", 30);
+        paused.set_paused(true);
+        let applied = Mutex::new(model(&capturing("Discord", 30)));
+        let next = model(&paused);
+
+        let mut broken = FakeTray {
+            fail: Some("icon Paused"),
+            ..FakeTray::default()
+        };
+        sync(&applied, &next, &mut broken);
+        assert_eq!(
+            broken.calls,
+            ["icon Paused", "tooltip", "item status", "item toggle_pause"]
+        );
+
+        let mut working = FakeTray::default();
+        sync(&applied, &next, &mut working);
+        assert_eq!(working.calls, ["icon Paused"]);
+        sync(&applied, &next, &mut working);
+        assert_eq!(working.calls, ["icon Paused"]);
+    }
+
+    #[test]
+    fn what_is_recorded_is_what_the_tray_got_last_even_when_updates_overlap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // A tray that remembers the icon it got last, by index into `KINDS`.
+        struct IconTray<'a>(&'a AtomicUsize);
+        impl TrayTarget for IconTray<'_> {
+            fn set_icon(&mut self, kind: TrayIconKind) -> bool {
+                self.0
+                    .store(KINDS.iter().position(|k| *k == kind).unwrap(), Ordering::SeqCst);
+                true
+            }
+            fn set_tooltip(&mut self, _: &str) -> bool {
+                true
+            }
+            fn set_item(&mut self, _: &MenuItemModel) -> bool {
+                true
+            }
+        }
+        const KINDS: [TrayIconKind; 3] = [TrayIconKind::Idle, TrayIconKind::Capturing, TrayIconKind::Paused];
+
+        let applied = Mutex::new(model(&TrayStatus::default()));
+        let on_tray = AtomicUsize::new(0);
+        let models = KINDS.map(|kind| TrayModel {
+            icon: kind,
+            ..model(&TrayStatus::default())
+        });
+
+        std::thread::scope(|scope| {
+            for thread in 0..4 {
+                let (applied, on_tray, models) = (&applied, &on_tray, &models);
+                scope.spawn(move || {
+                    for step in 0..2000 {
+                        sync(applied, &models[(thread + step) % KINDS.len()], &mut IconTray(on_tray));
+                    }
+                });
+            }
+        });
+
+        assert_eq!(applied.lock().unwrap().icon, KINDS[on_tray.load(Ordering::SeqCst)]);
     }
 }

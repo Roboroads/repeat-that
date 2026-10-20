@@ -60,6 +60,15 @@ describe('loading', () => {
     await waitFor(() => expect(screen.getByRole('slider', { name: 'Buffer length' })).toBeInTheDocument());
   });
 
+  it('shows the app icon from its source SVG', async () => {
+    const { container } = await renderApp();
+
+    // Vite turns the imported file into a URL (a data URI in tests, a hashed file in the build), not a public path.
+    const src = container.querySelector('img.logo')?.getAttribute('src');
+    expect(src).toMatch(/svg/);
+    expect(src).not.toBe('/icon.svg');
+  });
+
   it('applies a settings-changed event from the backend', async () => {
     await renderApp();
 
