@@ -14,10 +14,21 @@ const SETTINGS_KEY: &str = "settings";
 const FIRST_RUN_KEY: &str = "firstRunDone";
 const STORE_FILE: &str = "settings.json";
 
+/// Whether the launch arguments ask for the window to stay closed.
+fn is_hidden_launch<S: AsRef<str>>(args: &[S]) -> bool {
+    args.iter().any(|arg| arg.as_ref() == HIDDEN_ARG)
+}
+
 /// Whether the settings window opens at startup: on the first launch only, and never with `--hidden`.
 pub fn should_show_at_startup<S: AsRef<str>>(args: &[S], first_run_done: bool) -> bool {
-    let hidden = args.iter().any(|arg| arg.as_ref() == HIDDEN_ARG);
-    !hidden && !first_run_done
+    !is_hidden_launch(args) && !first_run_done
+}
+
+/// Whether a second launch of the app opens the settings window of the running one: always, except with `--hidden`.
+/// The autostart entry passes `--hidden`, so it must not pop the window up when the app already runs (for instance
+/// when the user started it by hand before logging in again).
+pub fn should_show_on_second_launch<S: AsRef<str>>(args: &[S]) -> bool {
+    !is_hidden_launch(args)
 }
 
 /// `firstRunDone` in the stored settings object; false when missing or not a boolean.
@@ -48,6 +59,13 @@ pub fn show_settings<R: Runtime>(app: &AppHandle<R>) {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+/// Handles a second launch, whose `args` the single-instance plugin hands to the running app.
+pub fn on_second_launch<R: Runtime>(app: &AppHandle<R>, args: &[String]) {
+    if should_show_on_second_launch(args) {
+        show_settings(app);
+    }
 }
 
 /// Opens the settings window on the first launch and keeps it closed otherwise, and always with `--hidden`.
@@ -138,6 +156,21 @@ mod tests {
             &args(&["repeat-that", "--hiddenly", "hidden"]),
             false
         ));
+    }
+
+    #[test]
+    fn a_second_launch_opens_the_window() {
+        assert!(should_show_on_second_launch(&args(&["repeat-that"])));
+    }
+
+    #[test]
+    fn a_second_hidden_launch_leaves_the_window_alone() {
+        assert!(!should_show_on_second_launch(&args(&["repeat-that", "--hidden"])));
+    }
+
+    #[test]
+    fn only_the_exact_hidden_argument_counts_on_a_second_launch() {
+        assert!(should_show_on_second_launch(&args(&["repeat-that", "--hiddenly"])));
     }
 
     #[test]
