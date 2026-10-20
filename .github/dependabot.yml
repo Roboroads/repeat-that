@@ -13,7 +13,10 @@ updates:
         patterns: ["*"]
     ignore:
       # The `windows` crate has no release past 0.62.2 on crates.io (0.100 is unpublished, see
-      # microsoft/windows-rs#4867), and windows-core 0.100 does not mix with it. Drop this once `windows` 0.100 is out.
+      # microsoft/windows-rs#4867), and windows-core 0.100 does not mix with it. Both stay ignored so Dependabot can't
+      # bump one without the other; upgrade them by hand together and drop these two rules once `windows` 0.100 is out.
+      - dependency-name: windows
+        versions: [">= 0.100.0"]
       - dependency-name: windows-core
         versions: [">= 0.100.0"]
   - package-ecosystem: npm
