@@ -177,11 +177,8 @@ impl Segmenter {
             frame.extend(self.raw.drain(..take));
             self.raw_start += take as u64;
 
-            let threshold = match self.state {
-                State::Silent => self.threshold,
-                State::Pending | State::Open => self.threshold - self.hysteresis,
-            };
-            self.on_frame(&frame, probability >= threshold, sink);
+            let is_speech = self.is_speech(probability);
+            self.on_frame(&frame, is_speech, sink);
         }
         self.frame = frame;
         self.vad_pending.drain(..consumed);
@@ -189,21 +186,31 @@ impl Segmenter {
 
     /// Ends the open utterance, if any, e.g. when capture stops. Pending speech too short to report is dropped.
     pub fn flush(&mut self, sink: &mut impl UtteranceSink) {
+        if !self.raw.is_empty() {
+            // The samples too recent to fill a whole VAD frame are classified as one, padded with silence, so a word
+            // that started in them isn't cut off.
+            let mut last = std::mem::take(&mut self.vad_pending);
+            last.resize(self.vad.frame_len(), 0.0);
+            let probability = self.vad.speech_probability(&last);
+            let mut frame = std::mem::take(&mut self.frame);
+            frame.clear();
+            frame.extend(self.raw.drain(..));
+            let is_speech = self.is_speech(probability);
+            self.on_frame(&frame, is_speech, sink);
+            self.frame = frame;
+        }
         if self.state == State::Open {
-            if self.held.is_empty() {
-                // Samples too recent to fill a whole VAD frame belong to the ongoing utterance.
-                let (front, back) = self.raw.as_slices();
-                for part in [front, back] {
-                    if !part.is_empty() {
-                        sink.append(part);
-                    }
-                }
-                sink.close();
-            } else {
-                self.close(sink);
-            }
+            self.close(sink);
         }
         self.reset();
+    }
+
+    fn is_speech(&self, probability: f32) -> bool {
+        let threshold = match self.state {
+            State::Silent => self.threshold,
+            State::Pending | State::Open => self.threshold - self.hysteresis,
+        };
+        probability >= threshold
     }
 
     /// Drops all pending audio and state.
@@ -467,6 +474,19 @@ mod tests {
     fn flush_emits_unfinished_utterance() {
         let out = segment(&[silence(0.5), tone(1.0)], SegmenterConfig::default());
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn flush_keeps_a_word_started_in_the_last_partial_frame() {
+        // 30 VAD frames of speech, a 10-frame pause, then speech too short to fill a frame when capture stops.
+        let speech = tone(1.0)[..30 * FRAME].to_vec();
+        let pause = vec![0.0; 10 * FRAME];
+        let word = tone(0.1)[..1000].to_vec();
+        let out = segment(
+            &[speech.clone(), pause.clone(), word.clone()],
+            SegmenterConfig::default(),
+        );
+        assert_eq!(out, vec![[speech, pause, word].concat()]);
     }
 
     #[test]
