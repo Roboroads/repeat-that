@@ -119,6 +119,12 @@ hardened runtime and ships `com.apple.security.device.audio-input`, but it is al
 entitlement is needed here. Put entitlements in an `Entitlements.plist` set through `bundle.macOS.entitlements`, test on
 a signed, notarized build, and keep only what capture turns out to need.
 
+Tauri signs the `.dmg` with the same identity, but it notarizes and staples only the `.app` inside it. Milestone 6 also
+has to notarize and staple the `.dmg` in the release workflow (`xcrun notarytool submit` with the same API key, then
+`xcrun stapler staple`), and check the file that gets uploaded:
+`spctl -a -t open --context context:primary-signature -v` and `xcrun stapler validate` on the `.dmg`, and
+`xcrun stapler validate` on the app inside.
+
 The Tauri updater verifies updates with its own key pair (stored as a GitHub Actions secret), separate from the Apple
 and Windows code signing.
 
