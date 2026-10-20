@@ -69,3 +69,4 @@ Contributions are very welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Pleas
 ## License
 
 Repeat that?! is free software, licensed under the [GNU General Public License v3.0 or later](LICENSE).
+
