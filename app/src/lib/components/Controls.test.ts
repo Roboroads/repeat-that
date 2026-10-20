@@ -154,10 +154,15 @@ describe('general section', () => {
     platform.mockRestore();
   });
 
-  it('links to the privacy statement', async () => {
+  it('links to the privacy statement and opens it outside the window', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
     await renderApp();
 
     const link = screen.getByRole('link', { name: /Audio stays in memory only/ });
     expect(link.getAttribute('href')).toMatch(/PRIVACY\.md$/);
+    await fireEvent.click(link);
+
+    expect(open).toHaveBeenCalledWith(link.getAttribute('href'), '_blank', 'noopener,noreferrer');
+    open.mockRestore();
   });
 });
