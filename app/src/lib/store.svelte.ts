@@ -38,36 +38,21 @@ export class SettingsStore {
   private devicesBusy = false;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  /** Subscribes to the backend's events, loads everything, and starts refreshing the app list while visible. */
+  /** Loads everything, subscribes to the backend's events, and starts refreshing the app list while visible. */
   async start(): Promise<void> {
     this.disposed = false;
-    try {
-      const unlisteners = await Promise.all([
-        api.onStatus((status) => {
-          this.status = status;
-        }),
-        api.onSettingsChanged((settings) => {
-          // An answer to our own update is on its way and is the newer truth.
-          if (this.inFlight === 0) this.settings = settings;
-        }),
-      ]);
-      if (this.disposed) {
-        unlisteners.forEach((unlisten) => unlisten());
-        return;
-      }
-      this.unlisteners = unlisteners;
-    } catch (raw) {
-      this.loadError = api.toApiError(raw).message;
-      return;
-    }
     document.addEventListener('visibilitychange', this.onVisibility);
     await this.load();
   }
 
-  /** (Re)loads settings and status; the apps and devices follow without holding the page back. */
+  /**
+   * (Re)subscribes if that has not worked yet, then (re)loads settings and status; the apps and devices follow
+   * without holding the page back. Also what "Try again" runs.
+   */
   async load(): Promise<void> {
     this.loadError = null;
     try {
+      await this.subscribe();
       const [settings, status] = await Promise.all([api.getSettings(), api.getStatus()]);
       if (this.disposed) return;
       this.settings = settings;
@@ -79,6 +64,33 @@ export class SettingsStore {
     if (this.isVisible()) this.startPolling();
     void this.refreshDevices();
     await this.refreshApps();
+  }
+
+  /** Listens to `status` and `settings-changed`. Does nothing when it already does; throws when it cannot. */
+  private async subscribe(): Promise<void> {
+    if (this.unlisteners.length > 0) return;
+    const unlisteners: api.Unlisten[] = [];
+    try {
+      unlisteners.push(
+        await api.onStatus((status) => {
+          this.status = status;
+        }),
+      );
+      unlisteners.push(
+        await api.onSettingsChanged((settings) => {
+          // An answer to our own update is on its way and is the newer truth.
+          if (this.inFlight === 0) this.settings = settings;
+        }),
+      );
+    } catch (error) {
+      unlisteners.forEach((unlisten) => unlisten());
+      throw error;
+    }
+    if (this.disposed) {
+      unlisteners.forEach((unlisten) => unlisten());
+      return;
+    }
+    this.unlisteners = unlisteners;
   }
 
   dispose(): void {

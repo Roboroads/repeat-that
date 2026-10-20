@@ -1,11 +1,12 @@
 import { emit } from '@tauri-apps/api/event';
+import { mockIPC } from '@tauri-apps/api/mocks';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import App from './App.svelte';
 import css from './app.css?raw';
 import type { AppEntry, Status } from './lib/api';
 import { defaultSettings } from './lib/defaults';
-import { mockApps, scenarioInit } from './lib/mock-ipc';
+import { MockBackend, mockApps, scenarioInit } from './lib/mock-ipc';
 import { argsOf, installBackend, renderApp } from './test-utils';
 
 const discord: AppEntry = { pid: 4120, name: 'Discord', exePath: 'C:\\Apps\\Discord.exe', icon: null };
@@ -58,6 +59,26 @@ describe('loading', () => {
     healthy = true;
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.getByRole('slider', { name: 'Buffer length' })).toBeInTheDocument());
+  });
+
+  it('subscribes to the backend events again when trying again after they failed', async () => {
+    const backend = new MockBackend({ apps: [discord], settings: { target }, emit: (e, p) => void emit(e, p) });
+    mockIPC(
+      (cmd, args) => {
+        if (cmd.startsWith('plugin:event|')) throw 'events are down';
+        return backend.handle(cmd, args);
+      },
+      { shouldMockEvents: false },
+    );
+    render(App);
+    expect(await screen.findByRole('alert')).toHaveTextContent('events are down');
+
+    mockIPC(backend.handle, { shouldMockEvents: true });
+    await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    const bar = await screen.findByRole('region', { name: 'Status' });
+    backend.tick(40_000);
+
+    expect(await within(bar).findByText('24 s of speech buffered')).toBeInTheDocument();
   });
 
   it('shows the app icon from its source SVG', async () => {
