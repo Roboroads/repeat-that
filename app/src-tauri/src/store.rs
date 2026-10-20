@@ -8,7 +8,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::{Store, StoreExt};
 
-use crate::ipc::Settings;
+use crate::ipc::{SETTINGS_VERSION, Settings};
 use crate::service::SettingsPersistence;
 
 /// Name of the settings file in the app config dir.
@@ -34,12 +34,29 @@ const SETTINGS_KEY: &str = "settings";
 ///
 /// A file that holds something else than a JSON object is moved aside (see [`set_aside_corrupt_file`]). A file that
 /// can't be read, or can't be moved aside, is never written over: saving is refused until it can be dealt with, so
-/// the empty store the plugin opens in its place can't replace what the user had.
+/// the empty store the plugin opens in its place can't replace what the user had. Neither is a file that a newer
+/// version of the app wrote. Saving a file this version does understand keeps the fields it doesn't know.
 pub struct StorePersistence<R: Runtime> {
     store: Arc<Store<R>>,
     path: PathBuf,
     /// Why saving is refused, while it is.
-    blocked: Mutex<Option<String>>,
+    blocked: Mutex<Option<Block>>,
+}
+
+/// Why a [`StorePersistence`] refuses to save.
+enum Block {
+    /// The file can't be read or moved aside; looked at again before each save.
+    Unreadable(String),
+    /// A newer version of the app wrote the file; stays so while this version runs.
+    Newer(String),
+}
+
+impl Block {
+    fn message(&self) -> &str {
+        match self {
+            Block::Unreadable(message) | Block::Newer(message) => message,
+        }
+    }
 }
 
 impl<R: Runtime> StorePersistence<R> {
@@ -51,8 +68,8 @@ impl<R: Runtime> StorePersistence<R> {
                 path.display()
             ));
         }
-        let blocked = match set_aside_corrupt_file(path) {
-            Aside::Failed(reason) => Some(reason),
+        let mut blocked = match set_aside_corrupt_file(path) {
+            Aside::Failed(reason) => Some(Block::Unreadable(reason)),
             Aside::Nothing | Aside::Moved => None,
         };
         // Saved explicitly with the result checked, not in the background.
@@ -61,9 +78,18 @@ impl<R: Runtime> StorePersistence<R> {
             .disable_auto_save()
             .build()
             .map_err(|err| err.to_string())?;
+        if blocked.is_none()
+            && let Some(version) = stored_version(store.get(SETTINGS_KEY).as_ref())
+            && version > u64::from(SETTINGS_VERSION)
+        {
+            blocked = Some(Block::Newer(format!(
+                "The settings were saved by a newer version of Repeat that?! (settings version {version}). This version \
+                 reads them but leaves the file alone, so changes can't be saved."
+            )));
+        }
         if blocked.is_some() {
-            // The plugin saves every store it knows when the app exits. This one holds nothing of the file, so it must
-            // not be among them.
+            // The plugin saves every store it knows when the app exits. This one must not be among them: it holds
+            // nothing of a file we couldn't read, and must not rewrite one we must not touch.
             store.close_resource();
         }
         Ok(StorePersistence {
@@ -77,16 +103,36 @@ impl<R: Runtime> StorePersistence<R> {
     /// a virus scanner or a backup tool, say) may be gone by now.
     fn check_writable(&self) -> Result<(), String> {
         let mut blocked = crate::service::lock(&self.blocked);
-        if blocked.is_some() {
+        if let Some(Block::Unreadable(_)) = *blocked {
             match set_aside_corrupt_file(&self.path) {
-                Aside::Failed(reason) => {
-                    *blocked = Some(reason.clone());
-                    return Err(reason);
-                }
+                Aside::Failed(reason) => *blocked = Some(Block::Unreadable(reason)),
                 Aside::Nothing | Aside::Moved => *blocked = None,
             }
         }
-        Ok(())
+        match &*blocked {
+            Some(block) => Err(block.message().to_string()),
+            None => Ok(()),
+        }
+    }
+}
+
+/// The `version` of a stored settings object, if it has one.
+fn stored_version(stored: Option<&Value>) -> Option<u64> {
+    stored?.get("version")?.as_u64()
+}
+
+/// `new` laid over `old`: objects merge key by key, so fields that only a newer version knows stay where they were,
+/// and anything else in `new` replaces what was there.
+fn overlay(old: Option<Value>, new: Value) -> Value {
+    match (old, new) {
+        (Some(Value::Object(mut old)), Value::Object(new)) => {
+            for (key, value) in new {
+                let merged = overlay(old.remove(&key), value);
+                old.insert(key, merged);
+            }
+            Value::Object(old)
+        }
+        (_, new) => new,
     }
 }
 
@@ -143,7 +189,7 @@ impl<R: Runtime> SettingsPersistence for StorePersistence<R> {
         self.check_writable()?;
         let value = serde_json::to_value(settings).map_err(|err| err.to_string())?;
         let previous = self.store.get(SETTINGS_KEY);
-        self.store.set(SETTINGS_KEY, value);
+        self.store.set(SETTINGS_KEY, overlay(previous.clone(), value));
         if let Err(err) = self.store.save() {
             // The plugin writes every open store again when the app exits, so a change that was refused must not stay
             // in memory to be persisted by that.
@@ -373,6 +419,88 @@ mod store_tests {
         assert_eq!(fs::read_to_string(backup_of(&dir)).unwrap(), "{ this is not json");
         let file: Value = serde_json::from_str(&fs::read_to_string(dir.file()).unwrap()).unwrap();
         assert_eq!(file["settings"]["bufferSeconds"], 75);
+    }
+
+    fn write_settings_file(dir: &TempDir, content: &Value) {
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(dir.file(), content.to_string()).unwrap();
+    }
+
+    fn read_file(dir: &TempDir) -> Value {
+        serde_json::from_str(&fs::read_to_string(dir.file()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn fields_only_a_newer_version_knows_survive_a_save() {
+        let dir = TempDir::new();
+        write_settings_file(
+            &dir,
+            &json!({
+                "settings": {
+                    "version": 1,
+                    "bufferSeconds": 30,
+                    "futureThing": { "a": 1 },
+                    "duck": { "enabled": true, "level": 0.2, "curve": "log" },
+                    "hotkeys": { "replay": "Ctrl+Alt+Space", "mute": "Ctrl+M" }
+                },
+                "other": 7
+            }),
+        );
+        let app = app();
+        open(&app, &dir).save(&settings()).unwrap();
+        let file = read_file(&dir);
+        assert_eq!(file["settings"]["bufferSeconds"], 75, "known fields are updated");
+        assert_eq!(file["settings"]["futureThing"], json!({ "a": 1 }));
+        assert_eq!(file["settings"]["duck"]["curve"], "log");
+        assert_eq!(file["settings"]["hotkeys"]["mute"], "Ctrl+M");
+        assert_eq!(file["other"], 7);
+    }
+
+    #[test]
+    fn a_cleared_target_replaces_the_stored_one_instead_of_merging_into_it() {
+        let dir = TempDir::new();
+        write_settings_file(
+            &dir,
+            &json!({ "settings": { "version": 1, "target": { "exePath": "C:\\a.exe", "name": "A" } } }),
+        );
+        let app = app();
+        open(&app, &dir).save(&Settings::default()).unwrap();
+        assert_eq!(read_file(&dir)["settings"]["target"], Value::Null);
+    }
+
+    #[test]
+    fn a_settings_file_without_a_version_gets_one() {
+        let dir = TempDir::new();
+        write_settings_file(&dir, &json!({ "settings": { "bufferSeconds": 30 } }));
+        let app = app();
+        open(&app, &dir).save(&settings()).unwrap();
+        assert_eq!(read_file(&dir)["settings"]["version"], 1);
+    }
+
+    #[test]
+    fn a_settings_value_that_is_not_an_object_is_replaced() {
+        let dir = TempDir::new();
+        write_settings_file(&dir, &json!({ "settings": "garbage" }));
+        let app = app();
+        open(&app, &dir).save(&settings()).unwrap();
+        assert_eq!(read_file(&dir)["settings"]["bufferSeconds"], 75);
+    }
+
+    #[test]
+    fn a_file_from_a_newer_version_is_read_but_never_written() {
+        let dir = TempDir::new();
+        let newer = json!({ "settings": { "version": 2, "bufferSeconds": 45, "shiny": true } });
+        write_settings_file(&dir, &newer);
+        let before = fs::read_to_string(dir.file()).unwrap();
+        let app = app();
+        let persistence = open(&app, &dir);
+        let stored = persistence.load().expect("the newer file is still read");
+        assert_eq!(sanitize(&stored).buffer_seconds, 45);
+
+        let err = persistence.save(&settings()).unwrap_err();
+        assert!(err.contains("newer version"), "{err}");
+        assert_eq!(fs::read_to_string(dir.file()).unwrap(), before);
+        assert!(app.get_store(dir.file()).is_none(), "nor by the plugin's flush at exit");
     }
 
     #[test]
