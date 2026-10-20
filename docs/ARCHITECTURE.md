@@ -19,21 +19,32 @@
 One trait, several backends selected with `cfg(target_os)`:
 
 ```rust
-pub trait AppAudioSource {
-    fn list_apps(&self) -> Result<Vec<AudioApp>>;           // processes currently producing audio
-    fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<CaptureHandle>;
+pub trait AppAudioSource: Send + Sync {
+    fn list_apps(&self) -> Result<Vec<AudioApp>>;           // apps with an audio session (name, PID, exe path)
+    fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<Box<dyn CaptureHandle>>;
+    fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()>;  // ducking, relative to the user's volume
 }
 ```
 
+`platform_source()` returns the backend for the current OS.
+
 | Backend | API | Notes |
 |---|---|---|
-| Windows | WASAPI `ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`wasapi` crate) | Win10 2004+. Use `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — Discord/Teams/browsers play audio from child processes. |
+| Windows | WASAPI `ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`windows` crate) | Win10 2004+. Uses `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — Discord/Teams/browsers play audio from child processes. Captures 48 kHz stereo `f32`; the audio engine converts. |
 | Linux | PipeWire (`pipewire` crate): connect a capture stream to the app's output node | PulseAudio-only systems are out of scope initially. |
 | macOS | Core Audio process taps (`AudioHardwareCreateProcessTap`, macOS 14.2+) via `objc2` | Needs the audio-capture TCC permission and an `NSAudioCaptureUsageDescription`. |
-| Mock | Plays a WAV file as if it were an app | Used for tests and development on any OS. |
+| Mock | Plays a WAV file (or samples in memory) as if it were an app | Used for tests and development on any OS. |
 
-Ducking (`set_app_volume`) also lives here, because it is per-OS and per-app (Windows: `ISimpleAudioVolume` on the
-app's audio session).
+**Apps are process trees.** The app list groups audio sessions by their top-most process: a session's process is
+walked up through parents with the same executable (Discord, Chrome), and from helpers like WebView2 to the process that
+started them (new Teams). That top-most PID is what gets captured, including its whole tree.
+
+Ducking (`set_app_volume`) also lives here, because it is per-OS and per-app (Windows: `ISimpleAudioVolume` on every
+audio session in the app's process tree). The level is relative: the backend remembers each session's volume before
+ducking and restores it at `1.0`, so the user's own per-app volume is kept.
+
+`cargo run -p rt-capture --example probe -- list | capture <app> [--duck] | duck <app>` tries the backend on real
+apps without writing anything to disk.
 
 ### `rt-core` — platform-independent logic
 - **Downmix and resampling**: captured audio is mixed to mono (kept at the capture rate for playback) and resampled
