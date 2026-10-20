@@ -35,6 +35,10 @@ pub struct Duck {
     pub level: f64,
 }
 
+/// How many actions have a hotkey. The table of them is `HOTKEYS` in `settings.rs`; the `slots` methods of the
+/// types below list their fields in the same order, and a test keeps the two in step.
+pub const HOTKEY_COUNT: usize = 3;
+
 /// One accelerator per action, like `"Ctrl+Alt+Space"`; `None` = unbound.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +46,16 @@ pub struct HotkeyBindings {
     pub replay: Option<String>,
     pub stop: Option<String>,
     pub catch_up: Option<String>,
+}
+
+impl HotkeyBindings {
+    pub fn slots(&self) -> [&Option<String>; HOTKEY_COUNT] {
+        [&self.replay, &self.stop, &self.catch_up]
+    }
+
+    pub fn slots_mut(&mut self) -> [&mut Option<String>; HOTKEY_COUNT] {
+        [&mut self.replay, &mut self.stop, &mut self.catch_up]
+    }
 }
 
 /// Everything the user can set. Owned by the Rust side; the window edits it through `update_settings`.
@@ -83,6 +97,12 @@ pub struct HotkeyStates {
     pub replay: HotkeyState,
     pub stop: HotkeyState,
     pub catch_up: HotkeyState,
+}
+
+impl HotkeyStates {
+    pub fn slots_mut(&mut self) -> [&mut HotkeyState; HOTKEY_COUNT] {
+        [&mut self.replay, &mut self.stop, &mut self.catch_up]
+    }
 }
 
 /// Why a command failed. Serialized as `{ kind, message }`.
@@ -176,4 +196,11 @@ pub struct HotkeysPatch {
     pub stop: Option<Option<String>>,
     #[serde(default, deserialize_with = "clearable")]
     pub catch_up: Option<Option<String>>,
+}
+
+impl HotkeysPatch {
+    /// The change asked for each hotkey, in the order of the table in `settings.rs`.
+    pub fn into_changes(self) -> [Option<Option<String>>; HOTKEY_COUNT] {
+        [self.replay, self.stop, self.catch_up]
+    }
 }

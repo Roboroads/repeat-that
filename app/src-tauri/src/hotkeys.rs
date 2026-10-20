@@ -88,15 +88,6 @@ impl HotkeyStates {
         stop: HotkeyState::Unbound,
         catch_up: HotkeyState::Unbound,
     };
-
-    fn set(&mut self, action: AppAction, state: HotkeyState) {
-        match action {
-            AppAction::Replay => self.replay = state,
-            AppAction::Stop => self.stop = state,
-            AppAction::CatchUp => self.catch_up = state,
-            AppAction::TogglePause | AppAction::OpenSettings | AppAction::Quit => {}
-        }
-    }
 }
 
 /// One hotkey action's place in the manager.
@@ -188,8 +179,8 @@ impl HotkeyManager {
     pub fn states(&self) -> HotkeyStates {
         let inner = lock(&self.inner);
         let mut states = HotkeyStates::UNBOUND;
-        for (action, slot) in HOTKEY_ACTIONS.into_iter().zip(&inner.slots) {
-            states.set(action, slot.state);
+        for (state, slot) in states.slots_mut().into_iter().zip(&inner.slots) {
+            *state = slot.state;
         }
         states
     }

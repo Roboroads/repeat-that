@@ -4,7 +4,9 @@ use serde_json::{Map, Value};
 use tauri_plugin_global_shortcut::Shortcut;
 
 use crate::actions::AppAction;
-use crate::ipc::{CommandError, Duck, HotkeyBindings, SETTINGS_VERSION, Sensitivity, Settings, SettingsPatch, Target};
+use crate::ipc::{
+    CommandError, Duck, HOTKEY_COUNT, HotkeyBindings, SETTINGS_VERSION, Sensitivity, Settings, SettingsPatch, Target,
+};
 
 pub const BUFFER_SECONDS_MIN: u32 = 10;
 pub const BUFFER_SECONDS_MAX: u32 = 120;
@@ -13,13 +15,61 @@ const REPLAY_SPEED: (f64, f64, f64) = (0.75, 1.5, 1.0);
 const CATCH_UP_SPEED: (f64, f64, f64) = (1.25, 2.0, 1.5);
 const DUCK_LEVEL: (f64, f64, f64) = (0.05, 1.0, 0.2);
 
+/// One action that has a hotkey: everything the settings code needs to know about it.
+pub struct HotkeyDef {
+    pub action: AppAction,
+    /// The key in the `hotkeys` object of the settings.
+    pub field: &'static str,
+    /// What the user calls it, for error messages.
+    pub label: &'static str,
+    pub default: &'static str,
+}
+
+/// The actions that have a hotkey, in the order they win a clash when stored settings contain a duplicate. Adding a
+/// hotkey is one more line here and one more field in the `slots` methods of the types in `ipc.rs`.
+pub const HOTKEYS: [HotkeyDef; HOTKEY_COUNT] = [
+    HotkeyDef {
+        action: AppAction::Replay,
+        field: "replay",
+        label: "Replay",
+        default: "Ctrl+Alt+Space",
+    },
+    HotkeyDef {
+        action: AppAction::Stop,
+        field: "stop",
+        label: "Stop",
+        default: "Ctrl+Alt+Backspace",
+    },
+    HotkeyDef {
+        action: AppAction::CatchUp,
+        field: "catchUp",
+        label: "Catch-up",
+        default: "Ctrl+Alt+Enter",
+    },
+];
+
+/// The actions of [`HOTKEYS`].
+pub const HOTKEY_ACTIONS: [AppAction; HOTKEY_COUNT] = {
+    let mut actions = [AppAction::Replay; HOTKEY_COUNT];
+    let mut index = 0;
+    while index < HOTKEY_COUNT {
+        actions[index] = HOTKEYS[index].action;
+        index += 1;
+    }
+    actions
+};
+
 impl Default for HotkeyBindings {
     fn default() -> Self {
-        HotkeyBindings {
-            replay: Some("Ctrl+Alt+Space".into()),
-            stop: Some("Ctrl+Alt+Backspace".into()),
-            catch_up: Some("Ctrl+Alt+Enter".into()),
+        let mut bindings = HotkeyBindings {
+            replay: None,
+            stop: None,
+            catch_up: None,
+        };
+        for (slot, def) in bindings.slots_mut().into_iter().zip(&HOTKEYS) {
+            *slot = Some(def.default.to_string());
         }
+        bindings
     }
 }
 
@@ -44,44 +94,16 @@ impl Default for Settings {
     }
 }
 
-/// The actions that have a hotkey, in the order they win a clash when stored settings contain a duplicate.
-pub const HOTKEY_ACTIONS: [AppAction; 3] = [AppAction::Replay, AppAction::Stop, AppAction::CatchUp];
-
 impl HotkeyBindings {
     /// The accelerator bound to `action`; `None` when unbound or when the action has no hotkey.
     pub fn accel(&self, action: AppAction) -> Option<&str> {
-        match action {
-            AppAction::Replay => self.replay.as_deref(),
-            AppAction::Stop => self.stop.as_deref(),
-            AppAction::CatchUp => self.catch_up.as_deref(),
-            AppAction::TogglePause | AppAction::OpenSettings | AppAction::Quit => None,
-        }
-    }
-
-    fn set(&mut self, action: AppAction, accel: Option<String>) {
-        match action {
-            AppAction::Replay => self.replay = accel,
-            AppAction::Stop => self.stop = accel,
-            AppAction::CatchUp => self.catch_up = accel,
-            AppAction::TogglePause | AppAction::OpenSettings | AppAction::Quit => {}
-        }
+        HOTKEYS
+            .iter()
+            .zip(self.slots())
+            .find(|(def, _)| def.action == action)
+            .and_then(|(_, slot)| slot.as_deref())
     }
 }
-
-/// What the user calls a hotkey action, for error messages.
-fn action_label(action: AppAction) -> &'static str {
-    match action {
-        AppAction::Replay => "Replay",
-        AppAction::Stop => "Stop",
-        AppAction::CatchUp => "Catch-up",
-        AppAction::TogglePause => "Pause",
-        AppAction::OpenSettings => "Settings",
-        AppAction::Quit => "Quit",
-    }
-}
-
-/// The keys of the `hotkeys` object, in the order of [`HOTKEY_ACTIONS`].
-const HOTKEY_FIELDS: [&str; HOTKEY_ACTIONS.len()] = ["replay", "stop", "catchUp"];
 
 /// Parses an accelerator like `"Ctrl+Alt+Space"`. The error is a reason fit for the settings window.
 pub fn parse_accel(accel: &str) -> Result<Shortcut, String> {
@@ -133,7 +155,6 @@ fn read_target(value: Option<&Value>) -> Option<Target> {
 }
 
 fn read_hotkeys(value: Option<&Value>) -> HotkeyBindings {
-    let defaults = HotkeyBindings::default();
     let stored = value.and_then(Value::as_object);
     let mut bindings = HotkeyBindings {
         replay: None,
@@ -142,30 +163,31 @@ fn read_hotkeys(value: Option<&Value>) -> HotkeyBindings {
     };
     let mut taken: Vec<Shortcut> = Vec::new();
     let mut missing = Vec::new();
+    let slots = bindings.slots_mut();
     // What the file says first: a combination that is readable and not yet used is kept. `null` is unbound, and so is
     // anything unreadable, so it can't take back a default that another action has been moved onto.
-    for (action, field) in HOTKEY_ACTIONS.into_iter().zip(HOTKEY_FIELDS) {
-        match stored.and_then(|object| object.get(field)) {
-            None => missing.push(action),
+    for (index, def) in HOTKEYS.iter().enumerate() {
+        match stored.and_then(|object| object.get(def.field)) {
+            None => missing.push(index),
             Some(Value::String(accel)) => {
                 if let Ok(shortcut) = parse_accel(accel)
                     && !taken.contains(&shortcut)
                 {
                     taken.push(shortcut);
-                    bindings.set(action, Some(accel.trim().to_string()));
+                    *slots[index] = Some(accel.trim().to_string());
                 }
             }
             Some(_) => {}
         }
     }
     // Then the defaults of the actions the file doesn't mention, unless something else uses the combination now.
-    for action in missing {
-        if let Some(default) = defaults.accel(action)
-            && let Ok(shortcut) = parse_accel(default)
+    for index in missing {
+        let default = HOTKEYS[index].default;
+        if let Ok(shortcut) = parse_accel(default)
             && !taken.contains(&shortcut)
         {
             taken.push(shortcut);
-            bindings.set(action, Some(default.to_string()));
+            *slots[index] = Some(default.to_string());
         }
     }
     bindings
@@ -271,25 +293,20 @@ pub fn apply_patch(current: &Settings, patch: SettingsPatch) -> Result<Settings,
         }
     }
     if let Some(hotkeys) = patch.hotkeys {
-        for (action, change) in [
-            (AppAction::Replay, hotkeys.replay),
-            (AppAction::Stop, hotkeys.stop),
-            (AppAction::CatchUp, hotkeys.catch_up),
-        ] {
+        for ((def, slot), change) in HOTKEYS.iter().zip(next.hotkeys.slots_mut()).zip(hotkeys.into_changes()) {
             let Some(change) = change else { continue };
-            let accel = match change {
+            *slot = match change {
                 None => None,
                 Some(accel) => {
                     if let Err(reason) = parse_accel(&accel) {
                         return Err(CommandError::invalid(format!(
                             "The {} hotkey \"{accel}\" can't be used: {reason}",
-                            action_label(action)
+                            def.label
                         )));
                     }
                     Some(accel.trim().to_string())
                 }
             };
-            next.hotkeys.set(action, accel);
         }
         check_conflicts(&next.hotkeys)?;
     }
@@ -307,19 +324,19 @@ pub fn apply_patch(current: &Settings, patch: SettingsPatch) -> Result<Settings,
 
 /// Two actions on one hotkey is an error, whichever way the combination is spelled.
 fn check_conflicts(hotkeys: &HotkeyBindings) -> Result<(), CommandError> {
-    let bound: Vec<(AppAction, &str, Shortcut)> = HOTKEY_ACTIONS
+    let bound: Vec<(&HotkeyDef, &str, Shortcut)> = HOTKEYS
         .iter()
-        .filter_map(|&action| {
-            let accel = hotkeys.accel(action)?;
-            Some((action, accel, parse_accel(accel).ok()?))
+        .zip(hotkeys.slots())
+        .filter_map(|(def, slot)| {
+            let accel = slot.as_deref()?;
+            Some((def, accel, parse_accel(accel).ok()?))
         })
         .collect();
     for (index, (first, accel, shortcut)) in bound.iter().enumerate() {
         if let Some((second, _, _)) = bound[index + 1..].iter().find(|(_, _, other)| other == shortcut) {
             return Err(CommandError::conflict(format!(
                 "{} and {} can't use the same hotkey ({accel})",
-                action_label(*first),
-                action_label(*second)
+                first.label, second.label
             )));
         }
     }
@@ -378,6 +395,42 @@ mod tests {
         assert_ne!(parsed[0], parsed[1]);
         assert_ne!(parsed[0], parsed[2]);
         assert_ne!(parsed[1], parsed[2]);
+    }
+
+    #[test]
+    fn the_hotkey_table_lines_up_with_the_wire_types() {
+        // The fields of the three wire types are listed once each, by hand, in the order of the table. This is what
+        // notices a hotkey added to one and not the others.
+        let bindings = serde_json::to_value(HotkeyBindings::default()).unwrap();
+        assert_eq!(bindings.as_object().unwrap().len(), HOTKEYS.len());
+        for def in &HOTKEYS {
+            assert_eq!(bindings[def.field], def.default, "{}", def.field);
+        }
+
+        for (index, def) in HOTKEYS.iter().enumerate() {
+            let patch: crate::ipc::HotkeysPatch =
+                serde_json::from_value(json!({ def.field: "Ctrl+Shift+F9" })).unwrap();
+            let changed: Vec<_> = patch.into_changes().iter().map(Option::is_some).collect();
+            assert_eq!(changed.iter().filter(|c| **c).count(), 1, "{}", def.field);
+            assert!(changed[index], "{} lands in the wrong slot", def.field);
+
+            let mut states = crate::ipc::HotkeyStates {
+                replay: crate::ipc::HotkeyState::Unbound,
+                stop: crate::ipc::HotkeyState::Unbound,
+                catch_up: crate::ipc::HotkeyState::Unbound,
+            };
+            *states.slots_mut()[index] = crate::ipc::HotkeyState::InUse;
+            assert_eq!(
+                serde_json::to_value(states).unwrap()[def.field],
+                "inUse",
+                "{}",
+                def.field
+            );
+        }
+        assert_eq!(
+            HOTKEY_ACTIONS.to_vec(),
+            HOTKEYS.iter().map(|def| def.action).collect::<Vec<_>>()
+        );
     }
 
     #[test]
