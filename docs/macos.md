@@ -52,3 +52,4 @@ It isn't signed with our Developer ID certificate either, at most ad-hoc signed,
 every build. macOS ties the audio-capture permission to the signature, so after a rebuild it may stop honoring the
 permission you granted, and capture returns silence. Reset the permission as described under
 [Audio-capture permission](#audio-capture-permission) and grant it again.
+
