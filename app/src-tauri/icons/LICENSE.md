@@ -1,6 +1,6 @@
 # Icon licenses
 
-Every icon in this directory, and `app/public/icon.svg`, is original artwork made for Repeat that?! and is licensed
+Every icon in this directory is original artwork made for Repeat That and is licensed
 under the [GNU General Public License v3.0 or later](../../../LICENSE) like the rest of the repository. No third-party
 artwork is bundled.
 

@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use crate::actions::{self, AppAction};
 
 /// The window title and the start of the tooltip.
-const APP_NAME: &str = "Repeat that?!";
+const APP_NAME: &str = "Repeat That";
 
 /// Which of the three tray icons to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -530,9 +530,9 @@ mod tests {
     #[test]
     fn tooltip_is_the_app_name_and_the_status_line() {
         let model = build_model(&capturing("Discord", 24), &HotkeyLabels::default());
-        assert_eq!(model.tooltip, "Repeat that?! - Capturing Discord · 24 s of speech");
+        assert_eq!(model.tooltip, "Repeat That - Capturing Discord · 24 s of speech");
         let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
-        assert_eq!(model.tooltip, "Repeat that?! - No app selected");
+        assert_eq!(model.tooltip, "Repeat That - No app selected");
     }
 
     fn bound_hotkeys() -> HotkeyLabels {
