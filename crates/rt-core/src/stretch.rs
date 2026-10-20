@@ -180,8 +180,10 @@ impl Stretcher {
     }
 }
 
-/// Plays `input` back `speed` times faster (or slower) without changing its pitch, in one go.
-pub fn time_stretch(input: &[f32], speed: f32, sample_rate: u32) -> Vec<f32> {
+/// Plays `input` back `speed` times faster (or slower) without changing its pitch, in one go. Only the tests need
+/// this; the player streams through a [`Stretcher`].
+#[cfg(test)]
+fn time_stretch(input: &[f32], speed: f32, sample_rate: u32) -> Vec<f32> {
     let mut stretcher = Stretcher::new(sample_rate, speed);
     stretcher.push(input);
     stretcher.finish();
