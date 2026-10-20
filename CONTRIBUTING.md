@@ -23,6 +23,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
 - Keep platform-specific code behind `#[cfg(target_os = "...")]` inside `rt-capture` (or clearly isolated in `app/`).
 - **Never write captured audio to disk** — not even in tests or debug builds. Use the WAV fixtures in
   `crates/rt-core/tests/fixtures` (synthetic or freely licensed recordings only) for testing.
+- PR titles must follow [Conventional Commits](https://www.conventionalcommits.org) (`feat: ...`, `fix: ...`,
+  `docs: ...`). PRs are squash-merged and the title becomes the release note. Mark breaking changes with `!`
+  (`feat!: ...`).
 - Small, focused PRs are easier to review. For larger changes, open an issue first to discuss the approach.
 
 ## Testing on real hardware
