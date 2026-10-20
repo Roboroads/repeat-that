@@ -5,7 +5,7 @@
 
 <main>
   <img class="logo" src={icon} alt="" width="72" height="72" />
-  <h1>Repeat that?!</h1>
+  <h1>Repeat That</h1>
   <p>Settings are coming soon.</p>
   <p class="hint">Closing this window keeps the app running in the tray. Use the tray menu to quit.</p>
 </main>

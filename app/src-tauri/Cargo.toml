@@ -1,6 +1,6 @@
 [package]
 name = "repeat-that"
-description = "Repeat that?! desktop app: tray, settings window and global hotkeys"
+description = "Repeat That desktop app: tray, settings window and global hotkeys"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
