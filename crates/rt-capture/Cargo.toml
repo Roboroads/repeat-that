@@ -26,3 +26,7 @@ windows-core = "0.62"
 
 [dev-dependencies]
 rt-core = { path = "../rt-core" }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Same features as above; the end-to-end test reads session volumes on its own.
+windows = "0.62"

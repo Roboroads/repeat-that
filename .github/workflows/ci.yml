@@ -25,3 +25,19 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # End-to-end test of Windows capture: a virtual audio device (VB-CABLE) and the audio service, which Windows
+      # Server runners have turned off.
+      - name: Set up audio (Windows)
+        if: runner.os == 'Windows'
+        uses: LABSN/sound-ci-helpers@d08c889a7bba7d9b1b059f8f76dac4672ea3a9cf # v1.0.4
+      - name: Start audio service (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Service AudioEndpointBuilder -StartupType Automatic
+          Set-Service Audiosrv -StartupType Automatic
+          Start-Service AudioEndpointBuilder, Audiosrv
+          Get-CimInstance Win32_SoundDevice | Format-Table Name, Status
+      - name: Capture test (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test -p rt-capture --test windows_audio -- --ignored --nocapture
