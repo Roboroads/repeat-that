@@ -55,9 +55,11 @@ This milestone can run in parallel with 5–7.
 - [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist)
 - [ ] Apply for free open-source code signing from SignPath Foundation (Windows), with the website as the project page
 
-The demo video uses a staged conversation between people who agreed to be in it. It never contains audio captured from
-a real call with someone else (see [PRIVACY.md](PRIVACY.md)). Large media stays out of git history: the video is hosted
-as a release asset or on YouTube, and any other big files go on a Pages-only branch.
+The demo video never contains audio captured from someone else's call. It uses the mock backend with synthetic or
+licensed speech, or a staged conversation recorded outside the app with everyone's consent. That is a consented
+exception for marketing material only, and the app itself still never writes audio to disk (see
+[PRIVACY.md](PRIVACY.md)). Large media stays out of git history: the video is hosted as a release asset or on YouTube,
+and any other big files go on a Pages-only branch.
 
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
