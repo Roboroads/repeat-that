@@ -45,9 +45,9 @@ pub(crate) fn steps(from: f32, to: f32) -> Vec<f32> {
 }
 
 /// Ramps from duck level `from` to `to`: calls `step(level, duck_new)` for each of [`steps`], one every `interval`,
-/// and returns after the last one. Steps start at least `interval` apart, even after a step that started late.
-/// `duck_new` says whether sessions that aren't ducked yet join at this step: from the first step of a ramp down, but
-/// only at the last step of a ramp up, so they never dip and come back up.
+/// and returns after the last one. See [`next_due`] for a ramp that falls behind. `duck_new` says whether sessions
+/// that aren't ducked yet join at this step: from the first step of a ramp down, but only at the last step of a ramp
+/// up, so they never dip and come back up.
 pub(crate) fn run(from: f32, to: f32, interval: Duration, mut step: impl FnMut(f32, bool)) {
     let levels = steps(from, to);
     let down = clamp_duck_level(to) < clamp_duck_level(from);
@@ -56,9 +56,20 @@ pub(crate) fn run(from: f32, to: f32, interval: Duration, mut step: impl FnMut(f
         thread::sleep(due.saturating_duration_since(Instant::now()));
         let started = Instant::now();
         step(level, down || i + 1 == levels.len());
-        // On schedule, the time a step takes doesn't stretch the ramp; behind schedule, the ramp is stretched rather
-        // than catching up.
-        due = (due + interval).max(started + interval);
+        due = next_due(due, started, interval);
+    }
+}
+
+/// When the step after one that was due at `due` and started at `started` is due. Normally one `interval` later, so
+/// neither a sleep that overshoots a little nor the time a step takes stretches the ramp. A step that started more
+/// than half an interval late, because the thread didn't get to run, moves the schedule instead: catching up would
+/// make overdue steps at once, which reach the audio as one big step. So steps are always at least half an interval
+/// apart.
+fn next_due(due: Instant, started: Instant, interval: Duration) -> Instant {
+    if started > due + interval / 2 {
+        started + interval
+    } else {
+        due + interval
     }
 }
 
