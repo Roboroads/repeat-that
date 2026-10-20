@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::{Store, StoreExt};
 
 use crate::ipc::{SETTINGS_VERSION, Settings};
+use crate::locking::lock;
 use crate::service::SettingsPersistence;
 
 /// Name of the settings file in the app config dir.
@@ -102,7 +103,7 @@ impl<R: Runtime> StorePersistence<R> {
     /// Whether saving may go ahead. A file that couldn't be set aside is tried again, since the cause (a lock held by
     /// a virus scanner or a backup tool, say) may be gone by now.
     fn check_writable(&self) -> Result<(), String> {
-        let mut blocked = crate::service::lock(&self.blocked);
+        let mut blocked = lock(&self.blocked);
         if let Some(Block::Unreadable(_)) = *blocked {
             match set_aside_corrupt_file(&self.path) {
                 Aside::Failed(reason) => *blocked = Some(Block::Unreadable(reason)),
@@ -186,9 +187,7 @@ impl<R: Runtime> SettingsPersistence for StorePersistence<R> {
     }
 
     fn problem(&self) -> Option<String> {
-        crate::service::lock(&self.blocked)
-            .as_ref()
-            .map(|block| block.message().to_string())
+        lock(&self.blocked).as_ref().map(|block| block.message().to_string())
     }
 
     fn save(&self, settings: &Settings) -> Result<(), String> {
@@ -229,7 +228,7 @@ impl InMemoryPersistence {
 
 impl SettingsPersistence for InMemoryPersistence {
     fn load(&self) -> Option<Value> {
-        crate::service::lock(&self.stored).clone()
+        lock(&self.stored).clone()
     }
 
     fn problem(&self) -> Option<String> {
@@ -237,7 +236,7 @@ impl SettingsPersistence for InMemoryPersistence {
     }
 
     fn save(&self, settings: &Settings) -> Result<(), String> {
-        *crate::service::lock(&self.stored) = serde_json::to_value(settings).ok();
+        *lock(&self.stored) = serde_json::to_value(settings).ok();
         Ok(())
     }
 }

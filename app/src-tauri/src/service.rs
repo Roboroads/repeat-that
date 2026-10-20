@@ -2,7 +2,7 @@
 //! and pushed to the hotkeys and the OS autostart entry.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime};
@@ -11,6 +11,7 @@ use crate::actions;
 use crate::autostart::{Autostart, OsAutostart, reconcile};
 use crate::hotkeys::{HotkeyManager, PluginBackend, ShortcutBackend};
 use crate::ipc::{CommandError, HotkeyStates, Settings, SettingsPatch};
+use crate::locking::lock;
 use crate::settings::{apply_patch, sanitize};
 use crate::store::{InMemoryPersistence, StorePersistence, settings_file};
 
@@ -155,10 +156,6 @@ impl SettingsService {
     pub fn hotkey_states(&self) -> HotkeyStates {
         self.hotkeys.states()
     }
-}
-
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Creates the settings service on the real plugins and manages it. Needs the store, autostart and global-shortcut

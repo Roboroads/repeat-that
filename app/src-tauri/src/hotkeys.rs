@@ -1,13 +1,14 @@
 //! Global hotkeys: which combination is registered for which action, whether the OS accepted it, and the rule that a
 //! held key counts once.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::actions::AppAction;
 use crate::ipc::{HotkeyBindings, HotkeyState, HotkeyStates};
+use crate::locking::lock;
 use crate::settings::{HOTKEY_ACTIONS, parse_accel};
 
 /// One edge of a key combination, as the OS reports it. Holding a key sends `Pressed` over and over (key repeat) and a
@@ -96,11 +97,6 @@ impl HotkeyStates {
             AppAction::TogglePause | AppAction::OpenSettings | AppAction::Quit => {}
         }
     }
-}
-
-/// Locks, ignoring poisoning: a panic in one hotkey handler must not take every other hotkey down with it.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// One hotkey action's place in the manager.

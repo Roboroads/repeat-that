@@ -5,6 +5,7 @@ mod autostart;
 mod commands;
 mod hotkeys;
 mod ipc;
+mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
 mod service;
