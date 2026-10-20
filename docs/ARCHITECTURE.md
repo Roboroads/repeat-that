@@ -98,7 +98,7 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 
 ## Releases
 GitHub Actions builds:
-- Windows: NSIS `.exe` + `.msi` (x64, ARM64)
+- Windows: NSIS `.exe` + `.msi`, x64 only for v0.1 (ARM64 later: `ort` has no CPU build for it yet)
 - Linux: `.deb` (+ AppImage later)
 - macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
   ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
