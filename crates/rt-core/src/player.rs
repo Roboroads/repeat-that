@@ -179,6 +179,11 @@ impl Player {
         }
     }
 
+    /// The gap after a finished utterance, shortened at the chosen speed, also once caught up with the speaker.
+    fn gap_at_speed(&self) -> usize {
+        (self.gap as f32 / self.speed) as usize
+    }
+
     pub fn stop(&mut self) {
         self.playing = None;
         self.stretcher.reset();
@@ -190,22 +195,23 @@ impl Player {
         let playback = self.playing.as_ref()?;
         let at_speed = |samples: usize, speed: f32| (samples as f32 / speed) as usize;
         // Only finished utterances are followed by a gap, not the open one or one that was split.
-        let gap_after = |id: u64, speed: f32| {
+        let gap_after = |id: u64| {
             let continues = buffer.get(id).is_some_and(|u| u.continues);
             if buffer.open_id() == Some(id) || continues {
                 0
             } else {
-                at_speed(self.gap, speed)
+                self.gap_at_speed()
             }
         };
 
+        // The current utterance plays at the stretcher's speed, which is normal speed once caught up with it.
         let current_speed = self.stretcher.speed();
         let mut samples = match playback.phase {
             Phase::Speech | Phase::Waiting => {
                 let unfed = buffer
                     .get(playback.id)
                     .map_or(0, |u| u.samples.len().saturating_sub(playback.fed));
-                self.stretcher.pending() + at_speed(unfed, current_speed) + gap_after(playback.id, current_speed)
+                self.stretcher.pending() + at_speed(unfed, current_speed) + gap_after(playback.id)
             }
             Phase::Gap(left) => left,
             Phase::Next => 0,
@@ -213,7 +219,7 @@ impl Player {
         let newer = (playback.id + 1).max(buffer.oldest_id().unwrap_or(0));
         for id in newer..=buffer.latest_id().unwrap_or(0) {
             if let Some(utterance) = buffer.get(id) {
-                samples += at_speed(utterance.samples.len(), self.speed) + gap_after(id, self.speed);
+                samples += at_speed(utterance.samples.len(), self.speed) + gap_after(id);
             }
         }
         Some(Duration::from_secs_f64(samples as f64 / self.sample_rate as f64))
@@ -221,6 +227,7 @@ impl Player {
 
     /// Fills `out` with the next block of mono samples. Once the replay ends, the rest of `out` is silence.
     pub fn render(&mut self, buffer: &SpeechBuffer, out: &mut [f32]) -> Rendered {
+        let gap = self.gap_at_speed();
         let mut written = 0;
         while written < out.len() {
             let Some(playback) = &mut self.playing else {
@@ -239,7 +246,6 @@ impl Player {
                         continue;
                     }
                     if playback.complete {
-                        let gap = (self.gap as f32 / self.stretcher.speed()) as usize;
                         playback.phase = Phase::Gap(gap);
                         continue;
                     }
@@ -633,6 +639,33 @@ mod tests {
         buf.close();
         let next = render_all(&mut player, &buf);
         assert!((next.len() as f32 - 1000.0 / 1.5).abs() <= 30.0, "{}", next.len());
+    }
+
+    #[test]
+    fn gaps_keep_the_chosen_speed_after_catching_up() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        let mut player = Player::new(
+            RATE,
+            PlayerConfig {
+                gap: Duration::from_millis(20),
+                speed: 2.0,
+                ..no_gap()
+            },
+        );
+        player.replay(&buf);
+        // Caught up: the rest of the sentence plays at normal speed, but the gap after it is still at 2x.
+        render_playing(&mut player, &buf, 128);
+        buf.close();
+        assert_eq!(player.behind(&buf), Some(Duration::from_millis(10)));
+        let mut block = [1.0; 64];
+        assert_eq!(
+            player.render(&buf, &mut block),
+            Rendered {
+                written: 10,
+                ended: true
+            }
+        );
     }
 
     #[test]
