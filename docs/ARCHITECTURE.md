@@ -103,7 +103,8 @@ GitHub Actions builds:
 - macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
   ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
   credentials are GitHub Actions secrets, listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization).
-- Every release publishes a `SHA256SUMS` file so users can verify downloads.
+- Every release publishes a `SHA256SUMS` file so users can verify downloads
+  ([verify-downloads.md](verify-downloads.md)).
 
 macOS ties the audio-capture permission to the app's signing identity. A Developer ID signature stays the same from
 one release to the next, so an update doesn't reset the permission. The user can still deny it or revoke it later, so
