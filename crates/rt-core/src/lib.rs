@@ -1,21 +1,31 @@
-//! Platform-independent core of Repeat that?!: buffering speech in memory and deciding what to replay.
+//! Platform-independent core of Repeat that?!: finding speech in captured audio, keeping it in memory, and replaying
+//! it.
 //!
-//! Audio handled here never leaves memory — see `PRIVACY.md`.
+//! Audio handled here never leaves memory. See `PRIVACY.md`.
+//!
+//! The flow is: interleaved capture frames → [`Recorder`] (downmix, [`Vad`], [`Segmenter`]) → [`SpeechBuffer`] →
+//! [`Player`] (step back, catch-up speed) → output device.
 
 pub mod buffer;
+pub mod player;
+pub mod recorder;
+pub mod resample;
+pub mod segmenter;
+pub mod stretch;
+pub mod vad;
 
 pub use buffer::{SpeechBuffer, Utterance};
+pub use player::{Player, PlayerConfig};
+pub use recorder::Recorder;
+pub use segmenter::{Segmenter, SegmenterConfig};
+pub use vad::{EnergyVad, Vad};
 
-/// Sample format used throughout the core: interleaved `f32` samples.
+#[cfg(feature = "silero")]
+pub use vad::SileroVad;
+
+/// Format of captured audio: interleaved `f32` samples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
     pub sample_rate: u32,
     pub channels: u16,
-}
-
-impl AudioFormat {
-    /// Number of interleaved samples per second.
-    pub fn samples_per_second(&self) -> usize {
-        self.sample_rate as usize * self.channels as usize
-    }
 }
