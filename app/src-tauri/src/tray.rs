@@ -245,19 +245,19 @@ impl TrayIcons {
         self.shown.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Puts `kind` on the tray, unless it is already there. The lock is never held across the call into the tray,
-    /// which waits for the main thread. A failed update is not recorded, so the next refresh tries again.
+    /// Puts `kind` on the tray, unless it is already there. A failed update is not recorded, so the next refresh tries
+    /// again.
     fn show<R: Runtime>(&self, tray: &TrayIcon<R>, kind: TrayIconKind) {
         self.show_with(kind, |image| tray.set_icon(Some(image)).is_ok());
     }
 
-    /// [`show`](Self::show) with the tray replaced by `set_icon`, which says whether it worked.
+    /// [`show`](Self::show) with the tray replaced by `set_icon`, which says whether it worked. The lock is held from
+    /// the decision to the record, so `shown` is always the icon the tray has. That is safe because only the main
+    /// thread gets here (see [`refresh`]), so nothing else waits on the lock while this one waits on the tray.
     fn show_with(&self, kind: TrayIconKind, set_icon: impl FnOnce(Image<'static>) -> bool) {
-        if *self.shown() == kind {
-            return;
-        }
-        if set_icon(self.image(kind)) {
-            *self.shown() = kind;
+        let mut shown = self.shown();
+        if *shown != kind && set_icon(self.image(kind)) {
+            *shown = kind;
         }
     }
 }
@@ -304,7 +304,18 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 /// Shows the current [`SharedStatus`] in the tray: icon, tooltip and menu items.
+///
+/// The update runs on the main thread, in the order the requests came in, and reads the status when it runs, not when
+/// it was asked for. So two refreshes from different threads can't land out of order and leave the tray on a stale
+/// state: the last one to run always shows the latest status. It also makes the icon bookkeeping single-threaded.
 pub fn refresh<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    // Best effort: without an event loop there is no tray to update.
+    let _ = app.run_on_main_thread(move || apply_status(&handle));
+}
+
+/// The body of [`refresh`]; main thread only.
+fn apply_status<R: Runtime>(app: &AppHandle<R>) {
     let model = current_model(app);
     if let Some(menu) = app.try_state::<TrayMenu<R>>() {
         for entry in &model.entries {
@@ -613,6 +624,33 @@ mod tests {
         assert_eq!(show(&icons, TrayIconKind::Capturing, true), 0);
         assert_eq!(show(&icons, TrayIconKind::Paused, true), 1);
         assert_eq!(show(&icons, TrayIconKind::Idle, true), 1);
+    }
+
+    #[test]
+    fn the_recorded_icon_is_the_one_the_tray_got_last() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const KINDS: [TrayIconKind; 3] = [TrayIconKind::Idle, TrayIconKind::Capturing, TrayIconKind::Paused];
+        let icons = TrayIcons::load(TrayIconKind::Idle).unwrap();
+        // Index into `KINDS` of the icon the fake tray got last.
+        let on_tray = AtomicUsize::new(0);
+
+        std::thread::scope(|scope| {
+            for thread in 0..4 {
+                let (icons, on_tray) = (&icons, &on_tray);
+                scope.spawn(move || {
+                    for step in 0..2000 {
+                        let index = (thread + step) % KINDS.len();
+                        icons.show_with(KINDS[index], |_| {
+                            on_tray.store(index, Ordering::SeqCst);
+                            true
+                        });
+                    }
+                });
+            }
+        });
+
+        assert_eq!(*icons.shown(), KINDS[on_tray.load(Ordering::SeqCst)]);
     }
 
     #[test]
