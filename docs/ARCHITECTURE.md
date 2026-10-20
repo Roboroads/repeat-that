@@ -41,7 +41,9 @@ started them (new Teams). That top-most PID is what gets captured, including its
 
 Ducking (`set_app_volume`) also lives here, because it is per-OS and per-app (Windows: `ISimpleAudioVolume` on every
 audio session in the app's process tree). The level is relative: the backend remembers each session's volume before
-ducking and restores it at `1.0`, so the user's own per-app volume is kept.
+ducking and restores it at `1.0`, so the user's own per-app volume is kept. The lowest level is 5%: a muted app can't
+be captured. On Windows, process loopback captures the app *after* its volume, so captures of a ducked app are
+amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level.
 
 `cargo run -p rt-capture --example probe -- list | capture <app> [--duck] | duck <app>` tries the backend on real
 apps without writing anything to disk.

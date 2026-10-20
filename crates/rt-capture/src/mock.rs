@@ -2,11 +2,13 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::{AppAudioSource, AudioApp, CaptureError, CaptureFormat, CaptureHandle, FrameSink, Result, ThreadCapture};
+use crate::{
+    AppAudioSource, AudioApp, CaptureError, CaptureFormat, CaptureHandle, DuckLevel, FrameSink, Result, ThreadCapture,
+};
 
 /// Frames are delivered in 10 ms chunks, like a real capture callback.
 const CHUNK: Duration = Duration::from_millis(10);
@@ -21,8 +23,7 @@ pub struct MockSource {
     format: CaptureFormat,
     realtime: bool,
     looping: bool,
-    /// Duck level as `f32` bits.
-    level: Arc<AtomicU32>,
+    level: DuckLevel,
 }
 
 impl MockSource {
@@ -41,7 +42,7 @@ impl MockSource {
             format,
             realtime: true,
             looping: true,
-            level: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            level: DuckLevel::new(),
         }
     }
 
@@ -86,7 +87,7 @@ impl MockSource {
 
     /// The level last set with [`AppAudioSource::set_app_volume`]. It doesn't change the delivered audio.
     pub fn level(&self) -> f32 {
-        f32::from_bits(self.level.load(Ordering::Relaxed))
+        self.level.get()
     }
 
     fn check(&self, app: &AudioApp) -> Result<()> {
@@ -139,7 +140,7 @@ impl AppAudioSource for MockSource {
 
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()> {
         self.check(app)?;
-        self.level.store(level.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        self.level.set(level);
         Ok(())
     }
 }
@@ -227,7 +228,11 @@ mod tests {
         let app = source.list_apps().unwrap().remove(0);
         source.set_app_volume(&app, 0.25).unwrap();
         assert_eq!(source.level(), 0.25);
-        source.set_app_volume(&app, 1.0).unwrap();
+        source.set_app_volume(&app, 0.0).unwrap();
+        assert_eq!(source.level(), crate::MIN_DUCK_LEVEL);
+        source.set_app_volume(&app, f32::NAN).unwrap();
+        assert_eq!(source.level(), 1.0);
+        source.set_app_volume(&app, 2.0).unwrap();
         assert_eq!(source.level(), 1.0);
     }
 

@@ -9,18 +9,28 @@ use std::sync::Mutex;
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
-use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, FrameSink, Result};
+use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, FrameSink, Result, clamp_duck_level};
 
 /// Captures one app through WASAPI process loopback (Windows 10 2004+), including its child processes.
+///
+/// Process loopback captures the app after its own volume is applied, so ducking would make the capture quieter too.
+/// Captures of a ducked app are amplified by the inverse of the duck level to keep their level.
 #[derive(Default)]
 pub struct WasapiSource {
     /// Volume of each ducked audio session before ducking, by session instance id.
     before_duck: Mutex<HashMap<String, f32>>,
+    /// Current duck level of each app, by PID, shared with its captures.
+    levels: Mutex<HashMap<u32, DuckLevel>>,
 }
 
 impl WasapiSource {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn level(&self, pid: u32) -> DuckLevel {
+        let mut levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
+        levels.entry(pid).or_insert_with(DuckLevel::new).clone()
     }
 }
 
@@ -31,13 +41,17 @@ impl AppAudioSource for WasapiSource {
     }
 
     fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<Box<dyn CaptureHandle>> {
-        loopback::start(app.pid, sink)
+        loopback::start(app.pid, self.level(app.pid), sink)
     }
 
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()> {
         let _com = Com::init()?;
         let mut before_duck = self.before_duck.lock().unwrap_or_else(|e| e.into_inner());
-        sessions::duck(app.pid, level.clamp(0.0, 1.0), &mut before_duck)
+        let level = clamp_duck_level(level);
+        sessions::duck(app.pid, level, &mut before_duck)?;
+        // Only compensate once the volume has actually changed.
+        self.level(app.pid).set(level);
+        Ok(())
     }
 }
 

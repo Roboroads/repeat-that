@@ -11,7 +11,7 @@
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::JoinHandle;
 
 pub mod mock;
@@ -85,10 +85,16 @@ pub trait AppAudioSource: Send + Sync {
     /// Starts delivering `app`'s audio to `sink` on a background thread.
     fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<Box<dyn CaptureHandle>>;
 
-    /// Ducks `app` to `level` (0.0–1.0) times the volume it had before ducking. `1.0` restores that volume, so the
-    /// user's own per-app volume setting is never lost.
+    /// Ducks `app` to `level` times the volume it had before ducking. `1.0` restores that volume, so the user's own
+    /// per-app volume setting is never lost. Levels are clamped to [`MIN_DUCK_LEVEL`]–1.0.
+    ///
+    /// Captured audio keeps its full level while the app is ducked: backends whose capture is affected by the app's
+    /// volume (Windows) compensate for it.
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()>;
 }
+
+/// The lowest duck level. Ducking never mutes an app completely, because muted audio can't be captured.
+pub const MIN_DUCK_LEVEL: f32 = 0.05;
 
 /// The capture backend for this OS.
 pub fn platform_source() -> Result<Box<dyn AppAudioSource>> {
@@ -136,5 +142,33 @@ impl Drop for ThreadCapture {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+/// A duck level shared between [`AppAudioSource::set_app_volume`] and capture threads.
+#[derive(Clone)]
+pub(crate) struct DuckLevel(Arc<AtomicU32>);
+
+impl DuckLevel {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicU32::new(1.0f32.to_bits())))
+    }
+
+    pub(crate) fn get(&self) -> f32 {
+        f32::from_bits(self.0.load(Ordering::Relaxed))
+    }
+
+    /// Stores `level`, clamped with [`clamp_duck_level`].
+    pub(crate) fn set(&self, level: f32) {
+        self.0.store(clamp_duck_level(level).to_bits(), Ordering::Relaxed);
+    }
+}
+
+/// `level` limited to [`MIN_DUCK_LEVEL`]–1.0. NaN means "not ducked".
+pub(crate) fn clamp_duck_level(level: f32) -> f32 {
+    if level.is_nan() {
+        1.0
+    } else {
+        level.clamp(MIN_DUCK_LEVEL, 1.0)
     }
 }

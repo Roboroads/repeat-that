@@ -101,17 +101,65 @@ fn lists_captures_and_ducks_a_playing_process() {
         assert!((d - b * 0.25).abs() < 1e-3, "ducked {d}, before {b}");
     }
     assert_eq!(after, before);
-    println!(
-        "captured level while ducked: {:.2}× of normal ({}), after restore {:.2}×",
-        ducked.rms / full.rms,
-        if ducked.rms / full.rms < 0.5 {
-            "ducking DOES lower what we capture"
-        } else {
-            "ducking does NOT change what we capture"
-        },
-        restored.rms / full.rms,
+    // The capture is compensated, so ducking doesn't change its level.
+    println!("ducked capture: {ducked:?}, restored: {restored:?}");
+    assert!(
+        (ducked.rms / full.rms - 1.0).abs() < 0.05,
+        "ducked capture at {:.2}×",
+        ducked.rms / full.rms
     );
-    assert_tone(restored, 0.5);
+    assert_tone(ducked, 0.9);
+    assert_tone(restored, 0.9);
+
+    // Around the moment the volume changes, compensation and the actual volume can be briefly out of step.
+    let profile = duck_transitions(&source, &app);
+    let (low, high) = profile
+        .iter()
+        .fold((f64::MAX, 0.0f64), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+    println!(
+        "10 ms windows across duck and restore: {low:.2}×–{high:.2}× of normal, {} of {} off by more than 10%",
+        profile.iter().filter(|r| (*r - 1.0).abs() > 0.1).count(),
+        profile.len(),
+    );
+    // Never more than the full compensation (4× at 25%), and never silent.
+    assert!(high < 4.5 && low > 0.2, "transition levels {low:.2}×–{high:.2}×");
+}
+
+/// Captures continuously while ducking to 25% and back, and returns the RMS of each 10 ms window relative to the
+/// tone's level.
+fn duck_transitions(source: &WasapiSource, app: &AudioApp) -> Vec<f64> {
+    let (tx, rx) = mpsc::channel::<(Vec<f32>, CaptureFormat)>();
+    let handle = source
+        .start(
+            app,
+            Box::new(move |frames, format| {
+                let _ = tx.send((frames.to_vec(), format));
+            }),
+        )
+        .expect("capture starts");
+    thread::sleep(Duration::from_millis(500));
+    source.set_app_volume(app, 0.25).unwrap();
+    thread::sleep(Duration::from_millis(500));
+    source.set_app_volume(app, 1.0).unwrap();
+    thread::sleep(Duration::from_millis(500));
+    handle.stop();
+
+    let mut mono = Vec::new();
+    let mut rate = 48_000;
+    for (frames, format) in rx.try_iter() {
+        rate = format.sample_rate as usize;
+        mono.extend(
+            frames
+                .iter()
+                .step_by(usize::from(format.channels))
+                .map(|&s| f64::from(s)),
+        );
+    }
+    // Skip the first 300 ms, where the stream may still be filling.
+    let mono = &mono[(rate * 3 / 10).min(mono.len())..];
+    mono.chunks_exact(rate / 100)
+        .map(|w| (w.iter().map(|s| s * s).sum::<f64>() / w.len() as f64).sqrt() / TONE_RMS)
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -27,7 +27,7 @@ use windows::core::{HRESULT, IUnknown, Interface, Ref};
 use windows_core::implement;
 
 use super::{Com, backend};
-use crate::{CaptureError, CaptureFormat, CaptureHandle, FrameSink, Result, ThreadCapture};
+use crate::{CaptureError, CaptureFormat, CaptureHandle, DuckLevel, FrameSink, Result, ThreadCapture};
 
 /// Process loopback has no mix format of its own; the audio engine converts to whatever we ask for.
 const FORMAT: CaptureFormat = CaptureFormat {
@@ -41,16 +41,16 @@ const BUFFER_DURATION: i64 = 2_000_000;
 const STOP_POLL_MS: u32 = 100;
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Starts capturing `pid` and all its child processes on a new thread. Returns once the stream runs, or with the
-/// reason it couldn't start.
-pub(super) fn start(pid: u32, sink: FrameSink) -> Result<Box<dyn CaptureHandle>> {
+/// Starts capturing `pid` and all its child processes on a new thread, amplified by the inverse of `level` to undo
+/// ducking. Returns once the stream runs, or with the reason it couldn't start.
+pub(super) fn start(pid: u32, level: DuckLevel, sink: FrameSink) -> Result<Box<dyn CaptureHandle>> {
     ensure_process_exists(pid)?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);
     let (ready_tx, ready_rx) = mpsc::channel();
     let thread = thread::Builder::new()
         .name("wasapi-capture".into())
-        .spawn(move || run(pid, sink, &stopped, ready_tx))
+        .spawn(move || run(pid, &level, sink, &stopped, ready_tx))
         .map_err(|e| CaptureError::Backend(format!("can't start capture thread: {e}")))?;
     let handle = ThreadCapture::new(stop, thread);
     match ready_rx.recv() {
@@ -68,7 +68,7 @@ fn ensure_process_exists(pid: u32) -> Result<()> {
 }
 
 /// The capture thread. Reports setup through `ready`, then delivers audio until `stop` is set or the stream fails.
-fn run(pid: u32, mut sink: FrameSink, stop: &AtomicBool, ready: Sender<Result<()>>) {
+fn run(pid: u32, level: &DuckLevel, mut sink: FrameSink, stop: &AtomicBool, ready: Sender<Result<()>>) {
     let stream = match Stream::open(pid) {
         Ok(stream) => stream,
         Err(e) => {
@@ -84,7 +84,7 @@ fn run(pid: u32, mut sink: FrameSink, stop: &AtomicBool, ready: Sender<Result<()
         }
         // The stream can fail later on, e.g. when the audio service restarts. The handle then reports that capture is
         // no longer running.
-        if stream.drain(&mut frames, &mut sink).is_err() {
+        if stream.drain(level.get(), &mut frames, &mut sink).is_err() {
             break;
         }
     }
@@ -143,8 +143,8 @@ impl Stream {
         }
     }
 
-    /// Hands every waiting packet to `sink`.
-    fn drain(&self, frames: &mut Vec<f32>, sink: &mut FrameSink) -> windows::core::Result<()> {
+    /// Hands every waiting packet to `sink`, amplified by `1 / level`.
+    fn drain(&self, level: f32, frames: &mut Vec<f32>, sink: &mut FrameSink) -> windows::core::Result<()> {
         unsafe {
             while self.capture.GetNextPacketSize()? > 0 {
                 let mut data = std::ptr::null_mut();
@@ -158,7 +158,8 @@ impl Stream {
                 } else {
                     // The buffer is only guaranteed to be byte aligned.
                     let bytes = std::slice::from_raw_parts(data, len * 4);
-                    frames.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_ne_bytes(b)));
+                    let gain = 1.0 / level;
+                    frames.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_ne_bytes(b) * gain));
                 }
                 self.capture.ReleaseBuffer(count)?;
                 if !frames.is_empty() {
