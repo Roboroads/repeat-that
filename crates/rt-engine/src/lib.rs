@@ -216,6 +216,7 @@ impl Engine {
         };
         let control = control::Control::new(
             Arc::clone(&source),
+            Arc::clone(&core),
             worker_tx.clone(),
             play_tx.clone(),
             duck_tx.clone(),

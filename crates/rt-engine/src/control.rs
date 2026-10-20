@@ -14,7 +14,7 @@ use crate::TargetApp;
 use crate::duck::DuckCmd;
 use crate::playback::PlayCmd;
 use crate::status::{CaptureState, StatusHub};
-use crate::worker::{CaptureQueue, WorkerCmd, pack};
+use crate::worker::{CaptureQueue, SharedCore, WorkerCmd, lock, pack};
 
 /// How often a missing target is looked for.
 const POLL_EVERY: Duration = Duration::from_secs(2);
@@ -31,6 +31,7 @@ pub(crate) enum ControlCmd {
 
 pub(crate) struct Control {
     source: Arc<dyn AppAudioSource>,
+    core: SharedCore,
     worker: Sender<WorkerCmd>,
     playback: Sender<PlayCmd>,
     duck: Sender<DuckCmd>,
@@ -47,6 +48,7 @@ pub(crate) struct Control {
 impl Control {
     pub(crate) fn new(
         source: Arc<dyn AppAudioSource>,
+        core: SharedCore,
         worker: Sender<WorkerCmd>,
         playback: Sender<PlayCmd>,
         duck: Sender<DuckCmd>,
@@ -55,6 +57,7 @@ impl Control {
     ) -> Self {
         Self {
             source,
+            core,
             worker,
             playback,
             duck,
@@ -139,6 +142,16 @@ impl Control {
 
     /// Stops capture, playback and ducking, and wipes the buffer.
     fn wipe(&mut self) {
+        // The buffer goes first, so a replay pressed from now on finds nothing, also while the capture takes its time
+        // to stop. The worker drops what the capture still delivers.
+        {
+            let mut core = lock(&self.core);
+            core.accepting = false;
+            if let Some(recorder) = &mut core.recorder {
+                recorder.clear();
+            }
+        }
+        self.status.update(|s| s.buffered = Duration::ZERO);
         let _ = self.playback.send(PlayCmd::Wipe);
         // The old app gets its volume back before anything else is ducked.
         let _ = self.duck.send(DuckCmd::SetApp(None));

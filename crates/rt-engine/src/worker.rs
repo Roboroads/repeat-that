@@ -27,6 +27,9 @@ pub(crate) struct Core {
     pub(crate) format: Option<AudioFormat>,
     /// Increases every time the recorder is replaced, so the player knows its utterance ids are gone.
     pub(crate) generation: u64,
+    /// Whether captured audio goes into the recorder. Off from the moment a wipe starts until the next capture is
+    /// attached, so audio still on its way from the stopping capture is dropped.
+    pub(crate) accepting: bool,
 }
 
 pub(crate) type SharedCore = Arc<Mutex<Core>>;
@@ -142,6 +145,7 @@ impl Worker {
             WorkerCmd::Attach(queue) => {
                 self.drain();
                 self.queue = Some(queue);
+                lock(&self.core).accepting = true;
             }
             WorkerCmd::Detach => {
                 self.drain();
@@ -191,6 +195,9 @@ impl Worker {
         let part = (format.sample_rate as usize / 1000 * PART_MS).max(1) * channels;
         for samples in self.scratch.chunks(part) {
             let mut core = lock(&self.core);
+            if !core.accepting {
+                break;
+            }
             if core.format != Some(format) {
                 // A capture in another format: its audio can't go into the same buffer.
                 if let Some(old) = &mut core.recorder {
