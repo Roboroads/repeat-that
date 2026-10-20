@@ -23,7 +23,7 @@
 <main>
   <header class="brand">
     <img class="logo" src={icon} alt="" width="28" height="28" />
-    <h1>Repeat that?!</h1>
+    <h1>Repeat That</h1>
   </header>
 
   {#if store.settings}

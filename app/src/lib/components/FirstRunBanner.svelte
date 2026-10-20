@@ -9,7 +9,7 @@
   <aside class="banner">
     <p class="title">Pick the app you want to catch up on</p>
     <p>
-      Repeat that?! keeps the last few seconds of that app's speech in memory, so you can replay what you just
+      Repeat That keeps the last few seconds of that app's speech in memory, so you can replay what you just
       missed.
     </p>
   </aside>

@@ -16,7 +16,7 @@ describe('loading', () => {
   it('shows the app name and the settings once they arrived', async () => {
     await renderApp();
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Repeat that?!' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Repeat That' })).toBeInTheDocument();
     expect(screen.getByRole('slider', { name: 'Buffer length' })).toHaveValue('30');
     expect(screen.getByRole('radio', { name: 'Normal' })).toBeChecked();
     expect(screen.getByRole('switch', { name: /Start with|Start at login/ })).not.toBeChecked();
