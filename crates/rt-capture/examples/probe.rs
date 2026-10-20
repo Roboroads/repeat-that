@@ -138,7 +138,11 @@ fn capture(source: &dyn AppAudioSource, app: &AudioApp, secs: u64, duck: bool) -
             frames_total += frames.len() / usize::from(format.channels);
             if recorder.push(&frames) > 0 {
                 let buffer = recorder.buffer();
-                let latest = buffer.get_back(0).expect("an utterance just finished");
+                // Not the latest utterance: after a split that's the part that just opened.
+                let latest = buffer
+                    .latest_finished_id()
+                    .and_then(|id| buffer.get(id))
+                    .expect("an utterance just finished");
                 println!(
                     "   utterance #{} {:.2} s ({} buffered, {:.1} s of speech)",
                     latest.id,
