@@ -1,5 +1,4 @@
-//! Platform-independent core of Repeat that?!: finding speech in captured audio, keeping it in memory, and replaying
-//! it.
+//! Platform-independent core of Repeat That: finding speech in captured audio, keeping it in memory, and replaying it.
 //!
 //! Audio handled here never leaves memory. See `PRIVACY.md`.
 //!
