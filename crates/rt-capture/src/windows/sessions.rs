@@ -211,13 +211,16 @@ fn file_description(exe: &Path) -> Option<String> {
         {
             return None;
         }
-        let lang = *ptr.cast::<u16>();
-        let codepage = *ptr.cast::<u16>().add(1);
+        // The pointers point into a byte buffer, so they need not be aligned for u16.
+        let [lang, codepage] = ptr.cast::<[u16; 2]>().read_unaligned();
         let key = HSTRING::from(format!("\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription"));
         if !VerQueryValueW(data.as_ptr().cast(), &key, &mut ptr, &mut len).as_bool() || len == 0 {
             return None;
         }
-        let text = wide_to_string(std::slice::from_raw_parts(ptr.cast::<u16>(), len as usize));
+        let wide: Vec<u16> = (0..len as usize)
+            .map(|i| ptr.cast::<u16>().add(i).read_unaligned())
+            .collect();
+        let text = wide_to_string(&wide);
         let text = text.trim();
         (!text.is_empty()).then(|| text.to_owned())
     }
