@@ -11,7 +11,31 @@ use crate::duck_journal::JournalEntry;
 #[derive(Debug, Default)]
 pub(crate) struct BeforeDuck(HashMap<String, JournalEntry>);
 
+/// An audio session whose volume ducking changes.
+pub(crate) trait Session {
+    /// Tells sessions apart while they live: the session instance id on Windows.
+    fn id(&self) -> &str;
+
+    /// The session identifier, which stays the same when the app restarts, and the current volume. `None` if they
+    /// can't be read.
+    fn identity(&self) -> Option<(String, f32)>;
+
+    /// Sets the session's volume; `false` if that failed.
+    fn set_volume(&self, volume: f32) -> bool;
+}
+
 impl BeforeDuck {
+    /// Gives `session` duck `level`, see [`target`](Self::target), and forgets it once it has its volume from before
+    /// ducking back.
+    pub fn apply(&mut self, session: &impl Session, level: f32) {
+        let Some(target) = self.target(session.id(), level, || session.identity()) else {
+            return;
+        };
+        if session.set_volume(target) && level >= 1.0 {
+            self.restored(session.id());
+        }
+    }
+
     /// The volume to give session `id` for duck `level`, or `None` to leave it alone. The first duck remembers the
     /// session's identifier and `current` volume from `session`; later ducks scale that remembered volume, so they
     /// never compound. At `1.0` the remembered volume comes back, and sessions that were never ducked are left alone.

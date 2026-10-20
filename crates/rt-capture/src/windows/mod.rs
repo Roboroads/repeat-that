@@ -8,7 +8,7 @@ use std::env;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, TryLockError};
 
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
@@ -20,12 +20,15 @@ use windows::core::Owned;
 use crate::before_duck::BeforeDuck;
 use crate::duck_guard;
 use crate::duck_journal::{self, JournalEntry};
+use crate::ramp;
 use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, FrameSink, Result, clamp_duck_level};
 
 /// Captures one app through WASAPI process loopback (Windows 10 2004+), including its child processes.
 ///
 /// Process loopback captures the app after its own volume is applied, so ducking would make the capture quieter too.
-/// Captures of a ducked app are amplified by the inverse of the duck level to keep their level.
+/// Captures of a ducked app are amplified by the inverse of the duck level to keep their level. Windows doesn't say when
+/// a volume change reaches the captured audio, only that it is some 30–37 ms after the call, so ducking fades in steps
+/// of under 1 dB (see `ramp`) and the compensation follows each step: being a few milliseconds off is then inaudible.
 ///
 /// Apps start new audio sessions while ducked (a new voice stream, a new tab, a switch to another device). Those would
 /// play at full volume and then be boosted too, so a running capture ducks its app's new sessions every 500 ms on its
@@ -90,8 +93,13 @@ impl AppAudioSource for WasapiSource {
         let duck_level = level.clone();
         let reduck = move || {
             // Locked before reading the level, like `set_app_volume` holds it while changing the level, so this can't
-            // duck sessions an unduck just restored.
-            let mut ducking = ducking.lock().unwrap_or_else(|e| e.into_inner());
+            // duck sessions an unduck just restored. While a ramp holds it, this round is skipped: waiting would stall
+            // the capture for the whole ramp, and the next round is only 500 ms away.
+            let mut ducking = match ducking.try_lock() {
+                Ok(ducking) => ducking,
+                Err(TryLockError::Poisoned(e)) => e.into_inner(),
+                Err(TryLockError::WouldBlock) => return,
+            };
             let level = duck_level.get();
             if level < 1.0 {
                 let _ = sessions::duck_new_sessions(pid, level, &mut ducking.before_duck);
@@ -110,11 +118,17 @@ impl AppAudioSource for WasapiSource {
         if level < 1.0 {
             ducking.start_guard();
         }
-        let ducked = sessions::duck(app.pid, level, &mut ducking.before_duck);
-        ducking.save();
-        ducked?;
-        // Captures switch their compensation at this moment, for audio the engine processed from then on.
-        self.level(app.pid).set(level, loopback::volume_takes_effect());
+        let sessions = sessions::tree_sessions(app.pid)?;
+        let duck_level = self.level(app.pid);
+        // Blocks for the ramp, holding the lock, so a second call or a capture ducking new sessions can't interleave
+        // with it. The callers are already off the UI thread, because the session calls block too.
+        ramp::run(duck_level.get(), level, ramp::STEP_INTERVAL, |step, duck_new| {
+            ramp::apply(&sessions, step, duck_new, &mut ducking.before_duck);
+            // Captures switch their compensation for audio the engine plays from this step's volume on.
+            duck_level.set(step, loopback::volume_takes_effect());
+            // Every step, so the journal knows the volume the sessions are at even if we die mid-ramp.
+            ducking.save();
+        });
         Ok(())
     }
 }
@@ -124,13 +138,16 @@ impl Drop for WasapiSource {
     fn drop(&mut self) {
         let mut ducking = self.ducking.lock().unwrap_or_else(|e| e.into_inner());
         if !ducking.before_duck.is_empty() {
-            // Captures that outlive the source stop ducking new sessions and boosting.
-            let levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
-            for level in levels.values() {
-                level.set(1.0, loopback::now());
-            }
+            // At once rather than in a ramp: nothing should hold up shutting down.
             if let Ok(_com) = Com::init() {
                 let _ = sessions::restore_all(&mut ducking.before_duck);
+            }
+            // Captures that outlive the source stop boosting once the restored volume plays, and stop ducking new
+            // sessions.
+            let since = loopback::volume_takes_effect();
+            let levels = self.levels.lock().unwrap_or_else(|e| e.into_inner());
+            for level in levels.values() {
+                level.set(1.0, since);
             }
         }
         // Sessions that couldn't be restored stay in the journal for the next run.

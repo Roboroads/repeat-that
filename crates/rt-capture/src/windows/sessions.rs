@@ -20,7 +20,7 @@ use windows::Win32::System::Threading::{
 use windows::core::{HSTRING, Interface, PWSTR, w};
 
 use super::backend;
-use crate::before_duck::BeforeDuck;
+use crate::before_duck::{self, BeforeDuck};
 use crate::duck_journal::{self, JournalEntry};
 use crate::process_tree::{Process, ProcessTable};
 use crate::{AudioApp, Result};
@@ -60,60 +60,75 @@ pub(super) fn list_apps() -> Result<Vec<AudioApp>> {
     Ok(apps)
 }
 
-/// Sets every audio session in `root`'s process tree to `level` times its volume from before ducking. At `1.0` the
-/// sessions get their old volume back and are forgotten.
-///
-/// A session that fails, e.g. because it was torn down meanwhile, is skipped so the others still get the new volume.
-pub(super) fn duck(root: u32, level: f32, before_duck: &mut BeforeDuck) -> Result<()> {
-    duck_tree(root, level, before_duck, false)
+/// An audio session of the app being ducked, looked up once so a ramp doesn't enumerate sessions on every step.
+pub(super) struct Session {
+    id: String,
+    control: IAudioSessionControl2,
+    volume: ISimpleAudioVolume,
+}
+
+impl Session {
+    fn new(control: &IAudioSessionControl2) -> windows::core::Result<Self> {
+        Ok(Self {
+            id: take_co_string(unsafe { control.GetSessionInstanceIdentifier() }?),
+            volume: control.cast()?,
+            control: control.clone(),
+        })
+    }
+}
+
+impl before_duck::Session for Session {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn identity(&self) -> Option<(String, f32)> {
+        unsafe {
+            let current = self.volume.GetMasterVolume().ok()?;
+            Some((take_co_string(self.control.GetSessionIdentifier().ok()?), current))
+        }
+    }
+
+    fn set_volume(&self, volume: f32) -> bool {
+        unsafe { self.volume.SetMasterVolume(volume, std::ptr::null()) }.is_ok()
+    }
+}
+
+/// The audio sessions in `root`'s process tree. A session that fails, e.g. because it was torn down meanwhile, is
+/// skipped so the others still get ducked.
+pub(super) fn tree_sessions(root: u32) -> Result<Vec<Session>> {
+    let processes = process_table()?;
+    let mut sessions = Vec::new();
+    for_each_session(|session| {
+        let pid = unsafe { session.GetProcessId() }.unwrap_or(0);
+        if pid != 0
+            && processes.is_in_tree(pid, root)
+            && let Ok(session) = Session::new(session)
+        {
+            sessions.push(session);
+        }
+    })?;
+    Ok(sessions)
 }
 
 /// Ducks only the sessions in `root`'s process tree that started after it was ducked to `level`. Sessions that are
 /// already ducked keep their volume, including any the user gave them since.
 pub(super) fn duck_new_sessions(root: u32, level: f32, before_duck: &mut BeforeDuck) -> Result<()> {
-    duck_tree(root, level, before_duck, true)
+    for session in tree_sessions(root)? {
+        if !before_duck.contains(&session.id) {
+            before_duck.apply(&session, level);
+        }
+    }
+    Ok(())
 }
 
 /// Gives every session in `before_duck` its volume from before ducking back, whichever process it belongs to now.
 pub(super) fn restore_all(before_duck: &mut BeforeDuck) -> Result<()> {
     for_each_session(|session| {
-        let _ = duck_session(session, 1.0, before_duck, false);
-    })
-}
-
-fn duck_tree(root: u32, level: f32, before_duck: &mut BeforeDuck, new_only: bool) -> Result<()> {
-    let processes = process_table()?;
-    for_each_session(|session| {
-        let pid = unsafe { session.GetProcessId() }.unwrap_or(0);
-        if pid != 0 && processes.is_in_tree(pid, root) {
-            let _ = duck_session(session, level, before_duck, new_only);
+        if let Ok(session) = Session::new(session) {
+            before_duck.apply(&session, 1.0);
         }
     })
-}
-
-fn duck_session(
-    session: &IAudioSessionControl2,
-    level: f32,
-    before_duck: &mut BeforeDuck,
-    new_only: bool,
-) -> windows::core::Result<()> {
-    let id = take_co_string(unsafe { session.GetSessionInstanceIdentifier() }?);
-    if new_only && before_duck.contains(&id) {
-        return Ok(());
-    }
-    let volume: ISimpleAudioVolume = session.cast()?;
-    let target = before_duck.target(&id, level, || unsafe {
-        let current = volume.GetMasterVolume().ok()?;
-        Some((take_co_string(session.GetSessionIdentifier().ok()?), current))
-    });
-    let Some(target) = target else {
-        return Ok(());
-    };
-    unsafe { volume.SetMasterVolume(target, std::ptr::null()) }?;
-    if level >= 1.0 {
-        before_duck.restored(&id);
-    }
-    Ok(())
 }
 
 /// Restores the sessions a duck journal from an earlier run lists, if their volume is still the one we set. Returns the
