@@ -36,3 +36,11 @@ cd app && npm install && npm run tauri build
 
 The built app ends up in `target/release/bundle/macos/`. An app you build yourself isn't quarantined, so Gatekeeper
 doesn't check it.
+
+It isn't signed with our Developer ID certificate either, at most ad-hoc signed, and an ad-hoc signature changes with
+every build. macOS ties the audio-capture permission to the signature, so after a rebuild it may stop honoring the
+permission you granted, and capture returns silence. Reset it and grant it again:
+
+```sh
+tccutil reset AudioCapture me.roboroads.repeatthat
+```
