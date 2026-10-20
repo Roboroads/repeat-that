@@ -1,16 +1,25 @@
 //! Repeat That desktop shell: tray icon, hidden settings window and the plugins the rest of the app builds on.
 
 mod actions;
+mod autostart;
+mod commands;
+mod hotkeys;
+mod ipc;
+mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
+mod service;
+mod settings;
+mod store;
 mod tray;
 mod window;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
+use crate::actions::{NoEngine, SharedEngine};
 use crate::tray::{SharedStatus, TrayStatus};
 
 /// Set by `build.rs` when the frontend was never built and the app embeds a placeholder page instead of it.
@@ -28,7 +37,8 @@ pub fn run() {
     }
     let app = tauri::Builder::default()
         // Start order: single instance first, so a second launch exits before it sets anything up, then the plugins the
-        // rest of the app uses, then the tray (in `setup`). The audio engine follows once it exists.
+        // rest of the app uses, then the settings with the hotkeys, then the tray (both in `setup`). The audio engine
+        // follows once it exists.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             window::on_second_launch(app, &args)
         }))
@@ -40,6 +50,13 @@ pub fn run() {
             Some(vec![window::HIDDEN_ARG]),
         ))
         .manage::<SharedStatus>(Mutex::new(TrayStatus::default()))
+        // Hotkeys and the tray drive this; the real engine takes its place once it exists.
+        .manage::<SharedEngine>(Arc::new(NoEngine))
+        .invoke_handler(tauri::generate_handler![
+            commands::get_settings,
+            commands::update_settings,
+            commands::suspend_hotkeys
+        ])
         .on_window_event(window::on_window_event)
         .setup(|app| {
             // A tray app: no Dock icon and no app menu bar on macOS. The tray menu and `RunEvent::Reopen` (the app
@@ -47,6 +64,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let handle = app.handle();
+            // The settings decide whether this is the first run and which hotkeys to register, so they come first.
+            service::install(handle);
             tray::setup(handle)?;
             let args: Vec<String> = std::env::args().collect();
             window::apply_startup_visibility(handle, &args);
