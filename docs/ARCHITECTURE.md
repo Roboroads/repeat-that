@@ -100,16 +100,33 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 GitHub Actions builds:
 - Windows: NSIS `.exe` + `.msi` (x64, ARM64)
 - Linux: `.deb` (+ AppImage later)
-- macOS: universal `.dmg`, **ad-hoc signed** (`bundle.macOS.signingIdentity = "-"`) and **not notarized**: the project
-  doesn't use a paid Apple Developer account. Apple Silicon refuses to run unsigned code at all, so the ad-hoc signature
-  is needed. Users open the app once via *Open Anyway* or by removing the quarantine flag. See
-  [install-macos.md](install-macos.md).
-- Every release publishes a `SHA256SUMS` file so users can verify downloads before bypassing Gatekeeper.
+- macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
+  ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
+  credentials are GitHub Actions secrets, listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization).
+- Every release publishes a `SHA256SUMS` file so users can verify downloads
+  ([verify-downloads.md](verify-downloads.md)).
 
-Ad-hoc signatures change with every build, so macOS may ask for the audio-capture permission again after an update. The
-app should detect that capture returns no audio and point the user to the permission setting.
+macOS ties the audio-capture permission to the app's signing identity. A Developer ID signature stays the same from
+one release to the next, so an update doesn't reset the permission. The user can still deny it or revoke it later, so
+the app should detect that capture returns no audio and point the user to the permission setting.
 
-The Tauri updater verifies updates with its own key pair (stored as a GitHub Actions secret), which works without Apple
-signing.
+Milestone 6 has to make capture work under the hardened runtime, which notarization requires and Tauri turns on by
+default (`bundle.macOS.hardenedRuntime`). Apple's
+[documentation for Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
+asks for the `NSAudioCaptureUsageDescription` key in `Info.plist` (Tauri merges `app/src-tauri/Info.plist` into the
+bundle's) and names no entitlement. The sample app [AudioCap](https://github.com/insidegui/AudioCap) uses taps with the
+hardened runtime and ships `com.apple.security.device.audio-input`, but it is also sandboxed, so that doesn't prove the
+entitlement is needed here. Put entitlements in `app/src-tauri/Entitlements.plist`, set through
+`bundle.macOS.entitlements`, test on a signed, notarized build, and keep only what capture turns out to need.
 
-Open-source code signing on Windows: apply to [SignPath Foundation](https://signpath.org).
+Tauri signs the `.dmg` with the same identity, but it notarizes and staples only the `.app` inside it. Milestone 6 also
+has to notarize and staple the `.dmg` in the release workflow (`xcrun notarytool submit` with the same API key, then
+`xcrun stapler staple`), and check the file that gets uploaded:
+`spctl -a -t open --context context:primary-signature -v` and `xcrun stapler validate` on the `.dmg`, and
+`xcrun stapler validate` on the app inside.
+
+There is no auto-updater yet (it is on the roadmap under later ideas). When it arrives, the Tauri updater will verify
+updates with its own key pair, stored as a GitHub Actions secret and separate from any code signing.
+
+The Windows installers are not code signed yet, so Windows shows a SmartScreen warning. Open-source code signing on
+Windows: apply to [SignPath Foundation](https://signpath.org).
