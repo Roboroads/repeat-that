@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AppEntry } from '../api';
-import { argsOf, renderApp, setVisibility } from '../../test-utils';
+import { argsOf, holdAnswers, renderApp, setVisibility } from '../../test-utils';
 
 const discord: AppEntry = { pid: 4120, name: 'Discord', exePath: 'C:\\Apps\\Discord.exe', icon: 'data:image/png;base64,AAAA' };
 const teams: AppEntry = { pid: 8844, name: 'Teams', exePath: 'C:\\Apps\\Teams.exe', icon: null };
@@ -55,6 +55,27 @@ describe('app list', () => {
     await waitFor(() => expect(screen.getByRole('radio', { name: 'Teams' })).toBeChecked());
     expect(argsOf(backend, 'select_app')).toEqual([{ app: { ...teams, icon: null } }]);
     expect(backend.settings.target).toEqual({ exePath: teams.exePath, name: 'Teams' });
+  });
+
+  it('waits for a settings save that is still out before switching the app', async () => {
+    const { backend } = await renderApp({ apps: [discord, teams], settings: { target, firstRunDone: true } });
+    await screen.findByRole('radio', { name: 'Teams' });
+    const release = holdAnswers(backend, 'update_settings');
+
+    await fireEvent.change(screen.getByRole('slider', { name: 'Buffer length' }), { target: { value: '45' } });
+    await fireEvent.click(screen.getByRole('radio', { name: 'Teams' }));
+
+    await waitFor(() => expect(argsOf(backend, 'update_settings')).toHaveLength(1));
+    expect(argsOf(backend, 'select_app')).toEqual([]);
+    expect(screen.getByRole('radio', { name: 'Teams' })).toBeChecked();
+
+    // The save's answer was written before the switch and still names the old app. It must not undo the switch.
+    release();
+    await waitFor(() => expect(argsOf(backend, 'select_app')).toHaveLength(1));
+    await waitFor(() => expect(backend.settings.target?.name).toBe('Teams'));
+    await waitFor(() => expect(screen.getByRole('slider', { name: 'Buffer length' })).toHaveValue('45'));
+    expect(screen.getByRole('radio', { name: 'Teams' })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Discord' })).not.toBeChecked();
   });
 
   it('shows the current target selected', async () => {

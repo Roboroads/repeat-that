@@ -112,7 +112,11 @@ export class MockBackend {
   handle = (cmd: string, args: unknown): unknown => {
     this.calls.push({ cmd, args });
     const override = this.overrides[cmd];
-    if (override) return override(args);
+    return override ? override(args) : this.run(cmd, args);
+  };
+
+  /** Runs a command for real, past any override (which may want to call it after a delay). */
+  run(cmd: string, args: unknown): unknown {
     const a = (args ?? {}) as Record<string, unknown>;
     switch (cmd) {
       case 'get_settings':
@@ -143,7 +147,7 @@ export class MockBackend {
       default:
         return fail('backend', `Unknown command: ${cmd}`);
     }
-  };
+  }
 
   /** Lets `ms` of simulated time pass: speech accumulates while capturing, a replay plays on. */
   tick(ms: number): void {

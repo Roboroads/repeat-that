@@ -30,9 +30,14 @@ export class SettingsStore {
 
   private unlisteners: api.Unlisten[] = [];
   private disposed = false;
-  /** Updates sent and not answered yet. Only the answer to the last one is taken as the truth. */
+  // Everything that changes settings goes through one queue, one call at a time: an answer can then never overwrite
+  // a change that was made after the call it answers.
   private inFlight = 0;
   private queue: Promise<unknown> = Promise.resolve();
+  /** The settings as the backend last confirmed them. `settings` is this plus the changes still in the queue. */
+  private confirmed: Settings | null = null;
+  /** The queue's last call failed: what is shown may be wrong, fetch the truth once the queue is empty. */
+  private needsResync = false;
   private deviceNames = new Map<string, string>();
   private appsBusy = false;
   private devicesBusy = false;
@@ -55,7 +60,7 @@ export class SettingsStore {
       await this.subscribe();
       const [settings, status] = await Promise.all([api.getSettings(), api.getStatus()]);
       if (this.disposed) return;
-      this.settings = settings;
+      this.settings = this.confirmed = settings;
       this.status = status;
     } catch (raw) {
       if (!this.disposed) this.loadError = api.toApiError(raw).message;
@@ -79,7 +84,7 @@ export class SettingsStore {
       unlisteners.push(
         await api.onSettingsChanged((settings) => {
           // An answer to our own update is on its way and is the newer truth.
-          if (this.inFlight === 0) this.settings = settings;
+          if (this.inFlight === 0) this.settings = this.confirmed = settings;
         }),
       );
     } catch (error) {
@@ -103,7 +108,7 @@ export class SettingsStore {
 
   /**
    * Saves a patch. Resolves with the backend's refusal, or `null` when it went through. The page shows the new
-   * value at once and takes the backend's answer when it comes, or the old value back when it is refused.
+   * value at once and takes the backend's answer when the queue is empty, or the old value back when it is refused.
    */
   async update(patch: SettingsPatch, options: UpdateOptions = {}): Promise<api.ApiError | null> {
     const { optimistic = true, report = true } = options;
@@ -115,22 +120,17 @@ export class SettingsStore {
     }
     if (optimistic) this.settings = { ...this.settings, ...patch };
 
-    this.inFlight++;
-    const run = this.queue.then(() => api.updateSettings(patch));
-    this.queue = run.catch(() => undefined);
-    const last = () => this.inFlight === 1;
-    try {
-      const saved = await run;
-      if (last() && !this.disposed) this.settings = saved;
-      return null;
-    } catch (raw) {
-      const error = api.toApiError(raw);
-      if (report) this.error = error.message;
-      if (last()) await this.resync();
-      return error;
-    } finally {
-      this.inFlight--;
-    }
+    return this.enqueue(async () => {
+      try {
+        this.confirmed = await api.updateSettings(patch);
+        return null;
+      } catch (raw) {
+        const error = api.toApiError(raw);
+        if (report) this.error = error.message;
+        this.needsResync = true;
+        return error;
+      }
+    });
   }
 
   /** Makes `app` the target. The backend wipes its buffer; picking one also ends the first run. */
@@ -138,17 +138,39 @@ export class SettingsStore {
     if (this.settings === null) return;
     const firstRun = !this.settings.firstRunDone;
     this.settings = { ...this.settings, target: { exePath: app.exePath, name: app.name } };
-    try {
-      await api.selectApp(app);
-    } catch (raw) {
-      this.error = api.toApiError(raw).message;
+    await this.enqueue(async () => {
+      try {
+        await api.selectApp(app);
+        this.confirmed = firstRun ? await api.updateSettings({ firstRunDone: true }) : await api.getSettings();
+      } catch (raw) {
+        this.error = api.toApiError(raw).message;
+        this.needsResync = true;
+      }
+    });
+  }
+
+  /** Runs `call` after everything queued before it, and settles the page once the queue is empty. */
+  private enqueue<T>(call: () => Promise<T>): Promise<T> {
+    this.inFlight++;
+    const run = this.queue.then(call);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run.finally(() => {
+      this.inFlight--;
+      if (this.inFlight === 0) void this.settle();
+    });
+  }
+
+  /** The queue is empty: show what the backend confirmed, or fetch it again after a failure. */
+  private async settle(): Promise<void> {
+    if (this.disposed) return;
+    if (this.needsResync) {
+      this.needsResync = false;
       await this.resync();
-      return;
-    }
-    if (firstRun) {
-      await this.update({ firstRunDone: true });
-    } else {
-      await this.resync();
+    } else if (this.confirmed !== null) {
+      this.settings = this.confirmed;
     }
   }
 
@@ -209,7 +231,10 @@ export class SettingsStore {
   private async resync(): Promise<void> {
     try {
       const settings = await api.getSettings();
-      if (!this.disposed) this.settings = settings;
+      if (this.disposed) return;
+      this.confirmed = settings;
+      // A change made while this was on its way is not in `settings` yet: leave the display to the queue then.
+      if (this.inFlight === 0) this.settings = settings;
     } catch {
       // The backend is not answering; what we show stays.
     }

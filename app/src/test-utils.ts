@@ -33,3 +33,20 @@ export function setVisibility(state: 'visible' | 'hidden'): void {
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
   document.dispatchEvent(new Event('visibilitychange'));
 }
+
+/**
+ * Makes the backend slow to answer `cmd`: it does the work at once but the answer only arrives when the returned
+ * function is called. The answer is what the backend knew when it did the work, so it can be out of date by then.
+ */
+export function holdAnswers(backend: MockBackend, cmd: string): () => void {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  backend.overrides[cmd] = async (args) => {
+    const answer = backend.run(cmd, args);
+    await gate;
+    return answer;
+  };
+  return release;
+}
