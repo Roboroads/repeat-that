@@ -1,0 +1,188 @@
+name: Build Windows installers
+
+# Builds the Windows x64 installers (NSIS .exe and MSI) and checksums them.
+#   * pull_request / workflow_dispatch without a tag: dry run. The installers and SHA256SUMS are workflow artifacts.
+#   * with a tag (workflow_call from release-please.yml, or workflow_dispatch to redo an existing release): the same
+#     files are also attached to that GitHub release. release-please creates its releases with GITHUB_TOKEN, which
+#     doesn't trigger `on: release` workflows, so release-please.yml calls this one directly.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build and attach the installers to, for example v0.1.0
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach the installers to. Empty for a dry run (artifacts only).
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - app/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - release-please-config.json
+      - .release-please-manifest.json
+      - .github/scripts/check-release-config.py
+      - .github/workflows/build-windows.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cheap guard that a release bumps every file carrying the version. Dry runs only: a tagged run has already been
+  # through release-please, and by then a stale `release-as` pin would only be a warning anyway.
+  release-config:
+    name: Release config
+    if: ${{ !inputs.tag }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: python3 .github/scripts/check-release-config.py
+
+  build:
+    name: Installers (Windows x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check the tag
+        if: ${{ inputs.tag }}
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must look like v0.1.0, got '$TAG'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          # A tagged run builds exactly what was released. Empty: the event's own commit.
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # Pinned by commit, so the toolchain is chosen with an input instead of the ref.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Builds the frontend (beforeBuildCommand) and the app, then bundles it. No tagName/releaseId: the action only
+      # builds, and the files are staged, checksummed and uploaded below so the release assets have predictable names.
+      - name: Build installers
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        with:
+          projectPath: app
+          args: --bundles nsis,msi
+
+      # Tauri names its bundles after productName ("Repeat that_0.1.0_x64-setup.exe"). GitHub turns the spaces in
+      # release asset names into dots, so rename first and let SHA256SUMS list the names people will download.
+      - name: Stage installers and write SHA256SUMS
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle=target/release/bundle
+          nsis=("$bundle"/nsis/*-setup.exe)
+          msi=("$bundle"/msi/*.msi)
+          if [[ ${#nsis[@]} -ne 1 || ${#msi[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one NSIS and one MSI installer under $bundle"
+            find "$bundle" -type f | sort
+            exit 1
+          fi
+
+          mkdir installers
+          for file in "${nsis[0]}" "${msi[0]}"; do
+            name=$(basename "$file")
+            cp "$file" "installers/${name// /-}"
+          done
+
+          # Name looks like Repeat-that_<version>_x64-setup.exe
+          version=$(basename "${nsis[0]}" | cut -d_ -f2)
+          if [[ -n "$TAG" && "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match the app version $version; is release-please-config.json bumping every version file?"
+            exit 1
+          fi
+
+          cd installers
+          sha256sum --text -- *.exe *.msi | tee SHA256SUMS
+          {
+            echo "### Windows installers $version"
+            echo
+            echo '```'
+            ls -l
+            echo
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Single files, uploaded as they are (no zip), so each installer is one click away on the run page.
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v7
+        with:
+          path: installers/*-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload MSI installer
+        uses: actions/upload-artifact@v7
+        with:
+          path: installers/*.msi
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload SHA256SUMS
+        uses: actions/upload-artifact@v7
+        with:
+          path: installers/SHA256SUMS
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Attach to release
+    if: ${{ inputs.tag }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: installers
+          merge-multiple: true
+
+      - name: Verify and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          cd installers
+          ls -l
+          sha256sum --check SHA256SUMS
+          gh release upload "$TAG" *.exe *.msi SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"

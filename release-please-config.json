@@ -8,11 +8,17 @@
     ".": {
       "package-name": "repeat-that",
       "changelog-path": "CHANGELOG.md",
+      "release-as": "0.1.0",
       "extra-files": [
         {
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "json",
+          "path": "app/package.json",
+          "jsonpath": "$.version"
         }
       ]
     }
