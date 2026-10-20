@@ -52,12 +52,25 @@ including a note on recording laws.
 The app is a [Tauri 2](https://tauri.app) application with a Rust core and a Svelte + TypeScript UI.
 
 ```sh
-# Rust core + tests (any OS)
+# Rust crates and tests (any OS)
 cargo test --workspace
+
+# The desktop app, with live reload (needs Node.js 22 LTS or later and the system packages below)
+cd app
+npm install
+npm run tauri dev
 ```
 
-The desktop app (`app/`) arrives in milestone 4. It will need Node.js 20+ and the
-[Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS.
+The app starts in the tray. The first launch also opens the settings window; closing it keeps the app running in the
+tray, and Quit in the tray menu ends it. Capture and replay are not wired up yet.
+
+System packages (the [Tauri prerequisites](https://tauri.app/start/prerequisites/) cover Windows and macOS):
+
+```sh
+# Debian / Ubuntu
+sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+  libasound2-dev libxdo-dev
+```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.
 
