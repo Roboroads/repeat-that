@@ -4,7 +4,7 @@ Thanks for wanting to help! Bug reports, feature ideas, testing on different har
 
 ## Getting started
 
-1. Install [Rust](https://rustup.rs) (stable), Node.js 22+ (the current LTS), and the
+1. Install [Rust](https://rustup.rs) (stable), Node.js 22 LTS or later, and the
    [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Debian/Ubuntu:
    `sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev`
 2. Run the Rust tests: `cargo test --workspace`
