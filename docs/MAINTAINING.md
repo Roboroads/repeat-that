@@ -69,6 +69,10 @@ in [`install-windows.md`](install-windows.md).
   `tag` empty for a dry run that only produces artifacts (the job summary shows the checksums). Give a `tag` to build
   and attach the installers to that release. For a draft, also give the release commit as `sha`, because the tag doesn't
   exist yet; the draft is published when the files are attached.
+- **No silent replacement.** The `Check release` job runs first and fails within seconds if the release doesn't exist,
+  or if it is public and already has installers: replacing those changes files people may have downloaded and
+  verified against `SHA256SUMS`. A draft has no public files, so its assets are overwritten freely. To replace the
+  installers of a published release on purpose, run the workflow by hand with `replace` ticked.
 - Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
 

@@ -33,6 +33,10 @@ on:
         type: string
         required: false
         default: ""
+      replace:
+        description: Replace installers already attached to a published release. Their hashes change, so only when you must.
+        type: boolean
+        default: false
   pull_request:
     paths:
       - app/**
@@ -65,8 +69,38 @@ jobs:
       - uses: actions/checkout@v7
       - run: python3 .github/scripts/check-release-config.py
 
+  # Fails in seconds, before the 15-minute build, when there is no release to attach to or when it is public and
+  # already has installers (replacing those would change files people may have downloaded and verified).
+  check-release:
+    name: Check release
+    if: ${{ inputs.tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # drafts are only visible with write access; this job only reads
+    steps:
+      - name: Look at the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPLACE: ${{ inputs.replace }}
+        run: |
+          if ! info=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets); then
+            echo "::error::There is no release (published or draft) for $TAG. release-please creates it; create it first when running by hand."
+            exit 1
+          fi
+          draft=$(jq -r .isDraft <<<"$info")
+          existing=$(jq -r '[.assets[].name | select(endswith(".exe") or endswith(".msi") or . == "SHA256SUMS")] | join(", ")' <<<"$info")
+          echo "draft: $draft; installer assets already attached: ${existing:-none}"
+          if [[ "$draft" != true && -n "$existing" && "$REPLACE" != true ]]; then
+            echo "::error::$TAG is published and already has $existing. Replacing them changes files people may have downloaded and verified. Run again with 'replace' ticked if you really mean it."
+            exit 1
+          fi
+
   build:
     name: Installers (Windows x64)
+    needs: check-release
+    # check-release is skipped on pull requests and dry runs, so don't wait for it to succeed, only not to fail.
+    if: ${{ !cancelled() && needs.check-release.result != 'failure' }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -200,13 +234,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          REPLACE: ${{ inputs.replace }}
         run: |
           cd installers
           ls -l
           sha256sum --check SHA256SUMS
-          gh release upload "$TAG" *.exe *.msi SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
 
-          # Only now does the release become public (a no-op when it already was).
-          if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" == true ]]; then
+          # Without --clobber gh refuses to touch an asset that already exists. A draft has no public files to
+          # protect, so a re-run may overwrite its own earlier upload; a published release only on request.
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          flags=()
+          if [[ "$draft" == true || "$REPLACE" == true ]]; then
+            flags=(--clobber)
+          fi
+          gh release upload "$TAG" *.exe *.msi SHA256SUMS "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+
+          # Only now does the release become public (nothing to do when it already was).
+          if [[ "$draft" == true ]]; then
             gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
           fi
