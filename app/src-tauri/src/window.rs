@@ -27,6 +27,10 @@ pub fn should_show_on_second_launch<S: AsRef<str>>(args: &[S]) -> bool {
 }
 
 /// Shows the settings window, restoring and focusing it if it is minimized or behind other windows.
+///
+/// On macOS the app has the accessory activation policy (no Dock icon), which does not by itself bring it to the front.
+/// `set_focus` does: tao orders the window front and calls `activateIgnoringOtherApps` on the application (tao 0.37,
+/// `util::set_focus`), and `show` has already run by then, which is what that call checks for.
 pub fn show_settings<R: Runtime>(app: &AppHandle<R>) {
     let Some(window) = app.get_webview_window(SETTINGS_LABEL) else {
         eprintln!("settings window is missing");

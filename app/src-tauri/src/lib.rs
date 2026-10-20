@@ -20,9 +20,19 @@ use tauri_plugin_autostart::MacosLauncher;
 use crate::actions::{NoEngine, SharedEngine};
 use crate::tray::{SharedStatus, TrayStatus};
 
+/// Set by `build.rs` when the frontend was never built and the app embeds a placeholder page instead of it.
+const EMBEDS_PLACEHOLDER_FRONTEND: bool = option_env!("REPEAT_THAT_FRONTEND_PLACEHOLDER").is_some();
+
 /// Starts the app. `rt_capture::duck_guard::run_if_requested()` has already run in `main`, so this is never a duck
 /// guard process.
 pub fn run() {
+    // `tauri dev` loads the dev server and never shows the embedded page.
+    if EMBEDS_PLACEHOLDER_FRONTEND && !cfg!(dev) {
+        eprintln!(
+            "warning: the frontend was not built, so the settings window shows a placeholder page. Run `npm run build` \
+             in app/ and build the app again."
+        );
+    }
     let app = tauri::Builder::default()
         // Start order: single instance first, so a second launch exits before it sets anything up, then the plugins the
         // rest of the app uses, then the settings with the hotkeys, then the tray (both in `setup`). The audio engine
@@ -103,5 +113,15 @@ mod tests {
     fn a_request_while_the_window_exists_gets_through() {
         // The OS asking the app to quit (Cmd+Q, Dock Quit, logoff) must not be vetoed.
         assert!(!keep_running_after_exit_request(None, 1));
+    }
+
+    #[test]
+    fn the_placeholder_flag_matches_the_embedded_frontend() {
+        // `build.rs` sets the flag exactly when `../dist/index.html` is its placeholder page.
+        let index = std::fs::read_to_string("../dist/index.html").expect("../dist/index.html exists after a build");
+        assert_eq!(
+            EMBEDS_PLACEHOLDER_FRONTEND,
+            index.contains("repeat-that: frontend placeholder")
+        );
     }
 }

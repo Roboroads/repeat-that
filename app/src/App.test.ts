@@ -10,6 +10,15 @@ describe('App', () => {
     expect(screen.getByText(/settings are coming soon/i)).toBeInTheDocument();
   });
 
+  it('shows the app icon from its source SVG', () => {
+    const { container } = render(App);
+
+    // Vite turns the imported file into a URL (a data URI in tests, a hashed file in the build), not the old public path.
+    const src = container.querySelector('img.logo')?.getAttribute('src');
+    expect(src).toMatch(/svg/);
+    expect(src).not.toBe('/icon.svg');
+  });
+
   it('tells the user the app lives in the tray', () => {
     render(App);
 
