@@ -1,10 +1,10 @@
 use std::time::Duration;
 
+use crate::AudioFormat;
 use crate::buffer::SpeechBuffer;
 use crate::resample::downmix;
 use crate::segmenter::{Segmenter, SegmenterConfig};
 use crate::vad::Vad;
-use crate::AudioFormat;
 
 /// Turns captured audio into buffered utterances: downmix → voice activity detection → [`SpeechBuffer`].
 pub struct Recorder {
