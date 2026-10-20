@@ -34,12 +34,11 @@ On macOS and Linux the tool can also do the comparison. Save `SHA256SUMS` in the
 one of these there:
 
 ```sh
-sha256sum -c SHA256SUMS --ignore-missing   # Linux
-shasum -a 256 -c SHA256SUMS                # macOS
+sha256sum -c SHA256SUMS --ignore-missing       # Linux
+shasum -a 256 -c --ignore-missing SHA256SUMS   # macOS
 ```
 
-Your file must show `OK`. On macOS, `shasum` also reports the listed files you didn't download as `FAILED open or read`.
-Ignore those lines.
+Your file must show `OK`. Listed files you didn't download are skipped.
 
 `SHA256SUMS` sits on the same release page as the installers, so this catches a corrupted or incomplete download. It
 doesn't prove who built the file.
