@@ -45,8 +45,9 @@ on:
       - Cargo.lock
       - release-please-config.json
       - .release-please-manifest.json
-      - .github/scripts/check-release-config.py
+      - .github/scripts/**
       - .github/workflows/build-windows.yml
+      - .github/workflows/release-please.yml
 
 permissions:
   contents: read
