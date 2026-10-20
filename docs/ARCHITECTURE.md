@@ -109,6 +109,15 @@ macOS ties the audio-capture permission to the app's signing identity. A Develop
 one release to the next, so an update doesn't reset the permission. The user can still deny it or revoke it later, so
 the app should detect that capture returns no audio and point the user to the permission setting.
 
+Milestone 6 has to make capture work under the hardened runtime, which notarization requires and Tauri turns on by
+default (`bundle.macOS.hardenedRuntime`). Apple's
+[documentation for Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
+asks for the `NSAudioCaptureUsageDescription` key in `Info.plist` (Tauri merges `src-tauri/Info.plist` into the
+bundle's) and names no entitlement. The sample app [AudioCap](https://github.com/insidegui/AudioCap) uses taps with the
+hardened runtime and ships `com.apple.security.device.audio-input`, but it is also sandboxed, so that doesn't prove the
+entitlement is needed here. Put entitlements in an `Entitlements.plist` set through `bundle.macOS.entitlements`, test on
+a signed, notarized build, and keep only what capture turns out to need.
+
 The Tauri updater verifies updates with its own key pair (stored as a GitHub Actions secret), separate from the Apple
 and Windows code signing.
 
