@@ -47,7 +47,8 @@
 - [ ] Transcript panel / overlay, memory-only
 
 ## Milestone 8 — Website and going public
-This milestone starts after milestone 4, because the site needs the v0.1 release to link to, and can run in parallel with 5–7.
+This milestone starts after milestone 4, because the site needs the v0.1 release to link to, and can run in
+parallel with 5–7.
 
 - [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist) (on a free plan, GitHub Pages needs a public repository)
 - [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release (whose `SHA256SUMS` ships with the installers from milestone 4), and a link to [how to verify a download](docs/verify-downloads.md)
@@ -58,8 +59,9 @@ This milestone starts after milestone 4, because the site needs the v0.1 release
 The demo video never contains audio captured from someone else's call. It uses the mock backend with synthetic or
 licensed speech, or a staged conversation recorded outside the app with everyone's consent. That is a consented
 exception for marketing material only, and the app itself still never writes audio to disk (see
-[PRIVACY.md](PRIVACY.md)). Large media stays out of git history, Pages-only branches included: the video and any other big files go to release
-assets or an external host.
+[PRIVACY.md](PRIVACY.md)). Large media stays out of git history, Pages-only branches included: the video and any other
+big files go to release assets or an external host. The site plays the video from a `<video>` tag on a release asset, or
+from a `youtube-nocookie.com` embed that only loads after a click, so opening the page contacts no third party.
 
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
