@@ -185,6 +185,12 @@ impl<R: Runtime> SettingsPersistence for StorePersistence<R> {
         self.store.get(SETTINGS_KEY)
     }
 
+    fn problem(&self) -> Option<String> {
+        crate::service::lock(&self.blocked)
+            .as_ref()
+            .map(|block| block.message().to_string())
+    }
+
     fn save(&self, settings: &Settings) -> Result<(), String> {
         self.check_writable()?;
         let value = serde_json::to_value(settings).map_err(|err| err.to_string())?;
@@ -206,14 +212,28 @@ impl<R: Runtime> SettingsPersistence for StorePersistence<R> {
 }
 
 /// Settings that live as long as the app does. Stands in when the settings file can't be set up.
-#[derive(Default)]
 pub struct InMemoryPersistence {
     stored: Mutex<Option<Value>>,
+    /// Why there is no file.
+    reason: String,
+}
+
+impl InMemoryPersistence {
+    pub fn new(reason: impl Into<String>) -> Self {
+        InMemoryPersistence {
+            stored: Mutex::new(None),
+            reason: reason.into(),
+        }
+    }
 }
 
 impl SettingsPersistence for InMemoryPersistence {
     fn load(&self) -> Option<Value> {
         crate::service::lock(&self.stored).clone()
+    }
+
+    fn problem(&self) -> Option<String> {
+        Some(self.reason.clone())
     }
 
     fn save(&self, settings: &Settings) -> Result<(), String> {
@@ -501,6 +521,47 @@ mod store_tests {
         assert!(err.contains("newer version"), "{err}");
         assert_eq!(fs::read_to_string(dir.file()).unwrap(), before);
         assert!(app.get_store(dir.file()).is_none(), "nor by the plugin's flush at exit");
+    }
+
+    #[test]
+    fn a_healthy_file_reports_no_problem() {
+        let dir = TempDir::new();
+        let app = app();
+        let persistence = open(&app, &dir);
+        assert_eq!(persistence.problem(), None);
+        persistence.save(&settings()).unwrap();
+        assert_eq!(persistence.problem(), None);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_moved_aside_is_reported_until_it_can() {
+        let dir = TempDir::new();
+        corrupt_file_that_cannot_be_moved(&dir);
+        let app = app();
+        let persistence = open(&app, &dir);
+        let problem = persistence.problem().expect("the problem is reported");
+        assert!(problem.contains("damaged"), "{problem}");
+        fs::remove_dir_all(backup_of(&dir)).unwrap();
+        persistence.save(&settings()).unwrap();
+        assert_eq!(persistence.problem(), None);
+    }
+
+    #[test]
+    fn a_newer_file_is_reported() {
+        let dir = TempDir::new();
+        write_settings_file(&dir, &json!({ "settings": { "version": 9 } }));
+        let app = app();
+        let problem = open(&app, &dir).problem().expect("the problem is reported");
+        assert!(problem.contains("newer version"), "{problem}");
+    }
+
+    #[test]
+    fn settings_kept_in_memory_work_and_say_why() {
+        let persistence = InMemoryPersistence::new("no config folder");
+        assert_eq!(persistence.problem().as_deref(), Some("no config folder"));
+        assert_eq!(persistence.load(), None);
+        persistence.save(&settings()).unwrap();
+        assert_eq!(sanitize(&persistence.load().unwrap()), settings());
     }
 
     #[test]

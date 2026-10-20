@@ -19,6 +19,10 @@ pub trait SettingsPersistence: Send + Sync {
     /// The stored settings object; `None` when there is none or the file can't be read.
     fn load(&self) -> Option<Value>;
     fn save(&self, settings: &Settings) -> Result<(), String>;
+    /// Why settings can't be (reliably) saved right now, in words for the user; `None` when all is well.
+    fn problem(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Called with the new settings after every change.
@@ -137,6 +141,14 @@ impl SettingsService {
         self.hotkeys.set_suspended(suspended);
     }
 
+    /// Why the settings can't be saved, if they can't (no usable settings file, a file written by a newer version): the
+    /// changes made in this run are then lost when the app ends, and the first-run window will come back next time.
+    // The status shows this once the audio engine fills in the rest of it; tested until then.
+    #[allow(dead_code)]
+    pub fn storage_problem(&self) -> Option<String> {
+        self.persistence.problem()
+    }
+
     /// Where each hotkey stands, for `Status.hotkeys`.
     // Read by the status once the audio engine fills in the rest of it; tested until then.
     #[allow(dead_code)]
@@ -157,7 +169,9 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
             Ok(store) => Arc::new(store),
             Err(err) => {
                 eprintln!("settings will not be saved: {err}");
-                Arc::new(InMemoryPersistence::default())
+                Arc::new(InMemoryPersistence::new(format!(
+                    "The settings file couldn't be set up, so changes are lost when the app closes: {err}"
+                )))
             }
         };
     install_with(
@@ -238,6 +252,7 @@ pub mod fake {
         pub stored: Mutex<Option<Value>>,
         pub saves: Mutex<Vec<Settings>>,
         failing: AtomicBool,
+        problem: Mutex<Option<String>>,
     }
 
     impl MemoryPersistence {
@@ -254,11 +269,19 @@ pub mod fake {
         pub fn fail_saves(&self, fail: bool) {
             self.failing.store(fail, Ordering::SeqCst);
         }
+
+        pub fn set_problem(&self, problem: Option<&str>) {
+            *self.problem.lock().unwrap() = problem.map(String::from);
+        }
     }
 
     impl SettingsPersistence for MemoryPersistence {
         fn load(&self) -> Option<Value> {
             self.stored.lock().unwrap().clone()
+        }
+
+        fn problem(&self) -> Option<String> {
+            self.problem.lock().unwrap().clone()
         }
 
         fn save(&self, settings: &Settings) -> Result<(), String> {
@@ -690,6 +713,26 @@ mod tests {
         s.service.mark_first_run_done();
         s.service.end_first_run_session();
         assert_eq!(s.persistence.saves().len(), 1);
+    }
+
+    #[test]
+    fn a_storage_problem_is_visible_through_the_service() {
+        let persistence = MemoryPersistence::default();
+        assert_eq!(
+            setup_with(persistence, FakeAutostart::default())
+                .service
+                .storage_problem(),
+            None
+        );
+        let persistence = MemoryPersistence::default();
+        persistence.set_problem(Some("disk is read-only"));
+        let s = setup_with(persistence, FakeAutostart::default());
+        assert_eq!(s.service.storage_problem().as_deref(), Some("disk is read-only"));
+        // The settings still work for this run.
+        assert_eq!(
+            s.service.update(json!({ "bufferSeconds": 50 })).unwrap().buffer_seconds,
+            50
+        );
     }
 
     #[test]
