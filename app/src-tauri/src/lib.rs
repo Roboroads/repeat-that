@@ -9,6 +9,7 @@ mod ipc;
 mod mock_runtime_tests;
 mod service;
 mod settings;
+mod store;
 mod tray;
 mod window;
 
