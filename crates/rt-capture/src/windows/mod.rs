@@ -26,9 +26,9 @@ use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, Fr
 /// Captures one app through WASAPI process loopback (Windows 10 2004+), including its child processes.
 ///
 /// Process loopback captures the app after its own volume is applied, so ducking would make the capture quieter too.
-/// Captures of a ducked app are amplified by the inverse of the duck level to keep their level. Windows doesn't say when
-/// a volume change reaches the captured audio, only that it is some 30–37 ms after the call, so ducking fades in steps
-/// of under 1 dB (see `ramp`) and the compensation follows each step: being a few milliseconds off is then inaudible.
+/// Captures of a ducked app are amplified by the inverse of the duck level to keep their level. Windows doesn't say
+/// when a volume change reaches the captured audio (27–37 ms after the call, measured), so ducking fades in steps of
+/// under 1 dB (see `ramp`) and the compensation follows each step: being a few milliseconds off is then inaudible.
 ///
 /// Apps start new audio sessions while ducked (a new voice stream, a new tab, a switch to another device). Those would
 /// play at full volume and then be boosted too, so a running capture ducks its app's new sessions every 500 ms on its

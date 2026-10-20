@@ -43,12 +43,20 @@ Ducking (`set_app_volume`) also lives here, because it is per-OS and per-app (Wi
 audio session in the app's process tree). The level is relative: the backend remembers each session's volume before
 ducking and restores it at `1.0`, so the user's own per-app volume is kept. The lowest level is 5%: a muted app can't
 be captured. On Windows, process loopback captures the app *after* its volume, so captures of a ducked app are
-amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level. Windows remembers
-per-app volumes, so ducked apps are restored however the app ends: on a normal exit, dropping the source restores them;
-after a crash or kill, a silent duck guard process (`WasapiSource::with_duck_guard`, the app's own executable started
-with hidden arguments) restores them as soon as the app is gone; after a power loss, or if the guard died too, the next
-start restores them from the duck journal (`WasapiSource::with_duck_journal`, volumes and session identifiers only,
-never audio). Sessions whose volume the user changed by hand meanwhile are left alone.
+amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level.
+
+Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency; on CI
+it lands 27–37 ms after the call), so the compensation can only switch at an estimate. Ducking therefore fades the
+volume in steps of under 1 dB, one every 10 ms (130 ms for a duck to 25%, up to 290 ms for 5%), and each captured frame
+is amplified for the step it was played at. A few milliseconds of error then leave the capture one step off at most,
+which is inaudible; CI checks that no millisecond strays by more than 1.5 dB. Restoring fades back the same way, and
+`set_app_volume` returns once the fade is done.
+
+Windows remembers per-app volumes, so ducked apps are restored however the app ends: on a normal exit, dropping the
+source restores them; after a crash or kill, a silent duck guard process (`WasapiSource::with_duck_guard`, the app's
+own executable started with hidden arguments) restores them as soon as the app is gone; after a power loss, or if the
+guard died too, the next start restores them from the duck journal (`WasapiSource::with_duck_journal`, volumes and
+session identifiers only, never audio). Sessions whose volume the user changed by hand meanwhile are left alone.
 
 `cargo run -p rt-capture --example probe -- list | capture <app> [--duck] | duck <app>` tries the backend on real
 apps without writing audio to disk.
