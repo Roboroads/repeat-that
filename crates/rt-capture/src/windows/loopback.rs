@@ -24,7 +24,7 @@ use windows::Win32::System::Threading::{
     CreateEventW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
 };
 use windows::Win32::System::Variant::VT_BLOB;
-use windows::core::{HRESULT, IUnknown, Interface, Ref};
+use windows::core::{HRESULT, IUnknown, Interface, Owned, Ref};
 use windows_core::implement;
 
 use super::{Com, backend};
@@ -100,7 +100,7 @@ fn run(
             reduck();
             reducked = Instant::now();
         }
-        if unsafe { WaitForSingleObject(stream.event, STOP_POLL_MS) } != WAIT_OBJECT_0 {
+        if unsafe { WaitForSingleObject(*stream.event, STOP_POLL_MS) } != WAIT_OBJECT_0 {
             continue;
         }
         // The stream can fail later on, e.g. when the audio service restarts. The handle then reports that capture is
@@ -116,7 +116,7 @@ struct Stream {
     // Field order is drop order: the COM objects go before COM itself.
     client: IAudioClient,
     capture: IAudioCaptureClient,
-    event: HANDLE,
+    event: Owned<HANDLE>,
     _com: Com,
 }
 
@@ -148,7 +148,8 @@ impl Stream {
                     None,
                 )
                 .map_err(backend("IAudioClient::Initialize"))?;
-            let event = CreateEventW(None, false, false, None).map_err(backend("CreateEventW"))?;
+            // Owned, so it is closed whichever step below fails.
+            let event = Owned::new(CreateEventW(None, false, false, None).map_err(backend("CreateEventW"))?);
             let stream = Self {
                 capture: client.GetService().map_err(backend("IAudioCaptureClient"))?,
                 client,
@@ -157,7 +158,7 @@ impl Stream {
             };
             stream
                 .client
-                .SetEventHandle(stream.event)
+                .SetEventHandle(*stream.event)
                 .map_err(backend("SetEventHandle"))?;
             stream.client.Start().map_err(backend("IAudioClient::Start"))?;
             Ok(stream)
@@ -261,7 +262,6 @@ impl Drop for Stream {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
-            let _ = CloseHandle(self.event);
         }
     }
 }
