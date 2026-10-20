@@ -31,9 +31,7 @@ jobs:
             exit 1
           fi
 
-      # CI runs on release PRs, but there the config check only warns about a `release-as` pin left in after its
-      # release shipped. Check it here too, before release-please acts: such a pin makes the next release PR propose
-      # that version again.
+      # Fails when a `release-as` pin outlived its release (what --tags adds is described in the script).
       - uses: actions/checkout@v7
       - name: Check the release config
         run: python3 .github/scripts/check-release-config.py --tags

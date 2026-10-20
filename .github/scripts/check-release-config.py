@@ -13,11 +13,13 @@ disagrees with the release tag, so this fails when:
   * an `extra-files` entry points at a missing file or a jsonpath that does not resolve to the manifest version
   * app/src-tauri/tauri.conf.json sets its own `version` (it must inherit the Cargo one)
 
-A `release-as` that is not above the manifest version any more (the pinned release shipped) only warns; remove it.
+A `release-as` below the manifest version only warns; remove it. A pin equal to the manifest version can't be judged
+from the files: a release PR bumps the manifest to the pinned version before the release exists, and once the release
+has shipped the pin is spent.
 
 With --tags (release-please.yml, before release-please acts) it also fails when `release-as` names a version that
-already has a `vX.Y.Z` tag on origin. CI runs on release PRs, but there this check only warns about a spent pin,
-and a leftover pin would make the next release PR propose that version again and collide with the tag.
+already has a `vX.Y.Z` tag on origin, which is a spent pin: left in, the next release PR would propose that version
+again and collide with the tag.
 """
 
 import json
@@ -127,9 +129,9 @@ def check(root, tag_exists=None):
                 f'"release-as" {pinned} already has the tag v{pinned}: remove "release-as" from '
                 "release-please-config.json, or the next release PR proposes that version again and collides with the tag"
             )
-        elif version_tuple(current) and version_tuple(pinned) <= version_tuple(current):
+        elif version_tuple(current) and version_tuple(pinned) < version_tuple(current):
             warnings.append(
-                f'"release-as" {pinned} is not above the released version {current}: remove it, or the next release '
+                f'"release-as" {pinned} is below the released version {current}: remove it, or the next release '
                 "PR proposes that version again"
             )
 
