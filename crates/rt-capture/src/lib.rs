@@ -80,11 +80,15 @@ pub trait CaptureHandle: Send {
 }
 
 /// A platform backend that can capture the audio output of a single application.
+///
+/// [`list_apps`](Self::list_apps), [`start`](Self::start) and [`set_app_volume`](Self::set_app_volume) talk to the
+/// OS audio service and can block, `start` for up to a few seconds while Windows activates the stream. Don't call
+/// them on a UI thread.
 pub trait AppAudioSource: Send + Sync {
     /// Applications that can be captured right now.
     fn list_apps(&self) -> Result<Vec<AudioApp>>;
 
-    /// Starts delivering `app`'s audio to `sink` on a background thread.
+    /// Starts delivering `app`'s audio to `sink` on a background thread. Blocks until the stream runs.
     fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<Box<dyn CaptureHandle>>;
 
     /// Ducks `app` to `level` times the volume it had before ducking. `1.0` restores that volume, so the user's own
