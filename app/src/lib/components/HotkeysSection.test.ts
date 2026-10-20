@@ -2,7 +2,7 @@ import { emit } from '@tauri-apps/api/event';
 import { fireEvent, screen, waitFor, within } from '@testing-library/svelte';
 import { describe, expect, it } from 'vitest';
 import type { Status } from '../api';
-import { argsOf, renderApp } from '../../test-utils';
+import { argsOf, holdAnswers, renderApp } from '../../test-utils';
 
 const replayField = () => screen.getByRole('button', { name: /^Replay hotkey/ });
 const stopField = () => screen.getByRole('button', { name: /^Stop hotkey/ });
@@ -129,6 +129,26 @@ describe('hotkey recorder', () => {
     expect(replayField()).toHaveAccessibleName('Replay hotkey: Ctrl+Alt+Space');
     expect(backend.settings.hotkeys.replay).toBe('Ctrl+Alt+Space');
     await waitFor(() => expect(suspends(backend)).toEqual([{ suspended: true }, { suspended: false }]));
+  });
+
+  it('keeps the first binding when a second one is saved before the first was answered', async () => {
+    const { backend } = await renderApp();
+    const release = holdAnswers(backend, 'update_settings');
+
+    await fireEvent.click(replayField());
+    await press(replayField(), 'KeyR', { ctrl: true, alt: true });
+    await fireEvent.click(stopField());
+    await press(stopField(), 'KeyS', { ctrl: true, alt: true });
+    await waitFor(() => expect(argsOf(backend, 'update_settings')).toHaveLength(1));
+    release();
+
+    await waitFor(() => expect(argsOf(backend, 'update_settings')).toHaveLength(2));
+    expect(argsOf(backend, 'update_settings')[1]).toEqual({
+      patch: { hotkeys: { replay: 'Ctrl+Alt+R', stop: 'Ctrl+Alt+S', catchUp: 'Ctrl+Alt+Enter' } },
+    });
+    await waitFor(() => expect(stopField()).toHaveAccessibleName('Stop hotkey: Ctrl+Alt+S'));
+    expect(replayField()).toHaveAccessibleName('Replay hotkey: Ctrl+Alt+R');
+    expect(backend.settings.hotkeys).toEqual({ replay: 'Ctrl+Alt+R', stop: 'Ctrl+Alt+S', catchUp: 'Ctrl+Alt+Enter' });
   });
 
   it('forgets the error when recording starts again', async () => {

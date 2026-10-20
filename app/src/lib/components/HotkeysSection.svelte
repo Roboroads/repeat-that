@@ -64,13 +64,11 @@
     recording = null;
     held = [];
     hint = null;
-    if (accel !== settings.hotkeys[name]) {
-      const error = await store.update(
-        { hotkeys: { ...settings.hotkeys, [name]: accel } },
-        { optimistic: false, report: false },
-      );
-      if (error) errors = { ...errors, [name]: error.message };
-    }
+    const error = await store.update((current) => ({ hotkeys: { ...current.hotkeys, [name]: accel } }), {
+      optimistic: false,
+      report: false,
+    });
+    if (error) errors = { ...errors, [name]: error.message };
     // Another field may have started recording while the backend was busy.
     if (recording === null) suspend(false);
   }

@@ -22,7 +22,7 @@
     label="Lower the app's volume during a replay"
     description="So the replay is easy to hear over the call. The volume comes back when you are caught up."
     checked={settings.duck.enabled}
-    onchange={(enabled) => store.update({ duck: { ...settings.duck, enabled } })}
+    onchange={(enabled) => store.update((current) => ({ duck: { ...current.duck, enabled } }))}
   />
   <Slider
     id="duck-level"
@@ -33,6 +33,6 @@
     step={percent(LIMITS.duckLevel.step)}
     format={(v) => `${v}%`}
     disabled={!settings.duck.enabled}
-    oncommit={(value) => store.update({ duck: { ...settings.duck, level: value / 100 } })}
+    oncommit={(value) => store.update((current) => ({ duck: { ...current.duck, level: value / 100 } }))}
   />
 </Section>

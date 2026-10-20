@@ -3,6 +3,15 @@ import type { AppEntry, OutputDevice, Settings, SettingsPatch, Status } from './
 
 const APP_REFRESH_MS = 2000;
 
+/**
+ * A change to the settings. A function is given the settings as they are when the change is sent, with every earlier
+ * change already in, so a change to part of a nested object (`duck`, `hotkeys`) cannot undo one before it.
+ */
+export type SettingsChange = SettingsPatch | ((current: Settings) => SettingsPatch);
+
+const resolve = (change: SettingsChange, current: Settings): SettingsPatch =>
+  typeof change === 'function' ? change(current) : change;
+
 interface UpdateOptions {
   /** Show the new value before the backend confirmed it. Default true. */
   optimistic?: boolean;
@@ -111,10 +120,10 @@ export class SettingsStore {
   }
 
   /**
-   * Saves a patch. Resolves with the backend's refusal, or `null` when it went through. The page shows the new
+   * Saves a change. Resolves with the backend's refusal, or `null` when it went through. The page shows the new
    * value at once and takes the backend's answer when the queue is empty, or the old value back when it is refused.
    */
-  async update(patch: SettingsPatch, options: UpdateOptions = {}): Promise<api.ApiError | null> {
+  async update(change: SettingsChange, options: UpdateOptions = {}): Promise<api.ApiError | null> {
     const { optimistic = true, report = true } = options;
     if (this.settings === null) {
       // Nothing to change yet. Answering "saved" would let a caller go on as if it had worked.
@@ -122,11 +131,13 @@ export class SettingsStore {
       if (report) this.error = error.message;
       return error;
     }
-    if (optimistic) this.settings = { ...this.settings, ...patch };
+    const shown = this.settings;
+    if (optimistic) this.settings = { ...shown, ...resolve(change, shown) };
 
     return this.enqueue(async () => {
       try {
-        this.confirmed = await api.updateSettings(patch);
+        // Built only now: the calls before this one are answered, so `confirmed` has what they changed.
+        this.confirmed = await api.updateSettings(resolve(change, this.confirmed ?? shown));
         return null;
       } catch (raw) {
         const error = api.toApiError(raw);
