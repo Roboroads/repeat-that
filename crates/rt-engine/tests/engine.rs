@@ -53,6 +53,8 @@ struct FakeInner {
     script: Mutex<VecDeque<Segment>>,
     calls: Mutex<Vec<(Instant, Call)>>,
     failure: Mutex<Option<Failure>>,
+    /// Volume changes fail while set (they're still recorded).
+    volume_fails: AtomicBool,
     captures: Mutex<Vec<Arc<AtomicBool>>>,
     /// How long stopping a capture takes.
     stop_delay: Mutex<Duration>,
@@ -118,6 +120,10 @@ impl FakeSource {
     /// Stopping a capture takes `delay` from now on, like WASAPI's.
     fn slow_stop(&self, delay: Duration) {
         *lock(&self.inner.stop_delay) = delay;
+    }
+
+    fn fail_volume(&self, fail: bool) {
+        self.inner.volume_fails.store(fail, Ordering::Relaxed);
     }
 
     fn fail_start(&self, failure: Option<Failure>) {
@@ -225,6 +231,9 @@ impl AppAudioSource for FakeSource {
 
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> rt_capture::Result<()> {
         self.record(Call::Volume(app.pid, level));
+        if self.inner.volume_fails.load(Ordering::Relaxed) {
+            return Err(CaptureError::Backend("the fake failed to change the volume".into()));
+        }
         Ok(())
     }
 }
@@ -524,6 +533,27 @@ fn ducks_while_replaying_and_restores_after() {
     wait_idle(&handle, secs(3.0));
     thread::sleep(Duration::from_millis(600));
     assert_eq!(source.levels(), [0.2, 1.0, 0.2, 1.0]);
+}
+
+#[test]
+fn a_failed_restore_is_retried() {
+    let output = TestOutput::new(RATE).speed(4.0);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    source.play(&sentence(1.0));
+    source.wait_played();
+    wait_buffered(&handle, 1.2);
+    handle.replay();
+    wait_until(secs(1.0), "ducked", || source.levels() == [0.2]);
+
+    source.fail_volume(true);
+    wait_idle(&handle, secs(3.0));
+    wait_until(secs(1.0), "a restore", || source.levels().len() == 2);
+    source.fail_volume(false);
+    wait_until(secs(2.0), "the restore retried", || source.levels().len() == 3);
+    assert_eq!(source.levels(), [0.2, 1.0, 1.0]);
+    // Restored: no more tries.
+    thread::sleep(Duration::from_millis(1200));
+    assert_eq!(source.levels().len(), 3);
 }
 
 #[test]
