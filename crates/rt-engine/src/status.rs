@@ -1,7 +1,7 @@
 //! What the engine is doing, for the tray and the settings window.
 
 use std::sync::Mutex;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -51,11 +51,14 @@ pub struct OutputStatus {
     pub error: Option<String>,
 }
 
+/// How many statuses a subscriber can fall behind before it is dropped: half a minute of a replay's updates.
+pub(crate) const SUBSCRIBER_BACKLOG: usize = 64;
+
 /// The current status, shared by the engine's threads, and everyone who wants to hear about changes.
 #[derive(Default)]
 pub(crate) struct StatusHub {
     current: Mutex<Status>,
-    subscribers: Mutex<Vec<Sender<Status>>>,
+    subscribers: Mutex<Vec<SyncSender<Status>>>,
 }
 
 impl StatusHub {
@@ -64,10 +67,10 @@ impl StatusHub {
     }
 
     pub(crate) fn subscribe(&self) -> Receiver<Status> {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIBER_BACKLOG);
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         // Sent while holding the subscriber list, so no change can come in between.
-        let _ = tx.send(self.get());
+        let _ = tx.try_send(self.get());
         subscribers.push(tx);
         rx
     }
@@ -84,7 +87,7 @@ impl StatusHub {
             }
             current.clone()
         };
-        subscribers.retain(|tx| tx.send(status.clone()).is_ok());
+        send(&mut subscribers, &status);
         true
     }
 
@@ -92,7 +95,7 @@ impl StatusHub {
     pub(crate) fn broadcast(&self) {
         let mut subscribers = self.subscribers.lock().unwrap_or_else(|e| e.into_inner());
         let status = self.get();
-        subscribers.retain(|tx| tx.send(status.clone()).is_ok());
+        send(&mut subscribers, &status);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Status> {
@@ -100,9 +103,27 @@ impl StatusHub {
     }
 }
 
+/// Sends `status` to every subscriber. One that went away, or fell [`SUBSCRIBER_BACKLOG`] behind, is dropped, which
+/// ends its channel; it can subscribe again.
+fn send(subscribers: &mut Vec<SyncSender<Status>>, status: &Status) {
+    subscribers.retain(|tx| tx.try_send(status.clone()).is_ok());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_subscriber_that_stops_reading_is_dropped_once_far_behind() {
+        let hub = StatusHub::default();
+        let rx = hub.subscribe();
+        for ms in 0..1000 {
+            hub.update(|s| s.buffered = Duration::from_millis(ms));
+        }
+        assert!(hub.subscribers.lock().unwrap().is_empty());
+        // What it got stays bounded, then its channel ends.
+        assert_eq!(rx.iter().count(), SUBSCRIBER_BACKLOG);
+    }
 
     #[test]
     fn subscribers_get_the_current_status_then_changes_only() {

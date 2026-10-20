@@ -324,7 +324,8 @@ impl EngineHandle {
         self.status.get()
     }
 
-    /// Receives the status on every change, and every 500 ms during a replay. The current status comes first.
+    /// Receives the status on every change, and every 500 ms during a replay. The current status comes first. A
+    /// receiver that falls 64 statuses behind is disconnected (its iterator ends); subscribe again to go on.
     pub fn subscribe(&self) -> Receiver<Status> {
         self.status.subscribe()
     }
