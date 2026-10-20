@@ -38,7 +38,8 @@ connections, accents, background noise, or just a moment of distraction.
 any other app. The audio-capture permission and the steps to build on macOS (Xcode command-line tools, Rust,
 Node.js) are in [docs/macos.md](docs/macos.md).
 
-Each release has a `SHA256SUMS` file. See [docs/verify-downloads.md](docs/verify-downloads.md) to check a download.
+Releases starting with v0.1 include a `SHA256SUMS` file. See [docs/verify-downloads.md](docs/verify-downloads.md) to
+check a download.
 
 ## Privacy
 

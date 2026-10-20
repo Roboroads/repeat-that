@@ -1,8 +1,8 @@
 # Verifying downloads
 
-Every release on the [Releases page](https://github.com/Roboroads/repeat-that/releases) includes a `SHA256SUMS` file with
-the SHA-256 hash of each installer. Compute the hash of the file you downloaded and compare it with the line for the same
-file name in `SHA256SUMS`. The two must be identical.
+Starting with v0.1, each release on the [Releases page](https://github.com/Roboroads/repeat-that/releases) includes a
+`SHA256SUMS` file with the SHA-256 hash of each installer. Compute the hash of the file you downloaded and compare it
+with the line for the same file name in `SHA256SUMS`. The two must be identical.
 
 Windows (PowerShell):
 
