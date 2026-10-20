@@ -43,11 +43,10 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # The installers are built by calling the workflow here, only when this run created a release, rather than from an
-  # `on: release` trigger. The release is a draft ("draft" in release-please-config.json): the called workflow
-  # attaches the installers and then publishes it, so a failed build leaves a draft instead of a public release
-  # without files. A draft has no tag yet, hence the commit. This job uses GITHUB_TOKEN, not the personal access
-  # token, since attaching files and publishing the draft need nothing more.
+  # Builds and attaches the installers when this run created a release; build-windows.yml says why it is called here
+  # and not from an `on: release` trigger. The release is a draft ("draft" in release-please-config.json) that the
+  # called workflow publishes once the files are attached, so a failed build leaves a draft instead of a public
+  # release without files. A draft has no tag yet, hence the commit.
   windows-installers:
     name: Windows installers
     needs: release-please

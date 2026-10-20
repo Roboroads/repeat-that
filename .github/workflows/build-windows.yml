@@ -3,8 +3,9 @@ name: Build Windows installers
 # Builds the Windows x64 installers (NSIS .exe and MSI) and checksums them.
 #   * pull_request / workflow_dispatch without a tag: dry run. The installers and SHA256SUMS are workflow artifacts.
 #   * with a tag (workflow_call from release-please.yml, or workflow_dispatch to redo an existing release): the same
-#     files are also attached to that GitHub release. release-please creates its releases as drafts, which don't
-#     start `on: release` workflows until published, so release-please.yml calls this one directly.
+#     files are also attached to that GitHub release. release-please.yml calls this one directly rather than relying on
+#     an `on: release` trigger: that would fire only once the release is public, and a release that a workflow
+#     publishes with GITHUB_TOKEN doesn't start workflows at all.
 # release-please creates releases as drafts (`"draft": true` in its config), so nobody sees a release without
 # installers: the `publish` job attaches the files and only then publishes the draft. A draft's tag doesn't exist
 # until it is published, so a run for a draft gets the commit to build in `sha`.

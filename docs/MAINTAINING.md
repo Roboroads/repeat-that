@@ -80,10 +80,10 @@ in [`install-windows.md`](install-windows.md).
 - **Pull requests** that touch `app/`, `crates/`, the Cargo files or the release config run the workflow. The two
   installers and `SHA256SUMS` are uploaded as workflow artifacts (kept for 30 days), so a change can be tried on a real
   Windows PC before it merges.
-- **Releases.** release-please creates its GitHub release as a draft, and a draft doesn't start `on: release`
-  workflows. `release-please.yml` therefore calls `build-windows.yml` itself when its run created a release, and the
-  `publish` job attaches the installers and `SHA256SUMS` to that release. Both the call and `publish` use
-  `GITHUB_TOKEN`, not the personal access token.
+- **Releases.** release-please creates its GitHub release as a draft. `release-please.yml` calls `build-windows.yml`
+  itself when its run created a release, rather than relying on an `on: release` trigger: that would fire only once
+  the release is public, and a release that a workflow publishes with `GITHUB_TOKEN` doesn't start workflows at all.
+  The `publish` job attaches the installers and `SHA256SUMS` to the draft.
 - **Draft first.** release-please creates the release as a draft (`"draft": true` in its config), and `publish` makes it
   public only after the files are attached, so there is never a public release without installers. A draft has no
   tag yet (publishing creates it at the release commit), which is why the call passes the commit as `sha`. If the build
