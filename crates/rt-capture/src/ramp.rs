@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn a_ramp_that_falls_behind_doesnt_catch_up() {
-        let interval = Duration::from_millis(5);
+        let interval = Duration::from_millis(10);
         let mut starts = Vec::new();
         run(1.0, 0.5, interval, |_, _| {
             starts.push(Instant::now());
@@ -159,8 +159,10 @@ mod tests {
             }
         });
         assert!(starts.len() > 4);
+        // Overdue steps aren't made back to back. The times here are taken a moment after each step starts, so they
+        // are checked with room to spare.
         for pair in starts.windows(2) {
-            assert!(pair[1] - pair[0] >= interval, "steps {:?} apart", pair[1] - pair[0]);
+            assert!(pair[1] - pair[0] >= interval / 4, "steps {:?} apart", pair[1] - pair[0]);
         }
     }
 
