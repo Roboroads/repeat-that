@@ -23,3 +23,7 @@ tauri-plugin-autostart = "2.7"
 tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-single-instance = "2.5"
 tauri-plugin-store = "2.5"
+
+[dev-dependencies]
+# `tauri::test` (mock runtime) for the command tests; no extra crates.
+tauri = { version = "2.12", features = ["test"] }
