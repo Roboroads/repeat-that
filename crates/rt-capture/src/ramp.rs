@@ -5,6 +5,9 @@
 //! by a different amount in every fade, and the odd step another 10 ms off. With one big step that leaves milliseconds
 //! at 4× or a quarter of the level, an audible click. With half-dB steps 10 ms apart, the capture is a step or two
 //! off for a few milliseconds per step, rarely three (1.5 dB), which nobody hears. The fade also sounds smoother.
+//!
+//! That only holds while the steps stay apart. A fade that falls behind, because its thread didn't get to run, goes
+//! on from where it is instead of catching up: overdue steps made at once would reach the audio as one big step.
 
 // Only the Windows backend uses this so far; the tests run everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -42,17 +45,20 @@ pub(crate) fn steps(from: f32, to: f32) -> Vec<f32> {
 }
 
 /// Ramps from duck level `from` to `to`: calls `step(level, duck_new)` for each of [`steps`], one every `interval`,
-/// and returns after the last one. `duck_new` says whether sessions that aren't ducked yet join at this step: from the
-/// first step of a ramp down, but only at the last step of a ramp up, so they never dip and come back up.
+/// and returns after the last one. Steps start at least `interval` apart, even after a step that started late.
+/// `duck_new` says whether sessions that aren't ducked yet join at this step: from the first step of a ramp down, but
+/// only at the last step of a ramp up, so they never dip and come back up.
 pub(crate) fn run(from: f32, to: f32, interval: Duration, mut step: impl FnMut(f32, bool)) {
     let levels = steps(from, to);
     let down = clamp_duck_level(to) < clamp_duck_level(from);
-    let start = Instant::now();
+    let mut due = Instant::now();
     for (i, &level) in levels.iter().enumerate() {
-        // Paced from the start, so time spent in a step doesn't stretch the ramp.
-        let due = start + interval * i as u32;
         thread::sleep(due.saturating_duration_since(Instant::now()));
+        let started = Instant::now();
         step(level, down || i + 1 == levels.len());
+        // On schedule, the time a step takes doesn't stretch the ramp; behind schedule, the ramp is stretched rather
+        // than catching up.
+        due = (due + interval).max(started + interval);
     }
 }
 
@@ -139,6 +145,23 @@ mod tests {
         run(1.0, 0.25, Duration::from_millis(2), |_, _| count += 1);
         assert_eq!(count, 25);
         assert!(start.elapsed() >= Duration::from_millis(48));
+    }
+
+    #[test]
+    fn a_ramp_that_falls_behind_doesnt_catch_up() {
+        let interval = Duration::from_millis(5);
+        let mut starts = Vec::new();
+        run(1.0, 0.5, interval, |_, _| {
+            starts.push(Instant::now());
+            // The thread doesn't get to run for a while after the second step.
+            if starts.len() == 2 {
+                thread::sleep(interval * 4);
+            }
+        });
+        assert!(starts.len() > 4);
+        for pair in starts.windows(2) {
+            assert!(pair[1] - pair[0] >= interval, "steps {:?} apart", pair[1] - pair[0]);
+        }
     }
 
     /// A session that remembers its volume and how often ducking read it.
