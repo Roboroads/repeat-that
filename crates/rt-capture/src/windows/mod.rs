@@ -4,13 +4,21 @@ mod loopback;
 mod sessions;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::env;
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::Threading::{
+    CREATE_NO_WINDOW, DETACHED_PROCESS, INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+};
+use windows::core::Owned;
 
 use crate::before_duck::BeforeDuck;
+use crate::duck_guard;
 use crate::duck_journal::{self, JournalEntry};
 use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, FrameSink, Result, clamp_duck_level};
 
@@ -25,7 +33,7 @@ use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, Fr
 /// sessions.
 ///
 /// Windows remembers per-app volumes, so dropping the source restores every app it still ducks. To survive a crash as
-/// well, see [`WasapiSource::with_duck_journal`].
+/// well, see [`WasapiSource::with_duck_journal`] and [`WasapiSource::with_duck_guard`].
 #[derive(Default)]
 pub struct WasapiSource {
     /// Ducked sessions, shared with captures that duck new sessions.
@@ -50,6 +58,17 @@ impl WasapiSource {
             let _com = Com::init();
             ducking.recover();
         }
+        self
+    }
+
+    /// Starts a [duck guard](crate::duck_guard) the first time an app is ducked, which restores ducked apps as soon as
+    /// this process dies without doing so itself. Without it, they are restored at the next start, from the journal.
+    ///
+    /// Opt-in, because the guard is this executable started again: `main` must call
+    /// [`duck_guard::run_if_requested`](crate::duck_guard::run_if_requested) first. Needs
+    /// [`with_duck_journal`](Self::with_duck_journal), which tells the guard what to restore.
+    pub fn with_duck_guard(self) -> Self {
+        self.ducking.lock().unwrap_or_else(|e| e.into_inner()).guard = Guard::Wanted;
         self
     }
 
@@ -88,6 +107,9 @@ impl AppAudioSource for WasapiSource {
         // Sessions still at a duck from a crashed run get their own volume back first, so it isn't taken for theirs.
         ducking.recover();
         let level = clamp_duck_level(level);
+        if level < 1.0 {
+            ducking.start_guard();
+        }
         let ducked = sessions::duck(app.pid, level, &mut ducking.before_duck);
         ducking.save();
         ducked?;
@@ -127,9 +149,30 @@ struct Ducking {
     pending: Vec<JournalEntry>,
     /// What the journal holds, if known, to skip writes that change nothing.
     written: Option<String>,
+    guard: Guard,
+}
+
+#[derive(Default, PartialEq)]
+enum Guard {
+    #[default]
+    Off,
+    /// Starts on the first duck, so apps that never duck don't get an extra process.
+    Wanted,
+    /// Started, or failed to start. Either way only once: the journal still covers a failed start.
+    Started,
 }
 
 impl Ducking {
+    fn start_guard(&mut self) {
+        if self.guard != Guard::Wanted {
+            return;
+        }
+        self.guard = Guard::Started;
+        if let Some(journal) = &self.journal {
+            let _ = spawn_duck_guard(journal);
+        }
+    }
+
     /// Restores the sessions from an earlier run whose app runs now. Needs COM.
     fn recover(&mut self) {
         if !self.pending.is_empty()
@@ -181,4 +224,38 @@ impl Drop for Com {
 /// Maps a Windows error to a [`CaptureError`] that says which call failed.
 pub(crate) fn backend(call: &'static str) -> impl Fn(windows::core::Error) -> CaptureError {
     move |e| CaptureError::Backend(format!("{call}: {e}"))
+}
+
+/// Starts this executable as a hidden [duck guard](crate::duck_guard) for `journal` that waits for this process.
+fn spawn_duck_guard(journal: &Path) -> std::io::Result<()> {
+    Command::new(env::current_exe()?)
+        .args(duck_guard::args(journal, std::process::id()))
+        .creation_flags((CREATE_NO_WINDOW | DETACHED_PROCESS).0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
+/// The duck guard itself: waits for `parent` to exit, then restores the sessions `journal` still lists. Sessions whose
+/// app isn't running stay in the journal for the next start.
+pub(crate) fn run_duck_guard(journal: &Path, parent: u32) {
+    // If the parent can't be opened, it may well be alive: leave the journal to the next start rather than restoring
+    // apps it still ducks.
+    let Ok(process) = (unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, parent) }) else {
+        return;
+    };
+    let process = unsafe { Owned::new(process) };
+    unsafe { WaitForSingleObject(*process, INFINITE) };
+    let entries = duck_journal::read(journal);
+    if entries.is_empty() {
+        return;
+    }
+    let Ok(_com) = Com::init() else {
+        return;
+    };
+    if let Ok(pending) = sessions::recover(entries) {
+        let _ = duck_journal::write(journal, &duck_journal::serialize(&pending));
+    }
 }

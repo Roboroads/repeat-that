@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod before_duck;
+pub mod duck_guard;
 mod duck_journal;
 pub mod mock;
 mod process_tree;

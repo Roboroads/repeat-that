@@ -21,6 +21,9 @@ use rt_core::{AudioFormat, Recorder, SegmenterConfig, SileroVad};
 type Error = Box<dyn std::error::Error>;
 
 fn main() -> Result<(), Error> {
+    if rt_capture::duck_guard::run_if_requested() {
+        return Ok(());
+    }
     let args: Vec<String> = env::args().skip(1).collect();
     let source = source()?;
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -42,11 +45,16 @@ fn main() -> Result<(), Error> {
     }
 }
 
-/// The capture backend, with a duck journal on Windows so a probe killed mid-duck gives the app its volume back.
+/// The capture backend, with a duck journal and guard on Windows so a probe killed mid-duck (`taskkill /F`) gives the
+/// app its volume back.
 #[cfg(windows)]
 fn source() -> Result<Box<dyn AppAudioSource>, Error> {
     let journal = env::temp_dir().join("repeat-that-probe-duck.journal");
-    Ok(Box::new(rt_capture::WasapiSource::new().with_duck_journal(journal)))
+    Ok(Box::new(
+        rt_capture::WasapiSource::new()
+            .with_duck_journal(journal)
+            .with_duck_guard(),
+    ))
 }
 
 #[cfg(not(windows))]

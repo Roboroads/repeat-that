@@ -44,9 +44,11 @@ audio session in the app's process tree). The level is relative: the backend rem
 ducking and restores it at `1.0`, so the user's own per-app volume is kept. The lowest level is 5%: a muted app can't
 be captured. On Windows, process loopback captures the app *after* its volume, so captures of a ducked app are
 amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level. Windows remembers
-per-app volumes, so the backend also keeps a duck journal (`WasapiSource::with_duck_journal`, volumes and session
-identifiers only, never audio): after a crash, the next start gives every session still at its ducked volume its own
-volume back.
+per-app volumes, so ducked apps are restored however the app ends: on a normal exit, dropping the source restores them;
+after a crash or kill, a silent duck guard process (`WasapiSource::with_duck_guard`, the app's own executable started
+with hidden arguments) restores them as soon as the app is gone; after a power loss, or if the guard died too, the next
+start restores them from the duck journal (`WasapiSource::with_duck_journal`, volumes and session identifiers only,
+never audio). Sessions whose volume the user changed by hand meanwhile are left alone.
 
 `cargo run -p rt-capture --example probe -- list | capture <app> [--duck] | duck <app>` tries the backend on real
 apps without writing audio to disk.
