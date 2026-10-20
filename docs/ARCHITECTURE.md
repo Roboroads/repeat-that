@@ -46,13 +46,11 @@ be captured. On Windows, process loopback captures the app *after* its volume, s
 amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level.
 
 Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency), so
-the compensation can only switch at an estimate: 33 ms after the call. On CI the steps of a fade landed anywhere from
-10 ms before that to 8 ms after it, by a different amount in every fade, and the odd step another 10 ms off. Ducking
-therefore fades the volume in half-dB steps, one every 10 ms (240 ms for a duck to 25%, 520 ms for 5%), and each
-captured frame is amplified for the step it was played at. The capture is then a step or two off for a few
-milliseconds per step, rarely three (1.5 dB), which is inaudible; CI checks that no millisecond strays by more than
-2 dB. A fade whose thread falls behind is stretched rather than catching up, since overdue steps made at once would
-reach the audio as one big step. Restoring fades back the same way, and `set_app_volume` returns once the fade is done.
+the compensation can only switch at an estimate, which is milliseconds off. Ducking therefore fades the volume in
+half-dB steps on a 10 ms grid, and each captured frame is amplified for the step it was played at, so being off leaves
+the capture a step or so off for a few milliseconds, which is inaudible. Restoring fades back the same way, and
+`set_app_volume` returns once the fade is done. What CI measured, and the fade's other rules, are in
+`crates/rt-capture/src/ramp.rs`; the end-to-end test checks the result per millisecond.
 
 Windows remembers per-app volumes, so ducked apps are restored however the app ends: on a normal exit, dropping the
 source restores them; after a crash or kill, a silent duck guard process (`WasapiSource::with_duck_guard`, the app's

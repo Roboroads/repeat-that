@@ -100,9 +100,8 @@ pub trait AppAudioSource: Send + Sync {
     /// per-app volume setting is never lost. Levels are clamped to [`MIN_DUCK_LEVEL`]–1.0.
     ///
     /// Captured audio keeps its full level while the app is ducked: backends whose capture is affected by the app's
-    /// volume (Windows) compensate for it. Those fade the volume in half-dB steps, so the compensation can't be
-    /// audibly out of step with it, and return once the fade is done: about 240 ms for a duck to 25%, up to 520 ms
-    /// for the deepest.
+    /// volume (Windows) compensate for it. Those fade the volume in small steps, so the compensation can't be audibly
+    /// out of step with it, and return once the fade is done, a few hundred milliseconds later.
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()>;
 }
 

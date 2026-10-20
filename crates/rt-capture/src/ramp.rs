@@ -1,13 +1,21 @@
 //! Ducking fades an app's volume in small steps instead of changing it at once.
 //!
 //! A capture compensates each step for audio played at that step's volume, but it can only estimate when a volume
-//! change reaches the audio: Windows doesn't say, and on CI the steps of a fade came up to 10 ms early or 8 ms late,
-//! by a different amount in every fade, and the odd step another 10 ms off. With one big step that leaves milliseconds
-//! at 4× or a quarter of the level, an audible click. With half-dB steps 10 ms apart, the capture is a step or two
-//! off for a few milliseconds per step, rarely three (1.5 dB), which nobody hears. The fade also sounds smoother.
+//! change reaches the audio, because Windows doesn't say: `VOLUME_LATENCY`, 33 ms after the call. This is the one
+//! place for what the Windows CI runner measured, with its 10 ms engine period and a 1 kHz tone checked per
+//! millisecond:
 //!
-//! That only holds while the steps stay apart. A fade that falls behind, because its thread didn't get to run, goes
-//! on from where it is instead of catching up: overdue steps made at once would reach the audio as one big step.
+//! - A single volume change reached the captured audio 30–37 ms after the call. As one big step, that left a few
+//!   milliseconds at 4× or a quarter of the level around every duck: an audible click.
+//! - The steps of one fade land about equally far from the estimate, but that distance changes from one fade to the
+//!   next, from 10 ms early to 8 ms late, presumably with where the fade's calls fall in the engine period. Now and
+//!   then a single step lands another 10 ms off. With 0.9 dB steps 10 ms apart, that left milliseconds two steps
+//!   (1.7 dB) off.
+//! - With the half-dB steps here on a fixed 10 ms grid, no millisecond was more than 0.7 dB off in six runs of ten
+//!   fades each. The end-to-end test fails anything over two steps (1 dB).
+//!
+//! The fade also sounds smoother to the user. All of this only holds while the steps stay apart, so a fade neither
+//! catches up on steps it fell behind on nor starts right after the one before: see [`next_due`] and [`run`].
 
 // Only the Windows backend uses this so far; the tests run everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]
