@@ -31,9 +31,10 @@ PRs are squash-merged only. The repo is set up so the squash commit is just the 
 on `main` is one Conventional Commits line. The `PR title` workflow rejects titles that aren't Conventional Commits.
 
 [release-please](https://github.com/googleapis/release-please) reads those commits on `main` and keeps a release PR
-open that bumps the version and updates `CHANGELOG.md`. Merging that PR tags the release, creates the GitHub release and
-builds the Windows installers (see [Windows installers](#windows-installers)). Before 1.0, `feat` bumps the patch
-version and breaking changes (`feat!:`, `fix!:`) bump the minor version.
+open that bumps the version and updates `CHANGELOG.md`. Merging that PR creates a draft GitHub release, builds the
+Windows installers, attaches them and then publishes the release, which is also when its tag appears (see
+[Windows installers](#windows-installers)). Before 1.0, `feat` bumps the patch version and breaking changes (`feat!:`,
+`fix!:`) bump the minor version.
 
 The version lives in `Cargo.toml` (`workspace.package.version`, which the app crate and `tauri.conf.json` inherit) and
 `app/package.json`. Both are listed under `extra-files` in `release-please-config.json`. It does not touch
@@ -59,9 +60,15 @@ in [`install-windows.md`](install-windows.md).
   start other workflows, so an `on: release` workflow would never run. `release-please.yml` therefore calls
   `build-windows.yml` itself when its run created a release, and the `publish` job attaches the installers and
   `SHA256SUMS` to that release.
+- **Draft first.** release-please creates the release as a draft (`"draft": true` in its config), and `publish` makes it
+  public only after the files are attached, so there is never a public release without installers. A draft has no
+  tag yet (publishing creates it at the release commit), which is why the call passes the commit as `sha`. If the build
+  fails, the draft stays: re-run the failed jobs of that `release-please` run. The release PR is already labelled as
+  released, so merging another PR doesn't retry it.
 - **Running it by hand** (Actions → Build Windows installers → Run workflow, once the workflow is on `main`): leave
-  `tag` empty for a dry run that only produces artifacts (the job summary shows the checksums), or give an existing tag
-  such as `v0.1.0` to rebuild that tag and replace its release assets. Use the second form when a release's build failed.
+  `tag` empty for a dry run that only produces artifacts (the job summary shows the checksums). Give a `tag` to build
+  and attach the installers to that release. For a draft, also give the release commit as `sha`, because the tag doesn't
+  exist yet; the draft is published when the files are attached.
 - Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
 
