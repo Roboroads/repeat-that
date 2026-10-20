@@ -3,8 +3,9 @@
 //!
 //! Audio handled here never leaves memory. See `PRIVACY.md`.
 //!
-//! The flow is: interleaved capture frames → [`Recorder`] (downmix, [`Vad`], [`Segmenter`]) → [`SpeechBuffer`] →
-//! [`Player`] (step back, catch-up speed) → output device.
+//! The flow is: interleaved capture frames → [`Recorder`] (downmix, [`Vad`], [`Segmenter`]) → [`SpeechBuffer`] (with
+//! the sentence still being spoken) → [`Player`] (step back, catch-up speed through a [`Stretcher`], play through to
+//! live) → output device.
 
 pub mod buffer;
 pub mod player;
@@ -15,9 +16,10 @@ pub mod stretch;
 pub mod vad;
 
 pub use buffer::{SpeechBuffer, Utterance};
-pub use player::{Player, PlayerConfig};
+pub use player::{Player, PlayerConfig, Rendered};
 pub use recorder::Recorder;
-pub use segmenter::{Segmenter, SegmenterConfig};
+pub use segmenter::{SegmentEvent, Segmenter, SegmenterConfig};
+pub use stretch::Stretcher;
 pub use vad::{EnergyVad, Vad};
 
 #[cfg(feature = "silero")]

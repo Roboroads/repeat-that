@@ -67,15 +67,24 @@ apps without writing audio to disk.
 - **VAD**: Silero VAD, bundled (`models/silero_vad.onnx`, MIT) and run with ONNX Runtime through `ort`, which is
   statically linked, so nothing extra ships next to the app. Frames are classified as speech or non-speech, with hangover/padding (~200 ms) so that word
   edges aren't clipped.
-- **`SpeechBuffer`**: an in-memory ring of *utterances* (contiguous speech segments), capped at a configurable
-  total *speech* duration (default 30 s). The oldest utterances are evicted first. Silences between utterances are
-  replaced by a short fixed gap (~250 ms) on playback so it still sounds natural.
-- **`Player`**: plays from a cursor positioned at an utterance boundary.
-  - *Replay*: jump to the start of the latest utterance. Pressing again within a short window steps one more
-    utterance back.
-  - *Catch-up*: playback speed from 1.0× to 2.0× with pitch-preserving time-stretch (WSOLA).
-  - Recording keeps running during playback. Speech that arrives during a replay is appended and can be played through
-    to "live".
+- **`Segmenter`**: splits the stream into *utterances* (contiguous speech segments) while they are spoken. Once
+  speech reaches 250 ms, an utterance opens and audio is appended to it as it comes in; shorter bursts (a cough, a
+  click) are dropped. A pause longer than 700 ms closes it, trimmed to the padding, and a monologue is split every
+  15 s. Silence inside a pause is held back until speech resumes or the utterance closes, so nothing published is ever
+  taken back. Detection settings (sensitivity) can change while recording, without wiping anything.
+- **`SpeechBuffer`**: an in-memory ring of utterances, capped at a configurable total *speech* duration (default
+  30 s). The oldest utterances are evicted first. The newest one can be *open*: the sentence still being spoken, which
+  is never evicted. A *speech pending* flag says speech has started that isn't long enough to be an utterance yet.
+- **`Player`**: renders the replay in small blocks from a position inside the current utterance.
+  - *Replay*: starts at the sentence in progress if it already has 1.5 s of audio, otherwise at the last finished
+    utterance. Pressing again during a replay steps one more utterance back.
+  - *Play through to live*: after each utterance it plays the next, including everything recorded during the replay.
+    Silences between utterances are replaced by a short fixed gap (~250 ms), so it still sounds natural and catches up
+    even at 1.0×. When it reaches someone still talking, it follows their sentence as it comes in, at normal speed,
+    waiting in silence until ~100 ms of new speech is in each time; it also waits while speech is pending. It ends
+    once there is nothing left, and the listener is back to live audio. `Player::behind` says how long that takes.
+  - *Catch-up*: playback speed from 0.5× to 2.0× with a streaming, pitch-preserving time-stretch (WSOLA,
+    `Stretcher`). A speed change applies mid-utterance within 15 ms, without a click.
 
 ### `rt-transcribe` (planned)
 `whisper-rs` (whisper.cpp) on utterances as they finish, producing a scrollable "what was just said" transcript.

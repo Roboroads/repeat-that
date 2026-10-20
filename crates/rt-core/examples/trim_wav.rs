@@ -79,9 +79,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut out = Vec::new();
     let mut block = vec![0.0; 4096];
     loop {
-        let n = player.render(buffer, &mut block);
-        out.extend_from_slice(&block[..n]);
-        if n < block.len() {
+        let rendered = player.render(buffer, &mut block);
+        out.extend_from_slice(&block[..rendered.written]);
+        if rendered.ended {
             break;
         }
     }

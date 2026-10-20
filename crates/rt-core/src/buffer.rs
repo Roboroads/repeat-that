@@ -14,6 +14,10 @@ pub struct Utterance {
 ///
 /// The oldest utterances are evicted first once the cap is exceeded. In [`SpeechBuffer::get_back`], `0` is the most
 /// recent utterance, `1` the one before it, and so on, matching "press again to step one further back".
+///
+/// The most recent utterance can be *open*: someone is still talking, and audio is appended to it as it comes in, so a
+/// replay can follow the sentence in progress. There is at most one open utterance, it is always the newest, and it is
+/// never evicted.
 #[derive(Debug)]
 pub struct SpeechBuffer {
     sample_rate: u32,
@@ -21,6 +25,9 @@ pub struct SpeechBuffer {
     total_samples: usize,
     next_id: u64,
     utterances: VecDeque<Utterance>,
+    /// Whether the newest utterance is still open.
+    open: bool,
+    speech_pending: bool,
 }
 
 impl SpeechBuffer {
@@ -31,6 +38,8 @@ impl SpeechBuffer {
             total_samples: 0,
             next_id: 0,
             utterances: VecDeque::new(),
+            open: false,
+            speech_pending: false,
         }
     }
 
@@ -45,19 +54,50 @@ impl SpeechBuffer {
     }
 
     /// Appends a finished utterance, evicts the oldest ones until the buffer fits its cap again, and returns the new
-    /// utterance's id.
+    /// utterance's id. An open utterance is closed first.
     ///
     /// The newest utterance is always kept, even if it alone exceeds the cap.
     pub fn push(&mut self, samples: Vec<f32>) -> u64 {
+        let id = self.open(samples);
+        self.close();
+        id
+    }
+
+    /// Starts a new open utterance with `samples` and returns its id. The previous one is closed first if it was still
+    /// open.
+    pub fn open(&mut self, samples: Vec<f32>) -> u64 {
+        self.close();
         let id = self.next_id;
         self.next_id += 1;
         self.total_samples += samples.len();
         self.utterances.push_back(Utterance { id, samples });
+        self.open = true;
         self.evict();
         id
     }
 
+    /// Appends samples to the open utterance, evicting the oldest finished ones if the buffer is now over its cap.
+    /// Does nothing if no utterance is open.
+    pub fn append(&mut self, samples: &[f32]) {
+        if !self.open {
+            return;
+        }
+        if let Some(utterance) = self.utterances.back_mut() {
+            utterance.samples.extend_from_slice(samples);
+            self.total_samples += samples.len();
+        }
+        self.evict();
+    }
+
+    /// Finishes the open utterance: nothing more is appended to it. Returns its id, or `None` if none was open.
+    pub fn close(&mut self) -> Option<u64> {
+        let id = self.open_id();
+        self.open = false;
+        id
+    }
+
     fn evict(&mut self) {
+        // The newest utterance, which is the open one if there is one, always stays.
         while self.total_samples > self.max_samples && self.utterances.len() > 1 {
             if let Some(evicted) = self.utterances.pop_front() {
                 self.total_samples -= evicted.samples.len();
@@ -65,7 +105,8 @@ impl SpeechBuffer {
         }
     }
 
-    /// Returns the utterance `steps_back` positions before the most recent one (`0` = most recent).
+    /// Returns the utterance `steps_back` positions before the most recent one (`0` = most recent, which may be the
+    /// open one).
     pub fn get_back(&self, steps_back: usize) -> Option<&Utterance> {
         let len = self.utterances.len();
         steps_back
@@ -85,8 +126,29 @@ impl SpeechBuffer {
         self.utterances.front().map(|u| u.id)
     }
 
+    /// Id of the most recent utterance, open or finished.
     pub fn latest_id(&self) -> Option<u64> {
         self.utterances.back().map(|u| u.id)
+    }
+
+    /// Id of the open utterance, if someone is still talking.
+    pub fn open_id(&self) -> Option<u64> {
+        if self.open { self.latest_id() } else { None }
+    }
+
+    /// Id of the most recent finished utterance.
+    pub fn latest_finished_id(&self) -> Option<u64> {
+        self.get_back(usize::from(self.open)).map(|u| u.id)
+    }
+
+    /// Whether the recorder hears speech that isn't long enough yet to become an utterance. It either becomes the next
+    /// open utterance or is dropped (a click, a cough).
+    pub fn speech_pending(&self) -> bool {
+        self.speech_pending
+    }
+
+    pub fn set_speech_pending(&mut self, pending: bool) {
+        self.speech_pending = pending;
     }
 
     pub fn len(&self) -> usize {
@@ -97,7 +159,7 @@ impl SpeechBuffer {
         self.utterances.is_empty()
     }
 
-    /// Total duration of buffered speech.
+    /// Total duration of buffered speech, including the open utterance.
     pub fn speech_duration(&self) -> Duration {
         Duration::from_secs_f64(self.total_samples as f64 / self.sample_rate as f64)
     }
@@ -110,6 +172,8 @@ impl SpeechBuffer {
         }
         self.utterances.clear();
         self.total_samples = 0;
+        self.open = false;
+        self.speech_pending = false;
     }
 }
 
@@ -189,5 +253,73 @@ mod tests {
         assert!(buf.is_empty());
         assert_eq!(buf.speech_duration(), Duration::ZERO);
         assert_eq!(buf.push(speech(1.0, 1.0)), 1);
+    }
+
+    #[test]
+    fn open_utterance_grows_until_closed() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(10));
+        let first = buf.push(speech(1.0, 1.0));
+        let open = buf.open(speech(0.5, 2.0));
+        assert_eq!(open, first + 1);
+        assert_eq!(buf.open_id(), Some(open));
+        assert_eq!(buf.latest_id(), Some(open));
+        assert_eq!(buf.latest_finished_id(), Some(first));
+
+        buf.append(&speech(0.25, 3.0));
+        assert_eq!(buf.get(open).unwrap().samples.len(), 750);
+        assert_eq!(buf.speech_duration(), Duration::from_millis(1750));
+
+        assert_eq!(buf.close(), Some(open));
+        assert_eq!(buf.open_id(), None);
+        assert_eq!(buf.latest_finished_id(), Some(open));
+        assert_eq!(buf.close(), None);
+        // Nothing open: appending does nothing.
+        buf.append(&speech(1.0, 4.0));
+        assert_eq!(buf.speech_duration(), Duration::from_millis(1750));
+    }
+
+    #[test]
+    fn only_finished_utterances_without_open_one() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(10));
+        assert_eq!(buf.latest_finished_id(), None);
+        let open = buf.open(speech(0.5, 1.0));
+        assert_eq!(buf.latest_finished_id(), None);
+        // Opening or pushing another one closes the open one first.
+        let next = buf.open(speech(0.5, 2.0));
+        assert_eq!(buf.latest_finished_id(), Some(open));
+        let pushed = buf.push(speech(0.5, 3.0));
+        assert_eq!(buf.open_id(), None);
+        assert_eq!(buf.latest_finished_id(), Some(pushed));
+        assert_eq!(buf.get(next).unwrap().samples[0], 2.0);
+    }
+
+    #[test]
+    fn never_evicts_open_utterance() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(2));
+        buf.push(speech(1.0, 1.0));
+        let open = buf.open(speech(0.5, 2.0));
+        assert_eq!(buf.len(), 2);
+        // Growing past the cap evicts finished utterances, never the open one, even when it alone is over the cap.
+        buf.append(&speech(2.0, 2.0));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.open_id(), Some(open));
+        buf.append(&speech(1.0, 2.0));
+        buf.set_max_speech(Duration::from_secs(1));
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf.speech_duration(), Duration::from_millis(3500));
+    }
+
+    #[test]
+    fn clear_drops_open_utterance_and_pending_speech() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(5));
+        buf.push(speech(1.0, 1.0));
+        buf.open(speech(1.0, 2.0));
+        buf.set_speech_pending(true);
+        buf.clear();
+        assert!(buf.is_empty());
+        assert_eq!(buf.open_id(), None);
+        assert!(!buf.speech_pending());
+        assert_eq!(buf.speech_duration(), Duration::ZERO);
+        assert_eq!(buf.open(speech(1.0, 1.0)), 2);
     }
 }
