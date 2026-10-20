@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::AudioFormat;
 use crate::buffer::SpeechBuffer;
 use crate::resample::downmix;
-use crate::segmenter::{SegmentEvent, Segmenter, SegmenterConfig};
+use crate::segmenter::{Segmenter, SegmenterConfig, UtteranceSink};
 use crate::vad::Vad;
 
 /// Turns captured audio into buffered utterances: downmix → voice activity detection → [`SpeechBuffer`].
@@ -15,7 +15,26 @@ pub struct Recorder {
     segmenter: Segmenter,
     buffer: SpeechBuffer,
     mono: Vec<f32>,
-    events: Vec<SegmentEvent>,
+}
+
+/// Writes what the segmenter reports into the buffer, counting finished utterances.
+struct BufferSink<'a> {
+    buffer: &'a mut SpeechBuffer,
+    finished: usize,
+}
+
+impl UtteranceSink for BufferSink<'_> {
+    fn open(&mut self, samples: &[f32]) {
+        self.buffer.open(samples.to_vec());
+    }
+
+    fn append(&mut self, samples: &[f32]) {
+        self.buffer.append(samples);
+    }
+
+    fn close(&mut self) {
+        self.finished += usize::from(self.buffer.close().is_some());
+    }
 }
 
 impl Recorder {
@@ -25,7 +44,6 @@ impl Recorder {
             segmenter: Segmenter::new(format.sample_rate, vad, segmenter),
             buffer: SpeechBuffer::new(format.sample_rate, max_speech),
             mono: Vec::new(),
-            events: Vec::new(),
         }
     }
 
@@ -33,29 +51,24 @@ impl Recorder {
     pub fn push(&mut self, interleaved: &[f32]) -> usize {
         self.mono.clear();
         downmix(interleaved, self.channels, &mut self.mono);
-        self.segmenter.push(&self.mono, &mut self.events);
-        self.apply_events()
+        let mut sink = BufferSink {
+            buffer: &mut self.buffer,
+            finished: 0,
+        };
+        self.segmenter.push(&self.mono, &mut sink);
+        let finished = sink.finished;
+        self.buffer.set_speech_pending(self.segmenter.speech_pending());
+        finished
     }
 
     /// Closes the utterance in progress, so it can be replayed right away.
     pub fn flush(&mut self) {
-        self.segmenter.flush(&mut self.events);
-        self.apply_events();
-    }
-
-    fn apply_events(&mut self) -> usize {
-        let mut finished = 0;
-        for event in self.events.drain(..) {
-            match event {
-                SegmentEvent::Open(samples) => {
-                    self.buffer.open(samples);
-                }
-                SegmentEvent::Append(samples) => self.buffer.append(&samples),
-                SegmentEvent::Close => finished += usize::from(self.buffer.close().is_some()),
-            }
-        }
+        let mut sink = BufferSink {
+            buffer: &mut self.buffer,
+            finished: 0,
+        };
+        self.segmenter.flush(&mut sink);
         self.buffer.set_speech_pending(self.segmenter.speech_pending());
-        finished
     }
 
     /// Applies new detection settings from the next VAD frame on, without wiping the buffer or the utterance in

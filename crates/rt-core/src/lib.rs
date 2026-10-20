@@ -18,7 +18,7 @@ pub mod vad;
 pub use buffer::{SpeechBuffer, Utterance};
 pub use player::{Player, PlayerConfig, Rendered};
 pub use recorder::Recorder;
-pub use segmenter::{SegmentEvent, Segmenter, SegmenterConfig};
+pub use segmenter::{Segmenter, SegmenterConfig, UtteranceSink};
 pub use stretch::Stretcher;
 pub use vad::{EnergyVad, Vad};
 
