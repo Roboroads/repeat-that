@@ -1,4 +1,4 @@
-# Contributing to Repeat that?!
+# Contributing to Repeat That
 
 Thanks for wanting to help! Bug reports, feature ideas, testing on different hardware, and code are all welcome.
 

@@ -3,8 +3,9 @@ name: Build Windows installers
 # Builds the Windows x64 installers (NSIS .exe and MSI) and checksums them.
 #   * pull_request / workflow_dispatch without a tag: dry run. The installers and SHA256SUMS are workflow artifacts.
 #   * with a tag (workflow_call from release-please.yml, or workflow_dispatch to redo an existing release): the same
-#     files are also attached to that GitHub release. release-please creates its releases with GITHUB_TOKEN, which
-#     doesn't trigger `on: release` workflows, so release-please.yml calls this one directly.
+#     files are also attached to that GitHub release. release-please.yml calls this one directly rather than relying on
+#     an `on: release` trigger: that would fire only once the release is public, and a release that a workflow
+#     publishes with GITHUB_TOKEN doesn't start workflows at all.
 # release-please creates releases as drafts (`"draft": true` in its config), so nobody sees a release without
 # installers: the `publish` job attaches the files and only then publishes the draft. A draft's tag doesn't exist
 # until it is published, so a run for a draft gets the commit to build in `sha`.
@@ -60,8 +61,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Cheap guard that a release bumps every file carrying the version. Dry runs only: a tagged run has already been
-  # through release-please, and by then a stale `release-as` pin would only be a warning anyway.
+  # Cheap guard that a release bumps every file carrying the version. Dry runs only: a tagged run comes from a
+  # release-please run that has already made this check (with --tags).
   release-config:
     name: Release config
     if: ${{ !inputs.tag }}

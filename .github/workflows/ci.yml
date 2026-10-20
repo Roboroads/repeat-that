@@ -5,52 +5,120 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels that PR's older run. Every push to main gets a group of its own, so its run is
+# neither cancelled nor replaced by a newer one (a group keeps only one pending run).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Tells the build jobs whether a pull request touches anything but documentation. Hosted runners (macOS above all) are
+  # scarce, so a docs-only change should not wait for one. A workflow-level `paths-ignore` would skip the whole workflow
+  # and leave the required checks in .github/rulesets/main.json pending forever, so the jobs always run and report
+  # success; only their build and test steps are skipped. Only pull requests are classified: a push to main skips this
+  # job and always builds.
+  changes:
+    name: Detect code changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Classify changed files
+        id: filter
+        run: |
+          # The checkout is the merge of the PR into its base, so HEAD^1..HEAD is what the PR changes. `--no-renames`
+          # lists both sides of a rename, so moving code into docs/ still counts as code. Whenever the list is
+          # unavailable the answer stays code=true, so the build runs.
+          code=true
+          if ! files=$(git diff --name-only --no-renames HEAD^1 HEAD) || [ -z "$files" ]; then
+            echo "::warning::Could not list the changed files, treating the change as code"
+          else
+            code=false
+            while IFS= read -r file; do
+              case "$file" in
+                # Docs only: docs/, the issue templates, and Markdown or LICENSE in the repository root. Markdown
+                # deeper in the tree sits next to code (a crate can embed its README with include_str!, which runs
+                # the doctests), so it counts as code.
+                docs/* | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
+                */*) echo "code: $file"; code=true ;;
+                *.md | LICENSE) echo "docs: $file" ;;
+                *) echo "code: $file"; code=true ;;
+              esac
+            done <<< "$files"
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
   rust:
     name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    needs: changes
+    # `changes` is skipped on pushes, and if it fails the build should still run, so this job runs unless the whole run
+    # is cancelled. Only `code == 'false'` skips the build: then every leg runs on the plentiful Linux runner instead of
+    # queueing for its own OS, and finishes without running any steps.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+    # Every step carries the same `if`, so a docs-only run does nothing. A job-level `if` would skip the job instead, and
+    # a skipped matrix job is reported under its unexpanded name, `Rust (${{ matrix.os }})`, which no required check
+    # matches.
     steps:
       - uses: actions/checkout@v7
+        if: needs.changes.outputs.code != 'false'
       # The desktop app (app/src-tauri) is part of the workspace, so cargo needs the Tauri system libraries and the
       # built frontend (`tauri::generate_context!` embeds app/dist).
       - name: Install system packages (Linux)
-        if: runner.os == 'Linux'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev
       - uses: actions/setup-node@v7
+        if: needs.changes.outputs.code != 'false'
         with:
           node-version: 22 # the oldest Node the docs ask for (README, CONTRIBUTING)
           cache: npm
           cache-dependency-path: app/package-lock.json
       - name: Install frontend dependencies
+        if: needs.changes.outputs.code != 'false'
         working-directory: app
         run: npm ci
       - name: Build frontend
+        if: needs.changes.outputs.code != 'false'
         working-directory: app
         run: npm run build
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.code != 'false'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.code != 'false'
       - run: cargo fmt --all --check
+        if: needs.changes.outputs.code != 'false'
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: needs.changes.outputs.code != 'false'
       - run: cargo test --workspace
+        if: needs.changes.outputs.code != 'false'
       # End-to-end test of Windows capture: a virtual audio device (VB-CABLE) and the audio service, which Windows
       # Server runners have turned off.
       - name: Set up audio (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         uses: LABSN/sound-ci-helpers@d08c889a7bba7d9b1b059f8f76dac4672ea3a9cf # v1.0.4
       - name: Start audio service (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         shell: pwsh
         run: |
           Set-Service AudioEndpointBuilder -StartupType Automatic
@@ -58,10 +126,10 @@ jobs:
           Start-Service AudioEndpointBuilder, Audiosrv
           Get-CimInstance Win32_SoundDevice | Format-Table Name, Status
       - name: Build probe (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         run: cargo build -p rt-capture --example probe
       - name: Capture test (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         run: cargo test -p rt-capture --test windows_audio -- --ignored --nocapture
       - name: Engine test (Windows)
         if: runner.os == 'Windows'
@@ -69,17 +137,25 @@ jobs:
 
   frontend:
     name: Frontend
+    needs: changes
+    # Same as the Rust job: runs unless the run is cancelled, and a docs-only change skips every step, not the job.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: app
     steps:
       - uses: actions/checkout@v7
+        if: needs.changes.outputs.code != 'false'
       - uses: actions/setup-node@v7
+        if: needs.changes.outputs.code != 'false'
         with:
           node-version: 22 # the oldest Node the docs ask for (README, CONTRIBUTING)
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
+        if: needs.changes.outputs.code != 'false'
       - run: npm run check
+        if: needs.changes.outputs.code != 'false'
       - run: npm test
+        if: needs.changes.outputs.code != 'false'

@@ -4,21 +4,45 @@ on:
   push:
     branches: [main]
 
+# The GITHUB_TOKEN of this workflow only checks out the repository. release-please acts with RELEASE_PLEASE_TOKEN
+# (below), and the installer job asks for its own write access.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # One run at a time. A run in progress is never cancelled (it could leave a release PR or draft half-made); a
+    # waiting run is replaced by a newer one, which is fine as release-please always works from the latest main. It is
+    # on this job, not the workflow, so the slow installer build below doesn't hold up the next run.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
       sha: ${{ steps.release.outputs.sha }}
     steps:
-      # Release PRs are opened with GITHUB_TOKEN, so CI never runs on them. Check the config here instead, before
-      # release-please acts: a `release-as` pin left in after its release shipped would make the next release PR
-      # propose that version again.
+      # release-please acts with a personal access token so that CI runs on its PRs; Release token in
+      # docs/MAINTAINING.md says why and how to renew it. Fail here when the secret is empty, rather than let the action
+      # fall back to GITHUB_TOKEN, and warn when the token is close to its expiry.
+      - name: Check the release token
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The RELEASE_PLEASE_TOKEN secret is empty. See Release token in docs/MAINTAINING.md."
+            exit 1
+          fi
+          # A token that has an expiry says when, in a response header of every API call.
+          expires=$(gh api --include rate_limit | tr -d '\r' | sed -n 's/^github-authentication-token-expiration: *//Ip')
+          if [ -n "$expires" ] && end=$(date -d "$expires" +%s); then
+            if [ "$end" -le $(( $(date +%s) + 30 * 86400 )) ]; then
+              echo "::warning::The release token expires on $expires. See Release token in docs/MAINTAINING.md."
+            fi
+          fi
+
+      # Fails when a `release-as` pin outlived its release (what --tags adds is described in the script).
       - uses: actions/checkout@v7
       - name: Check the release config
         run: python3 .github/scripts/check-release-config.py --tags
@@ -26,13 +50,14 @@ jobs:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # The release above is created with GITHUB_TOKEN, which doesn't trigger `on: release` workflows, so the installers
-  # are built by calling the workflow here, only when this run created a release. The release is a draft ("draft" in
-  # release-please-config.json): the called workflow attaches the installers and then publishes it, so a failed
-  # build leaves a draft instead of a public release without files. A draft has no tag yet, hence the commit.
+  # Builds and attaches the installers when this run created a release; build-windows.yml says why it is called here
+  # and not from an `on: release` trigger. The release is a draft ("draft" in release-please-config.json) that the
+  # called workflow publishes once the files are attached, so a failed build leaves a draft instead of a public
+  # release without files. A draft has no tag yet, hence the commit.
   windows-installers:
     name: Windows installers
     needs: release-please

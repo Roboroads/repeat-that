@@ -44,10 +44,39 @@ workspace crates (the entries without a `source`), and `app/package-lock.json` a
 `.github/scripts/check-release-config.py` checks that the files and the manifest agree. It runs as the `Release config`
 job of the `Build Windows installers` workflow whenever a PR touches the release config or the app.
 
-Release PRs are opened with the default `GITHUB_TOKEN`, so CI doesn't run on them by itself, and once the ruleset is
-active they'd wait forever for the required checks. Before applying the ruleset, either give the release-please
-workflow a fine-grained personal access token (`token: ${{ secrets.RELEASE_PLEASE_TOKEN }}`) or close and reopen the
-release PR to trigger CI.
+Release PRs are opened with a personal access token, so CI runs on them like on any other PR (see
+[Release token](#release-token)).
+
+### Release token
+
+PRs opened with the default `GITHUB_TOKEN` don't start other workflows, so CI would never run on a release PR, and once
+the ruleset is active the PR would wait forever for the required checks. The `release-please` workflow therefore passes
+a fine-grained personal access token, stored as the `RELEASE_PLEASE_TOKEN` repository secret (Settings → Secrets and
+variables → Actions), to the release-please step. Nothing else uses it: the other steps and jobs keep `GITHUB_TOKEN`
+with the least permissions they need. If the secret is missing or empty, the workflow fails on its first step with an
+error pointing here, instead of falling back to `GITHUB_TOKEN`.
+
+CI therefore runs in full on a release PR, including the Windows installer build: a dry run of the release commit before
+it is cut. A newer push to the release PR cancels the build of the older one.
+
+The token that exists now:
+
+- Repository access: only `Roboroads/repeat-that`.
+- Permissions: Contents, Pull requests and Issues with read and write, and Metadata with read.
+- Created 2026-10-20 and valid for a year, so it **expires around 2027-10-20**. Release PRs are opened as the account
+  that owns the token.
+
+From 30 days before the expiry, the `Check the release token` step of every `release-please` run adds a warning to the
+run summary (it reads the date from the `github-authentication-token-expiration` header that the API sends with a
+token that expires). A warning on a green run is easy to miss, so put the date in a calendar too.
+
+When it expires (or leaks), the `release-please` run on `main` fails in the release-please step with an authentication
+error, and no release PR is opened or updated until it is renewed. To renew it:
+
+1. Create a new fine-grained token (Settings → Developer settings → Personal access tokens → Fine-grained tokens) with
+   the same repository access and permissions as above, and a new expiry.
+2. Replace the secret: `gh secret set RELEASE_PLEASE_TOKEN --repo Roboroads/repeat-that`, then paste the token.
+3. Re-run the failed `release-please` run (Actions → release-please) to check that it works, then delete the old token.
 
 ## Windows installers
 
@@ -58,10 +87,10 @@ in [`install-windows.md`](install-windows.md).
 - **Pull requests** that touch `app/`, `crates/`, the Cargo files or the release config run the workflow. The two
   installers and `SHA256SUMS` are uploaded as workflow artifacts (kept for 30 days), so a change can be tried on a real
   Windows PC before it merges.
-- **Releases.** release-please creates its GitHub release with `GITHUB_TOKEN`, and events caused by that token don't
-  start other workflows, so an `on: release` workflow would never run. `release-please.yml` therefore calls
-  `build-windows.yml` itself when its run created a release, and the `publish` job attaches the installers and
-  `SHA256SUMS` to that release.
+- **Releases.** release-please creates its GitHub release as a draft. `release-please.yml` calls `build-windows.yml`
+  itself when its run created a release, rather than relying on an `on: release` trigger: that would fire only once
+  the release is public, and a release that a workflow publishes with `GITHUB_TOKEN` doesn't start workflows at all.
+  The `publish` job attaches the installers and `SHA256SUMS` to the draft.
 - **Draft first.** release-please creates the release as a draft (`"draft": true` in its config), and `publish` makes it
   public only after the files are attached, so there is never a public release without installers. A draft has no
   tag yet (publishing creates it at the release commit), which is why the call passes the commit as `sha`. If the build
@@ -82,10 +111,9 @@ in [`install-windows.md`](install-windows.md).
 
 `release-please-config.json` has `"release-as": "0.1.0"`, so the first release is 0.1.0 whatever the commits suggest.
 Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again and collides with the
-tag. Release PRs get no CI, so the `release-please` workflow runs the config check with `--tags` before it acts: once
+tag. The `release-please` workflow runs the config check with `--tags` before it acts (the script explains why): once
 `v0.1.0` exists and the pin is still there, that run fails and no further release PRs are opened until the pin is gone.
-(On pull requests the same check only warns.) Hold the 0.1.0 release PR until the app captures and replays audio,
-because merging it publishes the installers.
+Hold the 0.1.0 release PR until the app captures and replays audio, because merging it publishes the installers.
 
 ### Version numbers
 
@@ -102,11 +130,14 @@ after.
 ## Going public checklist
 
 - [x] Make the repository public (2026-10-20)
-- [ ] Apply the branch ruleset (see above), but only once the `Frontend` CI job (added by #9) is on `main` and
-  release-please has a token in `RELEASE_PLEASE_TOKEN`. Applied earlier, PRs wait forever for a check that never runs.
+- [ ] Apply the branch ruleset (see above), but only once the `Frontend` CI job (added by #9) is on `main`. The
+  release-please token (`RELEASE_PLEASE_TOKEN`) is done, see [Release token](#release-token). Applied earlier, PRs wait
+  forever for a check that never runs.
 - [x] Turn on private vulnerability reporting (Settings → Security) and add a `SECURITY.md`
 - [x] Turn on Dependabot alerts and security updates (version updates are already set up in `.github/dependabot.yml`)
-- [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing
+- [ ] Publish the GitHub Pages site (milestone 8 in the roadmap; on a free plan, Pages needs the public repo)
+- [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing. The Pages site has to be live
+  first, because SignPath asks for a project website and a public repository
 - [ ] Add topics and a social preview image so people can find the project
 
 ## macOS signing and notarization
