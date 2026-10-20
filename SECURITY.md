@@ -10,8 +10,8 @@ so that file is expected.
 ## Reporting a vulnerability
 
 Use GitHub's private vulnerability reporting: [report a vulnerability](https://github.com/Roboroads/repeat-that/security/advisories/new).
-Only the maintainer can see the report. Please don't open a public issue or pull request for a vulnerability, and keep
-the details private until a fix is released.
+The report is visible to the maintainer and to anyone the maintainer adds to the advisory. Please don't open a public
+issue or pull request for a vulnerability, and keep the details private until a fix is released.
 
 Say which version and operating system you tested, how to reproduce the problem, and what an attacker would gain. A
 proof of concept helps but isn't required.
