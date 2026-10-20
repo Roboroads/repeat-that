@@ -37,7 +37,7 @@ Use this if you get *"is damaged and can't be opened"*, which Option 1 doesn't a
 Each release publishes a `SHA256SUMS` file. Check that your download matches before you bypass Gatekeeper:
 
 ```sh
-shasum -a 256 ~/Downloads/Repeat\ That_*_universal.dmg
+shasum -a 256 ~/Downloads/Repeat-That_*_universal.dmg
 ```
 
 Compare the output with the matching line in `SHA256SUMS` on the release page.
