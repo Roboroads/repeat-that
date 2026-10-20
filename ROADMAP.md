@@ -48,7 +48,7 @@
 This milestone can run in parallel with 5–7.
 
 - [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release, and a link to `SHA256SUMS` with how to verify it
-- [ ] Short demo video of a replay in a call (Discord or Teams), made with a video skill that still has to be installed
+- [ ] Short demo video of a replay in a call (Discord or Teams), made with the [brag](https://github.com/latent-spaces/brag) plugin
 - [ ] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary
 - [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist)
 - [ ] Apply for free open-source code signing from SignPath Foundation (Windows), with the website as the project page
@@ -60,7 +60,6 @@ as a release asset or on YouTube, and any other big files go on a Pages-only bra
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
 - [ ] Auto-update
-- [ ] Windows code signing (free via SignPath Foundation for OSS)
 - [ ] Auto-detect which app is in an active call
 - [ ] Capture multiple apps at once
 - [ ] Small always-on-top mini player / waveform timeline
