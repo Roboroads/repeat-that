@@ -17,7 +17,16 @@ Get the installer from the [Releases page](https://github.com/Roboroads/repeat-t
 | `Repeat-That_<version>_x64_en-US.msi` | For managed PCs and scripted installs. Installs for all users, so it asks for administrator rights. |
 | `SHA256SUMS` | Checksums of the two installers, to [verify your download](verify-downloads.md). |
 
-If you aren't sure, take the `.exe`.
+If you aren't sure, take the `.exe`. The two are separate installs, not two ways to get the same one:
+
+| | `.exe` | `.msi` |
+| --- | --- | --- |
+| Installed for | Your user (under `%LOCALAPPDATA%`) | All users (under `C:\Program Files`) |
+| Needs administrator rights | No | Yes |
+| On uninstall | Offers to delete the app's data | Leaves the data of every user behind |
+
+**Pick one and stay with it.** Installing the other kind next to it gives you two copies, two Start menu entries and two
+entries under Installed apps. If you want to switch, uninstall the old one first.
 
 ## Install
 
@@ -37,11 +46,13 @@ Compare your download with the release's `SHA256SUMS` before you run it; see [ve
 
 ## Updating and uninstalling
 
-There's no automatic updater yet. To update, download the newer installer and run it over the old version; your
-settings are kept.
+There's no automatic updater yet. To update, download the newer installer of the same kind you installed (`.exe` or
+`.msi`) and run it over the old version; your settings are kept.
 
-To uninstall, use **Settings → Apps → Installed apps → Repeat That**. The uninstaller offers to delete the app's data
-(`%APPDATA%\me.roboroads.repeat-that`, which holds your settings and the chosen app's name and path, never audio).
+To uninstall, use **Settings → Apps → Installed apps → Repeat That**. The `.exe` uninstaller offers to delete the app's
+data. The `.msi` doesn't: it removes the program but leaves each user's data in place. The data is in
+`%APPDATA%\me.roboroads.repeat-that` and holds your settings and the chosen app's name and path, never audio. Delete
+that folder yourself if you want it gone after an `.msi` uninstall.
 
 ## Build from source
 
