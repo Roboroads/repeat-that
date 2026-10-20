@@ -7,7 +7,7 @@ import css from './app.css?raw';
 import type { AppEntry, Status } from './lib/api';
 import { defaultSettings } from './lib/defaults';
 import { MockBackend, mockApps, scenarioInit } from './lib/mock-ipc';
-import { argsOf, installBackend, renderApp } from './test-utils';
+import { argsOf, holdAnswers, installBackend, renderApp } from './test-utils';
 
 const discord: AppEntry = { pid: 4120, name: 'Discord', exePath: 'C:\\Apps\\Discord.exe', icon: null };
 const target = { exePath: discord.exePath, name: discord.name };
@@ -59,6 +59,21 @@ describe('loading', () => {
     healthy = true;
     await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(screen.getByRole('slider', { name: 'Buffer length' })).toBeInTheDocument());
+  });
+
+  it('picks up a change from the tray that arrived while a save was out', async () => {
+    const { backend } = await renderApp();
+    const release = holdAnswers(backend, 'update_settings');
+
+    await fireEvent.change(screen.getByRole('slider', { name: 'Buffer length' }), { target: { value: '45' } });
+    await waitFor(() => expect(argsOf(backend, 'update_settings')).toHaveLength(1));
+    // The tray switches autostart on while the save is out; the save's answer predates that.
+    backend.settings = { ...backend.settings, autostart: true };
+    await emit('settings-changed', structuredClone(backend.settings));
+    release();
+
+    await waitFor(() => expect(screen.getByRole('switch', { name: /Start with|Start at login/ })).toBeChecked());
+    expect(screen.getByRole('slider', { name: 'Buffer length' })).toHaveValue('45');
   });
 
   it('subscribes to the backend events again when trying again after they failed', async () => {

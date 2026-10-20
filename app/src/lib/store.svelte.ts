@@ -83,8 +83,12 @@ export class SettingsStore {
       );
       unlisteners.push(
         await api.onSettingsChanged((settings) => {
-          // An answer to our own update is on its way and is the newer truth.
-          if (this.inFlight === 0) this.settings = this.confirmed = settings;
+          if (this.inFlight === 0) {
+            this.settings = this.confirmed = settings;
+          } else {
+            // Our own calls are out, and their answers may predate this change: fetch the truth when they are done.
+            this.needsResync = true;
+          }
         }),
       );
     } catch (error) {
