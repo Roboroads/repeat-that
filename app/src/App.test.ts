@@ -6,7 +6,7 @@ describe('App', () => {
   it('shows the app name and that the settings are not here yet', () => {
     render(App);
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Repeat that?!' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Repeat That' })).toBeInTheDocument();
     expect(screen.getByText(/settings are coming soon/i)).toBeInTheDocument();
   });
 

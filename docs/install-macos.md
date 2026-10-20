@@ -10,10 +10,10 @@ quarantined, so Gatekeeper never complains.
 ## Option 1 — "Open Anyway" (no Terminal)
 
 1. Download the `.dmg` from the [Releases page](https://github.com/Roboroads/repeat-that/releases) and drag
-   **Repeat that?!** into **Applications**.
+   **Repeat That** into **Applications**.
 2. Open the app. macOS blocks it. Click **Done** (or **OK**), not "Move to Trash".
-3. Open **System Settings → Privacy & Security** and scroll down to **Security**. You'll see *"Repeat that?! was
-   blocked to protect your Mac"*. Click **Open Anyway** and confirm with your password or Touch ID.
+3. Open **System Settings → Privacy & Security** and scroll down to **Security**. You'll see *"Repeat That" was
+   blocked to protect your Mac*. Click **Open Anyway** and confirm with your password or Touch ID.
 4. Open the app again and click **Open** in the dialog that follows.
 
 You only need to do this once per version.
@@ -27,7 +27,7 @@ macOS marks downloaded files with a "quarantine" attribute. Removing it from the
 check:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/Repeat that.app"
+xattr -dr com.apple.quarantine "/Applications/Repeat That.app"
 ```
 
 Use this if you get *"is damaged and can't be opened"*, which Option 1 doesn't always fix.
@@ -37,7 +37,7 @@ Use this if you get *"is damaged and can't be opened"*, which Option 1 doesn't a
 Each release publishes a `SHA256SUMS` file. Check that your download matches before you bypass Gatekeeper:
 
 ```sh
-shasum -a 256 ~/Downloads/Repeat-that_*_universal.dmg
+shasum -a 256 ~/Downloads/Repeat*That_*_universal.dmg
 ```
 
 Compare the output with the matching line in `SHA256SUMS` on the release page.
