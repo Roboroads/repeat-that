@@ -64,11 +64,21 @@ pub(super) fn list_apps() -> Result<Vec<AudioApp>> {
 ///
 /// A session that fails, e.g. because it was torn down meanwhile, is skipped so the others still get the new volume.
 pub(super) fn duck(root: u32, level: f32, before_duck: &mut BeforeDuck) -> Result<()> {
+    duck_tree(root, level, before_duck, false)
+}
+
+/// Ducks only the sessions in `root`'s process tree that started after it was ducked to `level`. Sessions that are
+/// already ducked keep their volume, including any the user gave them since.
+pub(super) fn duck_new_sessions(root: u32, level: f32, before_duck: &mut BeforeDuck) -> Result<()> {
+    duck_tree(root, level, before_duck, true)
+}
+
+fn duck_tree(root: u32, level: f32, before_duck: &mut BeforeDuck, new_only: bool) -> Result<()> {
     let processes = process_table()?;
     for_each_session(|session| {
         let pid = unsafe { session.GetProcessId() }.unwrap_or(0);
         if pid != 0 && processes.is_in_tree(pid, root) {
-            let _ = duck_session(session, level, before_duck);
+            let _ = duck_session(session, level, before_duck, new_only);
         }
     })
 }
@@ -77,8 +87,12 @@ fn duck_session(
     session: &IAudioSessionControl2,
     level: f32,
     before_duck: &mut BeforeDuck,
+    new_only: bool,
 ) -> windows::core::Result<()> {
     let id = take_co_string(unsafe { session.GetSessionInstanceIdentifier() }?);
+    if new_only && before_duck.contains(&id) {
+        return Ok(());
+    }
     let volume: ISimpleAudioVolume = session.cast()?;
     let Some(target) = before_duck.target(&id, level, || unsafe { volume.GetMasterVolume() }.ok()) else {
         return Ok(());

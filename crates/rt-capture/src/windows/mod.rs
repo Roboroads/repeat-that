@@ -4,7 +4,7 @@ mod loopback;
 mod sessions;
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
@@ -16,10 +16,15 @@ use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, Fr
 ///
 /// Process loopback captures the app after its own volume is applied, so ducking would make the capture quieter too.
 /// Captures of a ducked app are amplified by the inverse of the duck level to keep their level.
+///
+/// Apps start new audio sessions while ducked (a new voice stream, a new tab, a switch to another device). Those would
+/// play at full volume and then be boosted too, so a running capture ducks its app's new sessions every 500 ms on its
+/// own thread, which already has COM. Without a capture there is no boost, so nothing else needs to watch for new
+/// sessions.
 #[derive(Default)]
 pub struct WasapiSource {
-    /// Volume of each ducked audio session before ducking.
-    before_duck: Mutex<BeforeDuck>,
+    /// Volume of each ducked audio session before ducking, shared with captures that duck new sessions.
+    before_duck: Arc<Mutex<BeforeDuck>>,
     /// Current duck level of each app, by PID, shared with its captures.
     levels: Mutex<HashMap<u32, DuckLevel>>,
 }
@@ -42,7 +47,18 @@ impl AppAudioSource for WasapiSource {
     }
 
     fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<Box<dyn CaptureHandle>> {
-        loopback::start(app.pid, self.level(app.pid), sink)
+        let (pid, level, before_duck) = (app.pid, self.level(app.pid), Arc::clone(&self.before_duck));
+        let duck_level = level.clone();
+        let reduck = move || {
+            // Locked before reading the level, like `set_app_volume` holds it while changing the level, so this can't
+            // duck sessions an unduck just restored.
+            let mut before_duck = before_duck.lock().unwrap_or_else(|e| e.into_inner());
+            let level = duck_level.get().level;
+            if level < 1.0 {
+                let _ = sessions::duck_new_sessions(pid, level, &mut before_duck);
+            }
+        };
+        loopback::start(pid, level, sink, Box::new(reduck))
     }
 
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()> {

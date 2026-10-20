@@ -28,6 +28,11 @@ impl BeforeDuck {
         Some(original * level)
     }
 
+    /// Whether session `id` is ducked.
+    pub fn contains(&self, id: &str) -> bool {
+        self.0.contains_key(id)
+    }
+
     /// Forgets session `id` once its volume from before ducking is back.
     pub fn restored(&mut self, id: &str) {
         self.0.remove(id);
@@ -62,6 +67,16 @@ mod tests {
     fn sessions_that_were_never_ducked_are_left_alone() {
         let mut before = BeforeDuck::default();
         assert_eq!(before.target("a", 1.0, || Some(0.8)), None);
+    }
+
+    #[test]
+    fn ducked_sessions_are_known_until_restored() {
+        let mut before = BeforeDuck::default();
+        assert!(!before.contains("a"));
+        before.target("a", 0.5, || Some(0.8));
+        assert!(before.contains("a"));
+        before.restored("a");
+        assert!(!before.contains("a"));
     }
 
     #[test]

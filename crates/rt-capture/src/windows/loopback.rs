@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
@@ -41,17 +41,25 @@ const BUFFER_DURATION: i64 = 2_000_000;
 /// How often the capture thread checks whether it should stop when no audio arrives.
 const STOP_POLL_MS: u32 = 100;
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often a capture ducks sessions its app started while ducked.
+pub(super) const REDUCK_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Starts capturing `pid` and all its child processes on a new thread, amplified by the inverse of `level` to undo
-/// ducking. Returns once the stream runs, or with the reason it couldn't start.
-pub(super) fn start(pid: u32, level: DuckLevel, sink: FrameSink) -> Result<Box<dyn CaptureHandle>> {
+/// ducking. Calls `reduck` every [`REDUCK_INTERVAL`] on the capture thread. Returns once the stream runs, or with the
+/// reason it couldn't start.
+pub(super) fn start(
+    pid: u32,
+    level: DuckLevel,
+    sink: FrameSink,
+    reduck: Box<dyn FnMut() + Send>,
+) -> Result<Box<dyn CaptureHandle>> {
     ensure_process_exists(pid)?;
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);
     let (ready_tx, ready_rx) = mpsc::channel();
     let thread = thread::Builder::new()
         .name("wasapi-capture".into())
-        .spawn(move || run(pid, &level, sink, &stopped, ready_tx))
+        .spawn(move || run(pid, &level, sink, reduck, &stopped, ready_tx))
         .map_err(|e| CaptureError::Backend(format!("can't start capture thread: {e}")))?;
     let handle = ThreadCapture::new(stop, thread);
     match ready_rx.recv() {
@@ -69,7 +77,14 @@ fn ensure_process_exists(pid: u32) -> Result<()> {
 }
 
 /// The capture thread. Reports setup through `ready`, then delivers audio until `stop` is set or the stream fails.
-fn run(pid: u32, level: &DuckLevel, mut sink: FrameSink, stop: &AtomicBool, ready: Sender<Result<()>>) {
+fn run(
+    pid: u32,
+    level: &DuckLevel,
+    mut sink: FrameSink,
+    mut reduck: Box<dyn FnMut() + Send>,
+    stop: &AtomicBool,
+    ready: Sender<Result<()>>,
+) {
     let stream = match Stream::open(pid) {
         Ok(stream) => stream,
         Err(e) => {
@@ -79,7 +94,12 @@ fn run(pid: u32, level: &DuckLevel, mut sink: FrameSink, stop: &AtomicBool, read
     };
     let _ = ready.send(Ok(()));
     let (mut frames, mut history) = (Vec::new(), Vec::new());
+    let mut reducked = Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        if reducked.elapsed() >= REDUCK_INTERVAL {
+            reduck();
+            reducked = Instant::now();
+        }
         if unsafe { WaitForSingleObject(stream.event, STOP_POLL_MS) } != WAIT_OBJECT_0 {
             continue;
         }
