@@ -1,7 +1,7 @@
 //! The settings the app is running with: loaded from the file, changed through [`SettingsService::update`], saved,
 //! and pushed to the hotkeys and the OS autostart entry.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -152,6 +152,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Name of the settings file in the app config dir.
 pub const SETTINGS_FILE: &str = "settings.json";
+
+/// The settings file: `settings.json` in the app config dir, as an absolute path.
+///
+/// Open the store with this path and no other. `tauri-plugin-store` resolves a relative path such as `"settings.json"`
+/// against the app *data* dir, which is a different folder from the config dir on Linux (`~/.local/share` against
+/// `~/.config`), and it keys its open stores by the resolved path: a second `store("settings.json")` anywhere would
+/// open another file next to this one. The settings window can't reach the store plugin either (its capability grants
+/// no `store:` permission), so [`StorePersistence`] built from this path is the only way in.
+pub fn settings_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join(SETTINGS_FILE))
+        .map_err(|err| err.to_string())
+}
 /// Key of the settings object in that file.
 const SETTINGS_KEY: &str = "settings";
 
@@ -162,8 +176,14 @@ pub struct StorePersistence<R: Runtime> {
 }
 
 impl<R: Runtime> StorePersistence<R> {
-    /// Opens (and reads) the file at `path`, an absolute path.
+    /// Opens (and reads) the file at `path`, which must be absolute: take it from [`settings_file`].
     pub fn open(app: &AppHandle<R>, path: &Path) -> Result<Self, String> {
+        if !path.is_absolute() {
+            return Err(format!(
+                "{} is relative, and the store plugin would resolve it against the app data dir",
+                path.display()
+            ));
+        }
         // Saved explicitly with the result checked, not in the background.
         let store = app
             .store_builder(path)
@@ -206,18 +226,14 @@ impl SettingsPersistence for InMemoryPersistence {
 /// Creates the settings service on the real plugins and manages it. Needs the store, autostart and global-shortcut
 /// plugins, and [`SharedEngine`](crate::actions::SharedEngine) in the managed state before a hotkey is pressed.
 pub fn install<R: Runtime>(app: &AppHandle<R>) {
-    let persistence: Arc<dyn SettingsPersistence> = match app
-        .path()
-        .app_config_dir()
-        .map_err(|err| err.to_string())
-        .and_then(|dir| StorePersistence::open(app, &dir.join(SETTINGS_FILE)))
-    {
-        Ok(store) => Arc::new(store),
-        Err(err) => {
-            eprintln!("settings will not be saved: {err}");
-            Arc::new(InMemoryPersistence::default())
-        }
-    };
+    let persistence: Arc<dyn SettingsPersistence> =
+        match settings_file(app).and_then(|path| StorePersistence::open(app, &path)) {
+            Ok(store) => Arc::new(store),
+            Err(err) => {
+                eprintln!("settings will not be saved: {err}");
+                Arc::new(InMemoryPersistence::default())
+            }
+        };
     install_with(
         app,
         persistence,
@@ -825,6 +841,31 @@ mod store_tests {
             output_device: Some("Headphones".into()),
             ..Settings::default()
         }
+    }
+
+    #[test]
+    fn the_settings_file_is_an_absolute_path_in_the_config_dir() {
+        let app = app();
+        let path = settings_file(app.handle()).unwrap();
+        assert!(path.is_absolute(), "{path:?}");
+        assert_eq!(path.file_name().unwrap(), SETTINGS_FILE);
+        assert_eq!(path.parent().unwrap(), app.path().app_config_dir().unwrap());
+    }
+
+    #[test]
+    fn a_relative_path_is_refused_because_the_store_would_put_it_in_the_data_dir() {
+        let app = app();
+        assert!(StorePersistence::open(app.handle(), Path::new(SETTINGS_FILE)).is_err());
+    }
+
+    #[test]
+    fn opening_the_same_path_twice_gives_the_same_store() {
+        // The store plugin keys its open stores by path, so every access through the one path shares one store.
+        let dir = TempDir::new();
+        let app = app();
+        let first = open(&app, &dir);
+        let second = open(&app, &dir);
+        assert!(Arc::ptr_eq(&first.store, &second.store));
     }
 
     #[test]
