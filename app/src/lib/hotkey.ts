@@ -1,5 +1,6 @@
 // Turns what the hotkey recorder sees into the accelerator strings of tauri-plugin-global-shortcut ("Ctrl+Alt+Space").
 import type { Accel } from './api';
+import { currentPlatform, isMac, isWindows } from './platform';
 
 type KeyInput = Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>;
 
@@ -122,8 +123,8 @@ const FRIENDLY: Record<string, string> = {
 
 /** The Super key is called Win on Windows and Cmd on macOS. `platform` is a `navigator.platform` style string. */
 function superName(platform: string): string {
-  if (/mac|darwin/i.test(platform)) return 'Cmd';
-  if (/win/i.test(platform)) return 'Win';
+  if (isMac(platform)) return 'Cmd';
+  if (isWindows(platform)) return 'Win';
   return 'Super';
 }
 
@@ -131,8 +132,4 @@ function superName(platform: string): string {
 export function formatAccel(accel: Accel, platform: string = currentPlatform()): string[] {
   if (accel === null || accel === '') return [];
   return accel.split('+').map((part) => (part === 'Super' ? superName(platform) : (FRIENDLY[part] ?? part)));
-}
-
-export function currentPlatform(): string {
-  return typeof navigator === 'undefined' ? '' : navigator.platform || navigator.userAgent;
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Settings } from '../api';
-  import { currentPlatform } from '../hotkey';
+  import { isWindows } from '../platform';
   import type { SettingsStore } from '../store.svelte';
   import Section from './Section.svelte';
   import Switch from './Switch.svelte';
@@ -13,7 +13,7 @@
   let { store, settings }: Props = $props();
 
   const PRIVACY_URL = 'https://github.com/Roboroads/repeat-that/blob/main/PRIVACY.md';
-  const autostartLabel = /win/i.test(currentPlatform()) ? 'Start with Windows' : 'Start at login';
+  const autostartLabel = isWindows() ? 'Start with Windows' : 'Start at login';
 </script>
 
 <Section title="General" id="general">
