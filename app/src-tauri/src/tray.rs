@@ -209,6 +209,10 @@ pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
 
 const TRAY_ID: &str = "main";
 
+/// Windows: a left click on the icon opens the settings and the menu is on the right click. On macOS a click on a
+/// menu bar item opens its menu (Settings is in it), and Linux's appindicator sends no click events, only the menu.
+const LEFT_CLICK_OPENS_SETTINGS: bool = cfg!(windows);
+
 /// The tray menu, kept to update its items in place.
 struct TrayMenu<R: Runtime>(Menu<R>);
 
@@ -279,20 +283,19 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .icon(icons.image(model.icon))
         .tooltip(&model.tooltip)
         .menu(&menu)
-        // Windows: a left click opens the settings, the menu is on the right click. Linux (appindicator) doesn't send
-        // click events and only has the menu.
-        .show_menu_on_left_click(false)
+        .show_menu_on_left_click(!LEFT_CLICK_OPENS_SETTINGS)
         .on_menu_event(|app, event| {
             if let Some(action) = AppAction::from_id(event.id().as_ref()) {
                 actions::dispatch(action, app);
             }
         })
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
+            if LEFT_CLICK_OPENS_SETTINGS
+                && let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } = event
             {
                 actions::dispatch(AppAction::OpenSettings, tray.app_handle());
             }
