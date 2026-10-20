@@ -12,8 +12,9 @@ Notes for maintainers. Contributors don't need any of this.
   resolved
 - 0 required approvals, so a solo maintainer can merge their own PRs
 
-GitHub only enforces rulesets on private repositories with a paid plan, so this is applied when the repo goes public.
-To apply it, or to update it after editing the JSON:
+The repository is public, so GitHub enforces rulesets on it. It is not applied yet: apply it once #9 (which adds the
+required `Frontend` check) is on `main` and the `RELEASE_PLEASE_TOKEN` secret exists (see below). To apply it, or to
+update it after editing the JSON:
 
 ```sh
 # first time
