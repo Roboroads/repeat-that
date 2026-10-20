@@ -1,0 +1,25 @@
+[package]
+name = "repeat-that"
+description = "Repeat that?! desktop app: tray, settings window and global hotkeys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+# Not `repeat_that`: a library and a binary with the same name collide on Windows.
+name = "repeat_that_lib"
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+rt-capture = { path = "../../crates/rt-capture" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2.12", features = ["tray-icon", "image-png"] }
+tauri-plugin-autostart = "2.7"
+tauri-plugin-global-shortcut = "2.4"
+tauri-plugin-single-instance = "2.5"
+tauri-plugin-store = "2.5"
