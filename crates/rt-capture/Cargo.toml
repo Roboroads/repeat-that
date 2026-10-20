@@ -26,7 +26,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-windows-core = "0.62"
+windows-core = "0.100"
 
 [dev-dependencies]
 rt-core = { path = "../rt-core" }
