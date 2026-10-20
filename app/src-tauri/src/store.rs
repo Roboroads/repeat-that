@@ -84,7 +84,7 @@ impl<R: Runtime> StorePersistence<R> {
             && version > u64::from(SETTINGS_VERSION)
         {
             blocked = Some(Block::Newer(format!(
-                "The settings were saved by a newer version of Repeat that?! (settings version {version}). This version \
+                "The settings were saved by a newer version of Repeat That (settings version {version}). This version \
                  reads them but leaves the file alone, so changes can't be saved."
             )));
         }
