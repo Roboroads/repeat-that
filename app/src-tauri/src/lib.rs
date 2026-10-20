@@ -1,6 +1,8 @@
 //! Repeat that?! desktop shell: tray icon, hidden settings window and the plugins the rest of the app builds on.
 
 mod actions;
+#[cfg(test)]
+mod mock_runtime_tests;
 mod tray;
 mod window;
 

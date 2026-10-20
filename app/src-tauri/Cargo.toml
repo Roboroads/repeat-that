@@ -12,6 +12,7 @@ rust-version.workspace = true
 name = "repeat_that_lib"
 
 [build-dependencies]
+embed-resource = "3"
 tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
@@ -23,3 +24,6 @@ tauri-plugin-autostart = "2.7"
 tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-single-instance = "2.5"
 tauri-plugin-store = "2.5"
+
+[dev-dependencies]
+tauri = { version = "2.12", features = ["test"] }
