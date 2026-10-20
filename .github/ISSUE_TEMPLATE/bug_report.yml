@@ -1,0 +1,38 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 10, Windows 11, Linux, macOS (Apple Silicon), macOS (Intel)]
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version / distro
+      placeholder: e.g. Windows 11 23H2, Debian 12, macOS 14.5
+  - type: input
+    id: target-app
+    attributes:
+      label: App you were capturing
+      placeholder: e.g. Discord desktop, Microsoft Teams, Firefox
+  - type: input
+    id: version
+    attributes:
+      label: Repeat that?! version
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant log output (logs never contain audio).
+      render: text
