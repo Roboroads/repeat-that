@@ -52,29 +52,46 @@ release PR to trigger CI.
 ## macOS signing and notarization
 
 macOS releases are signed with a Developer ID Application certificate and notarized with Apple's `notarytool`. The
-milestone 6 release workflow does both through tauri-action, which reads the repository secrets below (Settings →
-Secrets and variables → Actions). They are needed before the first macOS release, not before the repository goes
-public. The names come from the Tauri [macOS code signing guide](https://v2.tauri.app/distribute/sign/macos/) and
+milestone 6 release workflow does both through tauri-action, which reads the variables below. They are needed before the
+first macOS release, not before the repository goes public. The names come from the Tauri
+[macOS code signing guide](https://v2.tauri.app/distribute/sign/macos/) and
 [environment variable reference](https://v2.tauri.app/reference/environment-variables/).
 
-Signing:
+Notarization uses an App Store Connect API key. That is the recommended route, since it doesn't depend on an Apple ID
+password or two-factor prompts. Create the key under Users and Access → Integrations in App Store Connect with Developer
+access. Apple lets you download the `.p8` file once.
+
+Repository secrets (Settings → Secrets and variables → Actions):
 - `APPLE_CERTIFICATE`: the Developer ID Application certificate exported from Keychain Access as a `.p12`,
-  base64-encoded (`base64 -i certificate.p12`).
+  base64-encoded as in the Tauri reference: `openssl base64 -A -in MyCertificate.p12 -out MyCertificate-base64.txt`.
 - `APPLE_CERTIFICATE_PASSWORD`: the password set when exporting the `.p12`.
 - `APPLE_SIGNING_IDENTITY`: the certificate name from `security find-identity -v -p codesigning`, for example
-  `Developer ID Application: Your Name (TEAMID)`. Tauri can work it out from `APPLE_CERTIFICATE` when this is unset, but
-  setting it removes the guesswork.
-
-Notarization, with an App Store Connect API key (the recommended route, since it doesn't depend on an Apple ID password
-or two-factor prompts). Create the key under Users and Access → Integrations in App Store Connect with Developer access.
-Apple lets you download the `.p8` file once.
+  `Developer ID Application: Your Name (TEAMID)`.
 - `APPLE_API_ISSUER`: the Issuer ID shown above the keys table.
-- `APPLE_API_KEY`: the Key ID of that key.
-- `APPLE_API_KEY_PATH`: the path to the `.p8` file. A secret is a string, so store the file's contents as a secret
-  (the workflow can call it `APPLE_API_KEY_CONTENT`; that name is ours, Tauri doesn't read it) and add a step that
-  writes it to a file and sets this variable to the file's path.
+- `APPLE_API_KEY`: the Key ID of the key.
+- `APPLE_API_KEY_CONTENT`: the full text of the `.p8` file. The name is ours, Tauri doesn't read it.
+
+Set in the workflow, not a secret:
+- `APPLE_API_KEY_PATH`: the path to the `.p8` file, which Tauri reads from disk. A step before the tauri-action step
+  writes the secret to a file and exports the path for the later steps:
+
+```yaml
+- name: Write the App Store Connect API key
+  env:
+    KEY_ID: ${{ secrets.APPLE_API_KEY }}
+    KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+  run: |
+    key_file="$RUNNER_TEMP/AuthKey_$KEY_ID.p8"
+    printf '%s\n' "$KEY_CONTENT" > "$key_file"
+    echo "APPLE_API_KEY_PATH=$key_file" >> "$GITHUB_ENV"
+```
+
+The tauri-action step then gets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_API_ISSUER` and `APPLE_API_KEY` from the secrets through its `env:` block.
+
+`APPLE_SIGNING_IDENTITY` is listed as required on purpose. The Tauri reference says it is inferred from
+`APPLE_CERTIFICATE` when neither the variable nor `bundle.macOS.signingIdentity` is set, but the Tauri CI example passes
+it, so we do too and the identity is never a guess.
 
 Notarization with an Apple ID instead: `APPLE_ID` (the account email), `APPLE_PASSWORD` (an app-specific password, not
 the account password) and `APPLE_TEAM_ID`. Tauri requires all three together. Use one notarization route, not both.
-
-A Developer ID certificate is valid for five years. Renew it before then and update the three signing secrets.
