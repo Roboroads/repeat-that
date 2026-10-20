@@ -38,6 +38,9 @@ jobs:
           Set-Service Audiosrv -StartupType Automatic
           Start-Service AudioEndpointBuilder, Audiosrv
           Get-CimInstance Win32_SoundDevice | Format-Table Name, Status
+      - name: Build probe (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build -p rt-capture --example probe
       - name: Capture test (Windows)
         if: runner.os == 'Windows'
         run: cargo test -p rt-capture --test windows_audio -- --ignored --nocapture

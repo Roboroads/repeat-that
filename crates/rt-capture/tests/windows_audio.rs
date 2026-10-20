@@ -1,15 +1,20 @@
-//! End-to-end test of the Windows backend against a real audio device: a child process plays a tone, and we list,
-//! capture and duck it. CI installs a virtual audio device for this; run it locally with
-//! `cargo test -p rt-capture --test windows_audio -- --ignored --nocapture`.
+//! End-to-end tests of the Windows backend against a real audio device: a child process plays a tone, and we list,
+//! capture and duck it, and check that the duck guard restores it when the process that ducked it is killed. CI
+//! installs a virtual audio device for this; run them locally with
 //!
-//! The tone is synthetic and everything stays in memory.
+//! ```sh
+//! cargo build -p rt-capture --example probe
+//! cargo test -p rt-capture --test windows_audio -- --ignored --nocapture
+//! ```
+//!
+//! The tone is synthetic and everything stays in memory. The probe's duck journal holds volumes only.
 
 #![cfg(windows)]
 
 use std::process::{Child, Command};
-use std::sync::mpsc;
-use std::thread;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
+use std::{env, thread};
 
 use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, WasapiSource};
 
@@ -34,26 +39,34 @@ $ms.Position = 0;
 (New-Object Media.SoundPlayer($ms)).PlayLooping();
 Start-Sleep 300";
 
-/// Kills the player when the test ends, also on a failed assertion.
-struct Player(Child);
+/// The tests play on the same device and capture their own process tree, so they take turns.
+static AUDIO: Mutex<()> = Mutex::new(());
 
-impl Drop for Player {
+/// A child process that is killed when the test ends, also on a failed assertion.
+struct Killed(Child);
+
+impl Drop for Killed {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
 }
 
-#[test]
-#[ignore = "plays audio; needs an audio output device"]
-fn lists_captures_and_ducks_a_playing_process() {
-    let source = WasapiSource::new();
-    let player = Player(
+fn start_player() -> Killed {
+    Killed(
         Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", PLAYER])
             .spawn()
             .expect("start PowerShell"),
-    );
+    )
+}
+
+#[test]
+#[ignore = "plays audio; needs an audio output device"]
+fn lists_captures_and_ducks_a_playing_process() {
+    let _audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
+    let source = WasapiSource::new();
+    let player = start_player();
     let player_pid = player.0.id();
 
     // The app list shows the player once it has an audio session.
@@ -144,6 +157,71 @@ fn lists_captures_and_ducks_a_playing_process() {
         db(lo) >= -MAX_OFF_DB && db(hi) <= MAX_OFF_DB,
         "a 1 ms window is off by more than {MAX_OFF_DB} dB: {off:.2?}"
     );
+}
+
+#[test]
+#[ignore = "plays audio; needs an audio output device and the probe example"]
+fn the_duck_guard_restores_an_app_ducked_by_a_killed_process() {
+    let _audio = AUDIO.lock().unwrap_or_else(|e| e.into_inner());
+    // The probe ducks with a duck journal and guard, like the app.
+    let probe = env::current_exe()
+        .ok()
+        .and_then(|test| Some(test.parent()?.parent()?.join("examples")))
+        .unwrap_or_default()
+        .join(format!("probe{}", env::consts::EXE_SUFFIX));
+    assert!(
+        probe.exists(),
+        "{} is missing; build it with `cargo build -p rt-capture --example probe`",
+        probe.display()
+    );
+    let journal = env::temp_dir().join("repeat-that-probe-duck.journal");
+    let _ = std::fs::remove_file(&journal);
+
+    let player = start_player();
+    let player_pid = player.0.id();
+    let before = wait_for(Duration::from_secs(30), || {
+        Some(session_volumes(player_pid)).filter(|v| !v.is_empty())
+    })
+    .expect("the player has an audio session");
+
+    // The probe holds the duck for a minute, far longer than the test needs.
+    let prober = Killed(
+        Command::new(&probe)
+            .args(["duck", &player_pid.to_string(), "0.25", "60"])
+            .spawn()
+            .expect("start the probe"),
+    );
+    wait_for(Duration::from_secs(30), || {
+        let now = session_volumes(player_pid);
+        let ducked = now.len() == before.len() && now.iter().zip(&before).all(|(n, b)| (n - b * 0.25).abs() < 1e-3);
+        ducked.then_some(())
+    })
+    .expect("the probe ducks the player to 25%");
+    assert!(journal.exists(), "the probe keeps a duck journal while ducked");
+
+    // Killed without a chance to restore anything itself, like a crash.
+    let killed = Command::new("taskkill")
+        .args(["/F", "/PID", &prober.0.id().to_string()])
+        .status()
+        .expect("run taskkill");
+    assert!(killed.success(), "taskkill: {killed}");
+    let start = Instant::now();
+    let mut restored = None;
+    while start.elapsed() < Duration::from_secs(10) {
+        if session_volumes(player_pid) == before {
+            restored = Some(start.elapsed());
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    println!(
+        "duck guard: volume {before:?} restored {restored:?} after taskkill /F, journal left: {}",
+        journal.exists()
+    );
+    let restored = restored.expect("the duck guard restores the player's volume");
+    assert!(restored <= Duration::from_secs(2), "restored only after {restored:?}");
+    wait_for(Duration::from_secs(2), || (!journal.exists()).then_some(()))
+        .expect("the duck guard removes the journal once everything is restored");
 }
 
 /// Captures continuously while ducking to 25% and back three times, and returns the RMS of each 1 ms window (one
