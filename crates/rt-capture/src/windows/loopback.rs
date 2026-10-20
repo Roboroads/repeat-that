@@ -227,7 +227,8 @@ fn compensate(frames: &mut [f32], history: &[DuckChange], time: Option<u64>) {
         return;
     };
     let channels = usize::from(FORMAT.channels);
-    // The level at the start of the packet, then every change during it.
+    // The level at the start of the packet, then every change during it. The history keeps the level of any audio up
+    // to a second old (see `DuckLevel`), far older than a capture drains, so the first change kept is only a fallback.
     let first = history.iter().rposition(|c| c.since <= time).unwrap_or(0);
     let mut level = history.get(first).map_or(1.0, |c| c.level);
     let mut start = 0;
