@@ -127,7 +127,10 @@ impl AppAudioSource for WasapiSource {
             ramp::apply(&sessions, step, duck_new, &mut ducking.before_duck);
             // Captures switch their compensation for audio the engine plays from this step's volume on.
             duck_level.set(step, loopback::volume_takes_effect());
-            // Every step, so the journal knows the volume the sessions are at even if we die mid-ramp.
+            // Every step: recovery only restores sessions still at the volume the journal holds, so a journal saved
+            // less often would leave an app we die on mid-fade where it was. It comes after the step's volume and
+            // compensation, so a slow write can't misalign them; one that runs past the next step's time only
+            // stretches the fade (see `ramp::next_due`).
             ducking.save();
         });
         // Sessions the app started during the fade aren't in it. Until they are ducked they play at full volume, and
