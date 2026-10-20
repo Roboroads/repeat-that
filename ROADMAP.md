@@ -49,10 +49,10 @@
 ## Milestone 8 — Website and going public
 This milestone starts after milestone 4, because the site needs the v0.1 release to link to, and can run in parallel with 5–7.
 
+- [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist) (on a free plan, GitHub Pages needs a public repository)
 - [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release (whose `SHA256SUMS` ships with the installers from milestone 4), and a link to [how to verify a download](docs/verify-downloads.md)
 - [ ] Short demo video of a replay in a call (Discord or Teams)
 - [ ] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary
-- [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist)
 - [ ] Apply for free open-source code signing from SignPath Foundation (Windows), with the website as the project page
 
 The demo video never contains audio captured from someone else's call. It uses the mock backend with synthetic or
