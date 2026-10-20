@@ -72,8 +72,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+    # Every step carries the same `if`, so a docs-only run does nothing. A job-level `if` would skip the job instead, and
+    # a skipped matrix job is reported under its unexpanded name, `Rust (${{ matrix.os }})`, which no required check
+    # matches.
     steps:
       - uses: actions/checkout@v7
+        if: needs.changes.outputs.code != 'false'
       - uses: dtolnay/rust-toolchain@stable
         if: needs.changes.outputs.code != 'false'
         with:
@@ -89,10 +93,10 @@ jobs:
       # End-to-end test of Windows capture: a virtual audio device (VB-CABLE) and the audio service, which Windows
       # Server runners have turned off.
       - name: Set up audio (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         uses: LABSN/sound-ci-helpers@d08c889a7bba7d9b1b059f8f76dac4672ea3a9cf # v1.0.4
       - name: Start audio service (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         shell: pwsh
         run: |
           Set-Service AudioEndpointBuilder -StartupType Automatic
@@ -100,8 +104,8 @@ jobs:
           Start-Service AudioEndpointBuilder, Audiosrv
           Get-CimInstance Win32_SoundDevice | Format-Table Name, Status
       - name: Build probe (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         run: cargo build -p rt-capture --example probe
       - name: Capture test (Windows)
-        if: runner.os == 'Windows'
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         run: cargo test -p rt-capture --test windows_audio -- --ignored --nocapture
