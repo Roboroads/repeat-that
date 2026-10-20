@@ -194,12 +194,23 @@ pub fn install_with<R: Runtime>(
     app.manage(service);
 
     // The settings window's close button is not the only way the first run ends: Quit in the tray and a logoff skip it.
-    // A plugin hears the app's run events by itself, so nothing has to forward them.
+    // And a page that reloads while recording a hotkey never asks for the hotkeys back. A plugin hears the app's run
+    // events and page loads by itself, so nothing has to forward them.
     let lifecycle = tauri::plugin::Builder::<R>::new("settings-lifecycle")
         .on_event(end_first_run_on_exit)
+        .on_page_load(resume_hotkeys_on_page_load)
         .build();
     if let Err(err) = app.plugin(lifecycle) {
         eprintln!("could not watch for the app ending: {err}");
+    }
+}
+
+/// A page that starts loading has lost whatever it was recording, so the hotkeys are registered again.
+fn resume_hotkeys_on_page_load<R: Runtime>(webview: &tauri::Webview<R>, payload: &tauri::webview::PageLoadPayload<'_>) {
+    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+        && let Some(settings) = webview.app_handle().try_state::<SettingsService>()
+    {
+        settings.suspend_hotkeys(false);
     }
 }
 

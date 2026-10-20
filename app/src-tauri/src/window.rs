@@ -60,17 +60,29 @@ pub fn apply_startup_visibility<R: Runtime>(app: &AppHandle<R>, args: &[String])
     }
 }
 
-/// Closing the settings window hides it; only Quit in the tray ends the app. Closing it also ends the first run, and
-/// gives the hotkeys back if the window was still recording one.
+/// Whether `event` means the window can no longer be recording a hotkey: it lost focus or is closing. The page asks to
+/// suspend the hotkeys before recording and to resume them after, but a page that errors or reloads in between never
+/// does, and the global hotkeys would stay off while the window stays open.
+fn ends_hotkey_recording(event: &WindowEvent) -> bool {
+    matches!(event, WindowEvent::Focused(false) | WindowEvent::CloseRequested { .. })
+}
+
+/// Closing the settings window hides it; only Quit in the tray ends the app. Closing it also ends the first run. The
+/// hotkeys come back whenever the window can no longer be recording one, see [`ends_hotkey_recording`].
 pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if window.label() != SETTINGS_LABEL {
         return;
     }
+    let settings = window.app_handle().try_state::<SettingsService>();
+    if ends_hotkey_recording(event)
+        && let Some(settings) = &settings
+    {
+        settings.suspend_hotkeys(false);
+    }
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
         let _ = window.hide();
-        if let Some(settings) = window.app_handle().try_state::<SettingsService>() {
-            settings.suspend_hotkeys(false);
+        if let Some(settings) = &settings {
             settings.mark_first_run_done();
         }
     }
@@ -106,6 +118,21 @@ mod tests {
             &args(&["repeat-that", "--hiddenly", "hidden"]),
             false
         ));
+    }
+
+    #[test]
+    fn losing_focus_ends_hotkey_recording() {
+        // The recorder lives in the focused window: when focus leaves, the global hotkeys must come back even if the
+        // page never says so (an error while recording, a reload).
+        assert!(ends_hotkey_recording(&WindowEvent::Focused(false)));
+    }
+
+    #[test]
+    fn gaining_focus_or_moving_does_not() {
+        assert!(!ends_hotkey_recording(&WindowEvent::Focused(true)));
+        assert!(!ends_hotkey_recording(&WindowEvent::Moved(
+            tauri::PhysicalPosition::new(0, 0)
+        )));
     }
 
     #[test]
