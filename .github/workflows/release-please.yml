@@ -11,8 +11,9 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
-    # One run at a time. Queue instead of cancelling: a run cancelled halfway could leave a release PR or draft
-    # half-made. It is on this job, not the workflow, so the slow installer build below doesn't hold up the next run.
+    # One run at a time. A run in progress is never cancelled (it could leave a release PR or draft half-made); a
+    # waiting run is replaced by a newer one, which is fine as release-please always works from the latest main. It is
+    # on this job, not the workflow, so the slow installer build below doesn't hold up the next run.
     concurrency:
       group: release-please
       cancel-in-progress: false
