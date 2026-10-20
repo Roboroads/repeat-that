@@ -56,6 +56,9 @@ variables → Actions), to the release-please step. Nothing else uses it: the ot
 with the least permissions they need. If the secret is missing or empty, the workflow fails on its first step with an
 error pointing here, instead of falling back to `GITHUB_TOKEN`.
 
+CI therefore runs in full on a release PR, including the Windows installer build: a dry run of the release commit before
+it is cut. A newer push to the release PR cancels the build of the older one.
+
 The token that exists now:
 
 - Repository access: only `Roboroads/repeat-that`.
@@ -108,11 +111,9 @@ in [`install-windows.md`](install-windows.md).
 
 `release-please-config.json` has `"release-as": "0.1.0"`, so the first release is 0.1.0 whatever the commits suggest.
 Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again and collides with the
-tag. The plain config check can't tell a pin whose release PR is still open (that PR bumps the manifest to the
-pinned version) from one whose release shipped, so it only warns about a pin below the manifest version. The
-`release-please` workflow therefore also runs it with `--tags` before it acts: once `v0.1.0` exists and the pin is still
-there, that run fails and no further release PRs are opened until the pin is gone. Hold the 0.1.0 release PR until the
-app captures and replays audio, because merging it publishes the installers.
+tag. The `release-please` workflow runs the config check with `--tags` before it acts (the script explains why): once
+`v0.1.0` exists and the pin is still there, that run fails and no further release PRs are opened until the pin is gone.
+Hold the 0.1.0 release PR until the app captures and replays audio, because merging it publishes the installers.
 
 ### Version numbers
 

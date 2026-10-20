@@ -61,8 +61,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Cheap guard that a release bumps every file carrying the version. Dry runs only: a tagged run has already been
-  # through release-please, and by then a stale `release-as` pin would only be a warning anyway.
+  # Cheap guard that a release bumps every file carrying the version. Dry runs only: a tagged run comes from a
+  # release-please run that has already made this check (with --tags).
   release-config:
     name: Release config
     if: ${{ !inputs.tag }}
