@@ -15,7 +15,7 @@ pub struct SegmenterConfig {
     pub padding: Duration,
     /// Silence longer than this ends the utterance. Shorter pauses stay inside it.
     pub max_pause: Duration,
-    /// Utterances with less speech than this (clicks, coughs) are dropped.
+    /// Speech shorter than this (clicks, coughs) is dropped. Once speech reaches it, the utterance opens.
     pub min_speech: Duration,
     /// Longer stretches of speech are split, so stepping back stays fine-grained during a monologue.
     pub max_utterance: Duration,
@@ -34,13 +34,31 @@ impl Default for SegmenterConfig {
     }
 }
 
+/// Receives the utterances a [`Segmenter`] finds, while they are spoken.
+pub trait UtteranceSink {
+    /// Speech reached `min_speech`: a new utterance opens with these samples, padding included.
+    fn open(&mut self, samples: &[f32]);
+    /// More audio for the open utterance.
+    fn append(&mut self, samples: &[f32]);
+    /// The open utterance reached `max_utterance` while speech goes on: it ends here, and the next one, which continues
+    /// it without a pause, opens with these samples.
+    fn split(&mut self, samples: &[f32]);
+    /// The open utterance ended (a long pause or a flush). Nothing more is appended to it.
+    fn close(&mut self);
+}
+
 /// Splits a continuous mono stream into utterances, dropping the silence between them.
 ///
-/// Detection runs on a 16 kHz copy of the stream, while the emitted utterances keep the original sample rate.
+/// Utterances are reported while they are spoken: one opens as soon as it has `min_speech` of speech, and audio is
+/// appended to it as it comes in. Silence inside a pause is held back until it is known whether speech resumes (the
+/// silence stays) or the utterance ends (it is cut to `padding`), so nothing reported is ever taken back.
+///
+/// Detection runs on a 16 kHz copy of the stream, while the utterances keep the original sample rate.
 pub struct Segmenter {
     vad: Box<dyn Vad>,
+    sample_rate: u32,
     threshold: f32,
-    release_threshold: f32,
+    hysteresis: f32,
     padding: usize,
     max_pause: usize,
     min_speech: usize,
@@ -54,53 +72,96 @@ pub struct Segmenter {
     /// Original samples not yet assigned to a VAD frame. `raw[0]` has absolute index `raw_start`.
     raw: VecDeque<f32>,
     raw_start: u64,
+    /// The original samples of the VAD frame being handled, reused between frames.
+    frame: Vec<f32>,
 
     state: State,
     /// Most recent audio while not in speech, capped at `padding` samples.
     preroll: VecDeque<f32>,
-    current: Vec<f32>,
+    /// While pending: the speech so far, starting with the preroll, not yet reported.
+    pending: Vec<f32>,
+    /// While pending: speech in `pending`, and the silence at its end.
     speech_samples: usize,
     trailing_silence: usize,
+    /// While open: silence since the last speech frame, held back.
+    held: Vec<f32>,
+    /// While open: samples reported for the open utterance so far.
+    open_len: usize,
+    /// While open: it reached `max_utterance`, and is split as soon as speech goes on.
+    split_due: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
     Silent,
-    Speech,
+    /// Speech that hasn't reached `min_speech` yet.
+    Pending,
+    /// An utterance is open.
+    Open,
 }
 
 impl Segmenter {
     pub fn new(sample_rate: u32, vad: Box<dyn Vad>, config: SegmenterConfig) -> Self {
-        let samples = |d| duration_to_samples(d, sample_rate);
-        Self {
+        let mut segmenter = Self {
             vad,
-            threshold: config.threshold,
-            release_threshold: config.threshold - config.hysteresis,
-            padding: samples(config.padding),
-            max_pause: samples(config.max_pause),
-            min_speech: samples(config.min_speech),
-            max_utterance: samples(config.max_utterance).max(1),
+            sample_rate,
+            threshold: 0.0,
+            hysteresis: 0.0,
+            padding: 0,
+            max_pause: 0,
+            min_speech: 0,
+            max_utterance: 1,
             ratio: sample_rate as f64 / VAD_SAMPLE_RATE as f64,
             resampler: LinearResampler::new(sample_rate, VAD_SAMPLE_RATE),
             vad_pending: Vec::new(),
             vad_frames_done: 0,
             raw: VecDeque::new(),
             raw_start: 0,
+            frame: Vec::new(),
             state: State::Silent,
             preroll: VecDeque::new(),
-            current: Vec::new(),
+            pending: Vec::new(),
             speech_samples: 0,
             trailing_silence: 0,
-        }
+            held: Vec::new(),
+            open_len: 0,
+            split_due: false,
+        };
+        segmenter.set_config(&config);
+        segmenter
     }
 
-    /// Feeds mono samples and appends every utterance that finished to `finished`.
-    pub fn push(&mut self, samples: &[f32], finished: &mut Vec<Vec<f32>>) {
+    /// Applies a new configuration from the next VAD frame on, keeping the utterance in progress and everything
+    /// reported so far.
+    pub fn set_config(&mut self, config: &SegmenterConfig) {
+        let samples = |d| duration_to_samples(d, self.sample_rate);
+        self.threshold = config.threshold;
+        self.hysteresis = config.hysteresis;
+        self.padding = samples(config.padding);
+        self.max_pause = samples(config.max_pause);
+        self.min_speech = samples(config.min_speech);
+        self.max_utterance = samples(config.max_utterance).max(1);
+    }
+
+    /// Changes the speech threshold from the next VAD frame on, keeping the hysteresis.
+    pub fn set_threshold(&mut self, threshold: f32) {
+        self.threshold = threshold;
+    }
+
+    /// Whether speech has started that isn't long enough to be reported yet. It either opens an utterance once it
+    /// reaches `min_speech`, or is dropped.
+    pub fn speech_pending(&self) -> bool {
+        self.state == State::Pending
+    }
+
+    /// Feeds mono samples and reports what they contain to `sink`.
+    pub fn push(&mut self, samples: &[f32], sink: &mut impl UtteranceSink) {
         self.raw.extend(samples);
         self.resampler.process(samples, &mut self.vad_pending);
 
         let frame_len = self.vad.frame_len();
         let mut consumed = 0;
+        let mut frame = std::mem::take(&mut self.frame);
         while self.vad_pending.len() - consumed >= frame_len {
             let probability = self
                 .vad
@@ -112,30 +173,44 @@ impl Segmenter {
             let end = ((self.vad_frames_done * frame_len as u64) as f64 * self.ratio).round() as u64;
             let available = self.raw_start + self.raw.len() as u64;
             let take = (end.min(available) - self.raw_start) as usize;
-            let chunk: Vec<f32> = self.raw.drain(..take).collect();
+            frame.clear();
+            frame.extend(self.raw.drain(..take));
             self.raw_start += take as u64;
 
-            let threshold = match self.state {
-                State::Silent => self.threshold,
-                State::Speech => self.release_threshold,
-            };
-            self.on_frame(chunk, probability >= threshold, finished);
+            let is_speech = self.is_speech(probability);
+            self.on_frame(&frame, is_speech, sink);
         }
+        self.frame = frame;
         self.vad_pending.drain(..consumed);
     }
 
-    /// Ends the current utterance, if any, e.g. when capture stops.
-    pub fn flush(&mut self) -> Option<Vec<f32>> {
-        let utterance = match self.state {
-            State::Speech => {
-                // Samples too recent to fill a whole VAD frame belong to the ongoing utterance.
-                self.current.extend(self.raw.drain(..));
-                self.finish()
-            }
-            State::Silent => None,
-        };
+    /// Ends the open utterance, if any, e.g. when capture stops. Pending speech too short to report is dropped.
+    pub fn flush(&mut self, sink: &mut impl UtteranceSink) {
+        if !self.raw.is_empty() {
+            // The samples too recent to fill a whole VAD frame are classified as one, padded with silence, so a word
+            // that started in them isn't cut off.
+            let mut last = std::mem::take(&mut self.vad_pending);
+            last.resize(self.vad.frame_len(), 0.0);
+            let probability = self.vad.speech_probability(&last);
+            let mut frame = std::mem::take(&mut self.frame);
+            frame.clear();
+            frame.extend(self.raw.drain(..));
+            let is_speech = self.is_speech(probability);
+            self.on_frame(&frame, is_speech, sink);
+            self.frame = frame;
+        }
+        if self.state == State::Open {
+            self.close(sink);
+        }
         self.reset();
-        utterance
+    }
+
+    fn is_speech(&self, probability: f32) -> bool {
+        let threshold = match self.state {
+            State::Silent => self.threshold,
+            State::Pending | State::Open => self.threshold - self.hysteresis,
+        };
+        probability >= threshold
     }
 
     /// Drops all pending audio and state.
@@ -148,53 +223,107 @@ impl Segmenter {
         self.raw_start = 0;
         self.state = State::Silent;
         self.preroll.clear();
-        self.current.clear();
+        self.pending.clear();
         self.speech_samples = 0;
         self.trailing_silence = 0;
+        self.held.clear();
+        self.open_len = 0;
+        self.split_due = false;
     }
 
-    fn on_frame(&mut self, chunk: Vec<f32>, is_speech: bool, finished: &mut Vec<Vec<f32>>) {
+    fn on_frame(&mut self, chunk: &[f32], is_speech: bool, sink: &mut impl UtteranceSink) {
         match self.state {
             State::Silent if is_speech => {
-                self.current.clear();
-                self.current.extend(self.preroll.drain(..));
-                self.current.extend_from_slice(&chunk);
+                self.pending.clear();
+                self.pending.extend(self.preroll.drain(..));
+                self.pending.extend_from_slice(chunk);
                 self.speech_samples = chunk.len();
                 self.trailing_silence = 0;
-                self.state = State::Speech;
+                self.state = State::Pending;
+                self.open_if_long_enough(sink);
             }
-            State::Silent => self.add_preroll(&chunk),
-            State::Speech => {
-                self.current.extend_from_slice(&chunk);
+            State::Silent => self.add_preroll(chunk),
+            State::Pending => {
+                self.pending.extend_from_slice(chunk);
                 if is_speech {
                     self.speech_samples += chunk.len();
                     self.trailing_silence = 0;
+                    self.open_if_long_enough(sink);
                 } else {
                     self.trailing_silence += chunk.len();
+                    if self.trailing_silence >= self.max_pause {
+                        // Too little speech: a click or a cough. Drop it.
+                        let pending = std::mem::take(&mut self.pending);
+                        self.preroll.clear();
+                        self.add_preroll(&pending[pending.len() - self.trailing_silence..]);
+                        self.pending = pending;
+                        self.pending.clear();
+                        self.state = State::Silent;
+                    }
                 }
-
-                if self.trailing_silence >= self.max_pause {
-                    finished.extend(self.finish());
-                    self.state = State::Silent;
-                } else if is_speech && self.current.len() >= self.max_utterance {
+            }
+            State::Open if is_speech => {
+                // The pause was inside the utterance after all.
+                if !self.held.is_empty() {
+                    sink.append(&self.held);
+                    self.open_len += self.held.len();
+                    self.held.clear();
+                }
+                if self.split_due {
                     // Split mid-speech. The next part starts right where this one ends.
-                    finished.push(std::mem::take(&mut self.current));
-                    self.speech_samples = 0;
+                    sink.split(chunk);
+                    self.open_len = chunk.len();
+                    self.split_due = false;
+                } else {
+                    sink.append(chunk);
+                    self.open_len += chunk.len();
+                }
+                self.split_if_too_long();
+            }
+            State::Open => {
+                self.held.extend_from_slice(chunk);
+                if self.held.len() >= self.max_pause {
+                    self.close(sink);
                 }
             }
         }
     }
 
-    /// Takes the current utterance, trimming trailing silence down to `padding`.
-    fn finish(&mut self) -> Option<Vec<f32>> {
-        let keep_silence = self.trailing_silence.min(self.padding);
-        let keep = self.current.len() - self.trailing_silence + keep_silence;
-        let tail = self.current.split_off(keep);
-        let utterance = std::mem::take(&mut self.current);
+    fn open_if_long_enough(&mut self, sink: &mut impl UtteranceSink) {
+        if self.speech_samples < self.min_speech {
+            return;
+        }
+        // Called right after a speech frame, so there's no trailing silence to hold back.
+        sink.open(&self.pending);
+        self.open_len = self.pending.len();
+        self.pending.clear();
+        self.held.clear();
+        self.state = State::Open;
+        self.split_due = false;
+        self.split_if_too_long();
+    }
+
+    /// Splits the open utterance once it reaches `max_utterance`, at its next speech frame: if it ends instead (a
+    /// pause, a flush), no part with only silence or nothing at all is left behind.
+    fn split_if_too_long(&mut self) {
+        self.split_due = self.open_len >= self.max_utterance;
+    }
+
+    /// Closes the open utterance after a pause, keeping `padding` of the held silence.
+    fn close(&mut self, sink: &mut impl UtteranceSink) {
+        let held = std::mem::take(&mut self.held);
+        let keep = held.len().min(self.padding);
+        if keep > 0 {
+            sink.append(&held[..keep]);
+        }
+        sink.close();
         self.preroll.clear();
-        self.add_preroll(&tail);
-        self.trailing_silence = 0;
-        (self.speech_samples >= self.min_speech).then_some(utterance)
+        self.add_preroll(&held[keep..]);
+        self.held = held;
+        self.held.clear();
+        self.open_len = 0;
+        self.split_due = false;
+        self.state = State::Silent;
     }
 
     fn add_preroll(&mut self, samples: &[f32]) {
@@ -211,6 +340,8 @@ mod tests {
     use crate::vad::EnergyVad;
 
     const RATE: u32 = 48_000;
+    /// One VAD frame (32 ms) at `RATE`.
+    const FRAME: usize = 1536;
 
     fn tone(seconds: f32) -> Vec<f32> {
         let n = (seconds * RATE as f32) as usize;
@@ -223,19 +354,82 @@ mod tests {
         vec![0.0; (seconds * RATE as f32) as usize]
     }
 
-    fn segment(parts: &[Vec<f32>], config: SegmenterConfig) -> Vec<Vec<f32>> {
-        let mut seg = Segmenter::new(RATE, Box::new(EnergyVad::default()), config);
-        let mut out = Vec::new();
-        // Feed in odd-sized chunks, like a real capture callback would.
-        for chunk in parts.concat().chunks(997) {
-            seg.push(chunk, &mut out);
+    fn secs(samples: usize) -> f32 {
+        samples as f32 / RATE as f32
+    }
+
+    fn segmenter(config: SegmenterConfig) -> Segmenter {
+        Segmenter::new(RATE, Box::new(EnergyVad::default()), config)
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum SegmentEvent {
+        Open(Vec<f32>),
+        Append(Vec<f32>),
+        Split(Vec<f32>),
+        Close,
+    }
+
+    /// Records what the segmenter reports, in order.
+    impl UtteranceSink for Vec<SegmentEvent> {
+        fn open(&mut self, samples: &[f32]) {
+            self.push(SegmentEvent::Open(samples.to_vec()));
         }
-        out.extend(seg.flush());
+
+        fn append(&mut self, samples: &[f32]) {
+            self.push(SegmentEvent::Append(samples.to_vec()));
+        }
+
+        fn split(&mut self, samples: &[f32]) {
+            self.push(SegmentEvent::Split(samples.to_vec()));
+        }
+
+        fn close(&mut self) {
+            self.push(SegmentEvent::Close);
+        }
+    }
+
+    /// Plays `events` into a list of utterances, each with whether it was closed.
+    fn utterances(events: &[SegmentEvent]) -> Vec<(Vec<f32>, bool)> {
+        let mut out: Vec<(Vec<f32>, bool)> = Vec::new();
+        let close = |out: &mut Vec<(Vec<f32>, bool)>| {
+            let (_, closed) = out.last_mut().expect("close an open utterance");
+            assert!(!*closed, "closed twice");
+            *closed = true;
+        };
+        for event in events {
+            match event {
+                SegmentEvent::Open(samples) => out.push((samples.clone(), false)),
+                SegmentEvent::Append(samples) => {
+                    let (utterance, closed) = out.last_mut().expect("append to an open utterance");
+                    assert!(!*closed, "append after close");
+                    utterance.extend_from_slice(samples);
+                }
+                SegmentEvent::Split(samples) => {
+                    close(&mut out);
+                    out.push((samples.clone(), false));
+                }
+                SegmentEvent::Close => close(&mut out),
+            }
+        }
         out
     }
 
-    fn secs(samples: usize) -> f32 {
-        samples as f32 / RATE as f32
+    /// Segments `parts` in odd-sized chunks, like a real capture callback would deliver them, then flushes.
+    fn segment(parts: &[Vec<f32>], config: SegmenterConfig) -> Vec<Vec<f32>> {
+        let mut seg = segmenter(config);
+        let mut events = Vec::new();
+        for chunk in parts.concat().chunks(997) {
+            seg.push(chunk, &mut events);
+        }
+        seg.flush(&mut events);
+        utterances(&events)
+            .into_iter()
+            .map(|(samples, closed)| {
+                assert!(closed, "flush closes every utterance");
+                samples
+            })
+            .collect()
     }
 
     #[test]
@@ -283,6 +477,19 @@ mod tests {
     }
 
     #[test]
+    fn flush_keeps_a_word_started_in_the_last_partial_frame() {
+        // 30 VAD frames of speech, a 10-frame pause, then speech too short to fill a frame when capture stops.
+        let speech = tone(1.0)[..30 * FRAME].to_vec();
+        let pause = vec![0.0; 10 * FRAME];
+        let word = tone(0.1)[..1000].to_vec();
+        let out = segment(
+            &[speech.clone(), pause.clone(), word.clone()],
+            SegmenterConfig::default(),
+        );
+        assert_eq!(out, vec![[speech, pause, word].concat()]);
+    }
+
+    #[test]
     fn keeps_every_sample_of_continuous_speech() {
         let config = SegmenterConfig {
             max_utterance: Duration::from_secs(1),
@@ -292,5 +499,141 @@ mod tests {
         let input = tone(4.0);
         let out = segment(std::slice::from_ref(&input), config);
         assert_eq!(out.concat(), input);
+    }
+
+    #[test]
+    fn opens_once_speech_reaches_min_speech() {
+        let mut seg = segmenter(SegmenterConfig::default());
+        let mut events = Vec::new();
+        seg.push(&silence(1.0), &mut events);
+        assert!(events.is_empty() && !seg.speech_pending());
+
+        // 10 ms chunks: speech is pending from its first VAD frame until it is published at 250 ms.
+        let mut opened_at = None;
+        let mut pending_seen = false;
+        for (i, chunk) in tone(1.0).chunks(480).enumerate() {
+            seg.push(chunk, &mut events);
+            if events.is_empty() {
+                pending_seen |= seg.speech_pending();
+            } else if opened_at.is_none() {
+                opened_at = Some((i + 1) * 480);
+                assert!(!seg.speech_pending());
+            }
+        }
+        assert!(pending_seen);
+        let opened_at = secs(opened_at.expect("opened"));
+        assert!(
+            (0.25..0.25 + 2.0 * secs(FRAME)).contains(&opened_at),
+            "opened at {opened_at} s"
+        );
+        let SegmentEvent::Open(first) = &events[0] else {
+            panic!("starts with Open: {:?}", events[0]);
+        };
+        // The 200 ms of padding before the speech, then the speech so far.
+        assert!(
+            (0.45..0.45 + 2.0 * secs(FRAME)).contains(&secs(first.len())),
+            "{}",
+            secs(first.len())
+        );
+        assert!(
+            !events[1..]
+                .iter()
+                .any(|e| matches!(e, SegmentEvent::Open(_) | SegmentEvent::Close))
+        );
+    }
+
+    #[test]
+    fn short_speech_never_opens_and_clears_pending() {
+        let mut seg = segmenter(SegmenterConfig::default());
+        let mut events = Vec::new();
+        seg.push(&silence(1.0), &mut events);
+        seg.push(&tone(0.1), &mut events);
+        seg.push(&silence(0.1), &mut events);
+        assert!(seg.speech_pending());
+        seg.push(&silence(1.0), &mut events);
+        assert!(!seg.speech_pending());
+        seg.flush(&mut events);
+        assert!(events.is_empty(), "{events:?}");
+    }
+
+    #[test]
+    fn holds_back_silence_inside_a_pause() {
+        let mut seg = segmenter(SegmenterConfig::default());
+        let mut events = Vec::new();
+        seg.push(&silence(1.0), &mut events);
+        seg.push(&tone(1.0), &mut events);
+        seg.push(&silence(0.5), &mut events);
+        // Still open, and the pause so far isn't published: it might be cut later.
+        let published = utterances(&events);
+        assert_eq!(published.len(), 1);
+        let (samples, closed) = &published[0];
+        assert!(!closed);
+        let len = secs(samples.len());
+        assert!((1.2 - secs(FRAME)..1.2 + secs(FRAME)).contains(&len), "{len}");
+
+        // Speech resumes: the pause is part of the utterance after all.
+        seg.push(&tone(0.5), &mut events);
+        let len = secs(utterances(&events)[0].0.len());
+        assert!((2.2 - secs(FRAME)..2.2 + secs(FRAME)).contains(&len), "{len}");
+
+        // A long pause closes it, keeping only the padding of it.
+        seg.push(&silence(1.0), &mut events);
+        let published = utterances(&events);
+        assert_eq!(published.len(), 1);
+        let (samples, closed) = &published[0];
+        assert!(closed);
+        let len = secs(samples.len());
+        assert!((2.4 - secs(FRAME)..2.4 + secs(FRAME)).contains(&len), "{len}");
+    }
+
+    #[test]
+    fn split_opens_the_next_utterance_at_once() {
+        let config = SegmenterConfig {
+            max_utterance: Duration::from_secs(1),
+            ..Default::default()
+        };
+        let mut seg = segmenter(config);
+        let mut events = Vec::new();
+        seg.push(&tone(1.5), &mut events);
+        assert!(!events.contains(&SegmentEvent::Close));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, SegmentEvent::Split(s) if !s.is_empty()))
+                .count(),
+            1
+        );
+        let published = utterances(&events);
+        assert_eq!(published.len(), 2);
+        assert!(published[0].1 && !published[1].1);
+    }
+
+    #[test]
+    fn splits_only_when_speech_goes_on() {
+        let config = SegmenterConfig {
+            max_utterance: Duration::from_secs(1),
+            ..Default::default()
+        };
+        // Speech that stops right at the limit, by a pause or because capture ends, leaves no silent or empty part.
+        let out = segment(&[tone(1.0), silence(2.0)], config.clone());
+        assert_eq!(out.len(), 1);
+        let out = segment(&[tone(1.0)], config);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn config_change_applies_to_later_frames() {
+        let mut seg = segmenter(SegmenterConfig::default());
+        let mut events = Vec::new();
+        seg.push(&tone(1.0), &mut events);
+        // A pause shorter than the default 700 ms closes the utterance once `max_pause` is lowered, without losing it.
+        seg.set_config(&SegmenterConfig {
+            max_pause: Duration::from_millis(300),
+            ..Default::default()
+        });
+        seg.push(&silence(0.5), &mut events);
+        let published = utterances(&events);
+        assert_eq!(published.len(), 1);
+        assert!(published[0].1);
     }
 }

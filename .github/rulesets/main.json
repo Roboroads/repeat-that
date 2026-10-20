@@ -49,6 +49,9 @@
             "context": "Rust (macos-latest)"
           },
           {
+            "context": "Frontend"
+          },
+          {
             "context": "Conventional Commit title"
           }
         ]
