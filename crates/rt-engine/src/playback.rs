@@ -411,6 +411,7 @@ impl PlayerThread {
                 let message = format!("{failure}; {e}");
                 self.status.update(|s| {
                     s.output.device_name = None;
+                    s.output.fell_back = false;
                     s.output.error = Some(message);
                 });
                 self.stop();

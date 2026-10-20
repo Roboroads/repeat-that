@@ -1068,6 +1068,30 @@ fn reopens_the_default_device_when_the_stream_fails() {
 }
 
 #[test]
+fn a_failed_reopen_reports_only_the_error() {
+    let output = TestOutput::new(RATE).with_devices(&["speakers", "headphones"]);
+    output.fail_device("headphones");
+    let config = EngineConfig {
+        output_device: Some("headphones".into()),
+        ..EngineConfig::default()
+    };
+    let (source, _engine, handle) = capturing(&output, config);
+    source.play(&sentence(2.0));
+    source.wait_played();
+    wait_buffered(&handle, 2.2);
+    handle.replay();
+    wait_for(&handle, secs(1.0), "the fallback", |s| s.output.fell_back);
+
+    // The default device goes too, for good.
+    output.fail_all();
+    output.break_streams();
+    let status = wait_for(&handle, secs(1.0), "an output error", |s| s.output.error.is_some());
+    assert_eq!(status.output.device_name, None);
+    assert!(!status.output.fell_back, "{:?}", status.output);
+    wait_idle(&handle, secs(1.0));
+}
+
+#[test]
 fn without_any_device_the_replay_is_aborted_and_nothing_ducks() {
     let output = TestOutput::new(RATE);
     output.fail_all();
