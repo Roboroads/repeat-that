@@ -125,7 +125,8 @@ has to notarize and staple the `.dmg` in the release workflow (`xcrun notarytool
 `spctl -a -t open --context context:primary-signature -v` and `xcrun stapler validate` on the `.dmg`, and
 `xcrun stapler validate` on the app inside.
 
-The Tauri updater verifies updates with its own key pair (stored as a GitHub Actions secret), separate from the Apple
-and Windows code signing.
+There is no auto-updater yet (it is on the roadmap under later ideas). When it arrives, the Tauri updater will verify
+updates with its own key pair, stored as a GitHub Actions secret and separate from any code signing.
 
-Open-source code signing on Windows: apply to [SignPath Foundation](https://signpath.org).
+The Windows installers are not code signed yet, so Windows shows a SmartScreen warning. Open-source code signing on
+Windows: apply to [SignPath Foundation](https://signpath.org).
