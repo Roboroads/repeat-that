@@ -60,6 +60,9 @@ const PLACEHOLDER_MARKER: &str = "<!-- repeat-that: frontend placeholder -->";
 fn ensure_frontend_dist() {
     let dist = Path::new("../dist");
     let index = dist.join("index.html");
+    // The whole directory, not only the page: `npm run build` empties `dist` first, so a build that fails halfway
+    // leaves it without an `index.html` and the script has to run again to notice.
+    println!("cargo:rerun-if-changed={}", dist.display());
     println!("cargo:rerun-if-changed={}", index.display());
 
     let page = std::fs::read(&index).ok();
@@ -77,17 +80,19 @@ fn ensure_frontend_dist() {
     }
     if page.is_none() {
         std::fs::create_dir_all(dist).expect("create ../dist");
-        std::fs::write(
-            &index,
-            format!(
-                "{PLACEHOLDER_MARKER}<!doctype html><title>Repeat that?!</title><p>The frontend is not built. Run \
-                 <code>npm run build</code> in app/."
-            ),
-        )
-        .expect("write ../dist/index.html");
+        let page = format!(
+            "{PLACEHOLDER_MARKER}<!doctype html><meta charset=\"utf-8\"><title>FRONTEND NOT BUILT</title>\
+             <body style=\"margin:0;padding:2rem;font:16px system-ui,sans-serif;background:#b91c1c;color:#fff\">\
+             <h1>FRONTEND NOT BUILT</h1>\
+             <p>This is a placeholder page, not the settings window. Run <code>npm run build</code> in \
+             <code>app/</code>, then build the app again.</p>"
+        );
+        std::fs::write(&index, page).expect("write ../dist/index.html");
     }
     println!(
         "cargo:warning=the frontend is not built, so the app embeds a placeholder page (debug builds only). Run `npm run \
          build` in app/ for the real settings window."
     );
+    // Lets the app say so at startup (see `run` in lib.rs).
+    println!("cargo:rustc-env=REPEAT_THAT_FRONTEND_PLACEHOLDER=1");
 }
