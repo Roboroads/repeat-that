@@ -30,10 +30,16 @@ pub fn settings_file<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> 
 /// Key of the settings object in that file.
 const SETTINGS_KEY: &str = "settings";
 
-/// [`SettingsPersistence`] on `tauri-plugin-store`: the settings object under the `settings` key of a JSON file. A file
-/// that can't be read counts as empty and is overwritten by the next save.
+/// [`SettingsPersistence`] on `tauri-plugin-store`: the settings object under the `settings` key of a JSON file.
+///
+/// A file that holds something else than a JSON object is moved aside (see [`set_aside_corrupt_file`]). A file that
+/// can't be read, or can't be moved aside, is never written over: saving is refused until it can be dealt with, so
+/// the empty store the plugin opens in its place can't replace what the user had.
 pub struct StorePersistence<R: Runtime> {
     store: Arc<Store<R>>,
+    path: PathBuf,
+    /// Why saving is refused, while it is.
+    blocked: Mutex<Option<String>>,
 }
 
 impl<R: Runtime> StorePersistence<R> {
@@ -45,33 +51,86 @@ impl<R: Runtime> StorePersistence<R> {
                 path.display()
             ));
         }
-        set_aside_corrupt_file(path);
+        let blocked = match set_aside_corrupt_file(path) {
+            Aside::Failed(reason) => Some(reason),
+            Aside::Nothing | Aside::Moved => None,
+        };
         // Saved explicitly with the result checked, not in the background.
         let store = app
             .store_builder(path)
             .disable_auto_save()
             .build()
             .map_err(|err| err.to_string())?;
-        Ok(StorePersistence { store })
+        if blocked.is_some() {
+            // The plugin saves every store it knows when the app exits. This one holds nothing of the file, so it must
+            // not be among them.
+            store.close_resource();
+        }
+        Ok(StorePersistence {
+            store,
+            path: path.to_path_buf(),
+            blocked: Mutex::new(blocked),
+        })
     }
+
+    /// Whether saving may go ahead. A file that couldn't be set aside is tried again, since the cause (a lock held by
+    /// a virus scanner or a backup tool, say) may be gone by now.
+    fn check_writable(&self) -> Result<(), String> {
+        let mut blocked = crate::service::lock(&self.blocked);
+        if blocked.is_some() {
+            match set_aside_corrupt_file(&self.path) {
+                Aside::Failed(reason) => {
+                    *blocked = Some(reason.clone());
+                    return Err(reason);
+                }
+                Aside::Nothing | Aside::Moved => *blocked = None,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What [`set_aside_corrupt_file`] did.
+#[derive(Debug, PartialEq, Eq)]
+enum Aside {
+    /// There was no file, or it holds a JSON object (or only blanks), or it was set aside before.
+    Nothing,
+    /// The file held something else than a JSON object and was moved to `settings.json.bad`.
+    Moved,
+    /// The file can't be read, or can't be moved: it is left as it is. Carries the reason.
+    Failed(String),
 }
 
 /// A settings file that can be read but is not a JSON object is moved to `settings.json.bad` (replacing an older
 /// backup), so the store starts from nothing, the defaults apply, and the next save writes a fresh file without
-/// throwing away what the user had. A missing, empty or unreadable file is left alone.
-fn set_aside_corrupt_file(path: &Path) {
-    let Ok(bytes) = std::fs::read(path) else { return };
+/// throwing away what the user had. A missing or blank file has nothing to keep. A file that can't be read, or can't
+/// be moved, is left alone and reported: writing a fresh file over it would destroy what we couldn't look at.
+fn set_aside_corrupt_file(path: &Path) -> Aside {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Aside::Nothing,
+        Err(err) => {
+            return Aside::Failed(format!(
+                "The settings file can't be read, so it is left as it is and changes can't be saved: {err}"
+            ));
+        }
+    };
     if bytes.trim_ascii().is_empty() || serde_json::from_slice::<serde_json::Map<String, Value>>(&bytes).is_ok() {
-        return;
+        return Aside::Nothing;
     }
     let mut backup = path.as_os_str().to_owned();
     backup.push(".bad");
     match std::fs::rename(path, &backup) {
-        Ok(()) => eprintln!(
-            "the settings file is not valid JSON; kept as {} and started from the defaults",
-            Path::new(&backup).display()
-        ),
-        Err(err) => eprintln!("the settings file is not valid JSON and could not be set aside: {err}"),
+        Ok(()) => {
+            eprintln!(
+                "the settings file is not valid JSON; kept as {} and started from the defaults",
+                Path::new(&backup).display()
+            );
+            Aside::Moved
+        }
+        Err(err) => Aside::Failed(format!(
+            "The settings file is damaged and can't be moved aside, so it is left as it is and changes can't be saved: {err}"
+        )),
     }
 }
 
@@ -81,6 +140,7 @@ impl<R: Runtime> SettingsPersistence for StorePersistence<R> {
     }
 
     fn save(&self, settings: &Settings) -> Result<(), String> {
+        self.check_writable()?;
         let value = serde_json::to_value(settings).map_err(|err| err.to_string())?;
         let previous = self.store.get(SETTINGS_KEY);
         self.store.set(SETTINGS_KEY, value);
@@ -278,6 +338,52 @@ mod store_tests {
         persistence.save(&settings()).unwrap();
         assert!(dir.file().exists());
         assert!(backup_of(&dir).exists(), "saving doesn't touch the backup");
+    }
+
+    /// A corrupt settings file whose backup name is taken by a non-empty folder, so moving it aside fails.
+    fn corrupt_file_that_cannot_be_moved(dir: &TempDir) {
+        fs::create_dir_all(backup_of(dir)).unwrap();
+        fs::write(backup_of(dir).join("in-the-way"), "x").unwrap();
+        fs::write(dir.file(), "{ this is not json").unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_file_that_cannot_be_moved_aside_is_never_overwritten() {
+        let dir = TempDir::new();
+        corrupt_file_that_cannot_be_moved(&dir);
+        let app = app();
+        let persistence = open(&app, &dir);
+        assert_eq!(persistence.load(), None);
+        assert!(persistence.save(&settings()).is_err());
+        assert_eq!(fs::read_to_string(dir.file()).unwrap(), "{ this is not json");
+        // The plugin writes every open store when the app exits; this one must not be among them.
+        assert!(app.get_store(dir.file()).is_none());
+    }
+
+    #[test]
+    fn saving_works_again_once_the_corrupt_file_can_be_moved() {
+        let dir = TempDir::new();
+        corrupt_file_that_cannot_be_moved(&dir);
+        let app = app();
+        let persistence = open(&app, &dir);
+        assert!(persistence.save(&settings()).is_err());
+
+        fs::remove_dir_all(backup_of(&dir)).unwrap(); // whatever was in the way is gone
+        persistence.save(&settings()).unwrap();
+        assert_eq!(fs::read_to_string(backup_of(&dir)).unwrap(), "{ this is not json");
+        let file: Value = serde_json::from_str(&fs::read_to_string(dir.file()).unwrap()).unwrap();
+        assert_eq!(file["settings"]["bufferSeconds"], 75);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_left_alone_too() {
+        let dir = TempDir::new();
+        fs::create_dir_all(dir.file()).unwrap(); // reading a folder fails, but it isn't a missing file
+        let app = app();
+        let persistence = open(&app, &dir);
+        assert!(persistence.save(&settings()).is_err());
+        assert!(dir.file().is_dir());
+        assert!(app.get_store(dir.file()).is_none());
     }
 
     #[test]
