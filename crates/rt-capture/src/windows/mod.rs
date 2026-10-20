@@ -92,7 +92,7 @@ impl AppAudioSource for WasapiSource {
             // Locked before reading the level, like `set_app_volume` holds it while changing the level, so this can't
             // duck sessions an unduck just restored.
             let mut ducking = ducking.lock().unwrap_or_else(|e| e.into_inner());
-            let level = duck_level.get().level;
+            let level = duck_level.get();
             if level < 1.0 {
                 let _ = sessions::duck_new_sessions(pid, level, &mut ducking.before_duck);
                 ducking.save();

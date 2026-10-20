@@ -259,7 +259,7 @@ pub(super) fn volume_takes_effect() -> u64 {
 }
 
 /// The current time on the clock of the packet timestamps: the performance counter in 100 ns units.
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     let (mut counter, mut frequency) = (0i64, 0i64);
     unsafe {
         let _ = QueryPerformanceCounter(&mut counter);
