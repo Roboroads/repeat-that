@@ -47,7 +47,7 @@
 - [ ] Transcript panel / overlay, memory-only
 
 ## Milestone 8 — Website and going public
-This milestone can run in parallel with 5–7.
+This milestone starts after milestone 4, because the site needs the v0.1 release to link to, and can run in parallel with 5–7.
 
 - [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release (whose `SHA256SUMS` ships with the installers from milestone 4), and a link to [how to verify a download](docs/verify-downloads.md)
 - [ ] Short demo video of a replay in a call (Discord or Teams)
