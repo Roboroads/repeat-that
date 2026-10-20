@@ -82,8 +82,9 @@ apps without writing audio to disk.
   - *Play through to live*: after each utterance it plays the next, including everything recorded during the replay.
     Silences between utterances are replaced by a short fixed gap (~250 ms), so it still sounds natural and catches up
     even at 1.0×. When it reaches someone still talking, it follows their sentence as it comes in, at normal speed,
-    waiting in silence until ~100 ms of new speech is in each time; it also waits while speech is pending. It ends
-    once there is nothing left, and the listener is back to live audio. `Player::behind` says how long that takes.
+    waiting in silence until ~100 ms of new speech is in each time; it also waits while speech is pending. Waiting
+    gives up after 2 s without new audio, in case capture stopped without closing the sentence. It ends once there is
+    nothing left, and the listener is back to live audio. `Player::behind` says how long that takes.
   - *Catch-up*: playback speed from 0.5× to 2.0× with a streaming, pitch-preserving time-stretch (WSOLA,
     `Stretcher`). A speed change applies mid-utterance within 15 ms, without a click.
 

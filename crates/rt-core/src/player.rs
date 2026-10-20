@@ -18,6 +18,10 @@ pub struct PlayerConfig {
     /// Once playback has caught up with someone still talking, it waits until this much of their speech has come in
     /// before it plays on, so it doesn't stutter on every few milliseconds that arrive.
     pub live_margin: Duration,
+    /// Waiting for the speaker (for the sentence in progress, or for pending speech) ends the replay after this long
+    /// without new audio: the capture stopped without [`Recorder::flush`](crate::Recorder::flush) closing the
+    /// sentence. Keep it well above the segmenter's `max_pause`, the longest pause the recorder holds back.
+    pub max_wait: Duration,
 }
 
 impl Default for PlayerConfig {
@@ -27,6 +31,7 @@ impl Default for PlayerConfig {
             speed: 1.0,
             min_open_start: Duration::from_millis(1500),
             live_margin: Duration::from_millis(100),
+            max_wait: Duration::from_secs(2),
         }
     }
 }
@@ -57,6 +62,7 @@ pub struct Player {
     speed: f32,
     min_open_start: usize,
     live_margin: usize,
+    max_wait: usize,
     stretcher: Stretcher,
     playing: Option<Playback>,
 }
@@ -73,6 +79,8 @@ struct Playback {
     /// Caught up with the sentence in progress. The rest of it plays at normal speed: there's nothing left to catch up,
     /// and playing faster would only run out of speech again.
     live: bool,
+    /// Silence written while waiting for the speaker since audio last came in.
+    waited: usize,
     phase: Phase,
 }
 
@@ -96,7 +104,11 @@ impl Playback {
         }
         let utterance = buffer.get(self.id);
         if let Some(utterance) = utterance {
-            stretcher.push(utterance.samples.get(self.fed..).unwrap_or_default());
+            let new = utterance.samples.get(self.fed..).unwrap_or_default();
+            if !new.is_empty() {
+                stretcher.push(new);
+                self.waited = 0;
+            }
             self.fed = utterance.samples.len();
         }
         if buffer.open_id() == Some(self.id) {
@@ -127,6 +139,7 @@ impl Player {
             speed,
             min_open_start: duration_to_samples(config.min_open_start, sample_rate),
             live_margin: duration_to_samples(config.live_margin, sample_rate),
+            max_wait: duration_to_samples(config.max_wait, sample_rate),
             stretcher: Stretcher::new(sample_rate, speed),
             playing: None,
         }
@@ -247,6 +260,7 @@ impl Player {
                     }
                     if playback.complete {
                         playback.phase = Phase::Gap(gap);
+                        playback.waited = 0;
                         continue;
                     }
                     // Caught up with someone still talking: play all of their sentence so far, then wait for more.
@@ -263,9 +277,14 @@ impl Player {
                     let available = self.stretcher.pending();
                     if playback.complete || playback.continues || (available > 0 && available >= self.live_margin) {
                         playback.phase = Phase::Speech;
+                    } else if playback.waited >= self.max_wait {
+                        // Nothing new for far longer than a pause: the capture stopped without closing the sentence.
+                        // Play what's left of it and end.
+                        playback.complete = true;
+                        self.stretcher.finish();
+                        playback.phase = Phase::Speech;
                     } else {
-                        out[written..].fill(0.0);
-                        written = out.len();
+                        written += Self::wait(playback, self.max_wait, &mut out[written..]);
                     }
                 }
                 Phase::Gap(left) => {
@@ -278,9 +297,8 @@ impl Player {
                     let next = playback.id + 1;
                     if buffer.latest_id().is_some_and(|latest| latest >= next) {
                         self.load(buffer, next);
-                    } else if buffer.speech_pending() {
-                        out[written..].fill(0.0);
-                        written = out.len();
+                    } else if buffer.speech_pending() && playback.waited < self.max_wait {
+                        written += Self::wait(playback, self.max_wait, &mut out[written..]);
                     } else {
                         self.stop();
                     }
@@ -292,6 +310,14 @@ impl Player {
             written,
             ended: self.playing.is_none(),
         }
+    }
+
+    /// Writes silence while waiting for the speaker, up to `max_wait` in a row. Returns how much it wrote.
+    fn wait(playback: &mut Playback, max_wait: usize, out: &mut [f32]) -> usize {
+        let n = out.len().min(max_wait.saturating_sub(playback.waited));
+        out[..n].fill(0.0);
+        playback.waited += n;
+        n
     }
 
     /// Starts playing utterance `id` (or the oldest one still buffered, if `id` was evicted). Stops if it doesn't
@@ -310,6 +336,7 @@ impl Player {
             complete: false,
             continues: false,
             live: false,
+            waited: 0,
             phase: Phase::Speech,
         };
         playback.feed(buffer, &mut self.stretcher);
@@ -639,6 +666,42 @@ mod tests {
         buf.close();
         let next = render_all(&mut player, &buf);
         assert!((next.len() as f32 - 1000.0 / 1.5).abs() <= 30.0, "{}", next.len());
+    }
+
+    #[test]
+    fn gives_up_waiting_when_no_audio_comes_in() {
+        let config = PlayerConfig {
+            gap: Duration::from_millis(20),
+            max_wait: Duration::from_millis(50),
+            ..no_gap()
+        };
+        // The capture stops mid-sentence and nobody flushes the recorder: the sentence stays open.
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        let mut player = Player::new(RATE, config.clone());
+        player.replay(&buf);
+        let out = render_all(&mut player, &buf);
+        assert_eq!(out, [vec![1.0; 100], vec![0.0; 50 + 20]].concat());
+
+        // Speech that stays pending.
+        let mut buf = buffer_with(&[1.0]);
+        buf.set_speech_pending(true);
+        let mut player = Player::new(RATE, config.clone());
+        player.replay(&buf);
+        let out = render_all(&mut player, &buf);
+        assert_eq!(out, [vec![1.0; 100], vec![0.0; 20 + 50]].concat());
+
+        // Audio that keeps coming in, however slowly, keeps the replay going.
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        let mut player = Player::new(RATE, config);
+        player.replay(&buf);
+        let mut out = render_playing(&mut player, &buf, 128);
+        for _ in 0..5 {
+            buf.append(&[2.0; 10]);
+            out.extend(render_playing(&mut player, &buf, 40));
+        }
+        assert_eq!(non_silent(&out), [vec![1.0; 100], vec![2.0; 50]].concat());
     }
 
     #[test]
