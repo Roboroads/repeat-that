@@ -15,6 +15,13 @@ jobs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
+      # Release PRs are opened with GITHUB_TOKEN, so CI never runs on them. Check the config here instead, before
+      # release-please acts: a `release-as` pin left in after its release shipped would make the next release PR
+      # propose that version again.
+      - uses: actions/checkout@v7
+      - name: Check the release config
+        run: python3 .github/scripts/check-release-config.py --tags
+
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
         with:

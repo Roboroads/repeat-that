@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that release-please is configured to bump every file that carries the product version.
 
-Usage: check-release-config.py [repo-root]
+Usage: check-release-config.py [--tags] [repo-root]
 
 A release that bumps Cargo.toml but not app/package.json (or the other way round) ships installers whose version
 disagrees with the release tag, so this fails when:
@@ -13,11 +13,16 @@ disagrees with the release tag, so this fails when:
   * app/src-tauri/tauri.conf.json sets its own `version` (it must inherit the Cargo one)
 
 A `release-as` that is not above the manifest version any more (the pinned release shipped) only warns; remove it.
+
+With --tags (release-please.yml, before release-please acts) it also fails when `release-as` names a version that
+already has a `vX.Y.Z` tag on origin. Release PRs are opened with GITHUB_TOKEN, so CI never runs on them, and a
+leftover pin would make the next release PR propose that version again and collide with the tag.
 """
 
 import json
 import os
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -55,8 +60,21 @@ def load(root, relative, kind):
         return tomllib.load(handle) if kind == "toml" else json.load(handle)
 
 
-def check(root):
-    """Returns (errors, warnings), both lists of messages."""
+def remote_tag_exists(root, tag):
+    """True when origin has the tag. Raises when origin can't be asked, so a flaky network can't pass the check."""
+    result = subprocess.run(
+        ["git", "ls-remote", "--exit-code", "--tags", "origin", f"refs/tags/{tag}"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in (0, 2):  # --exit-code: 2 means no matching ref
+        raise RuntimeError(f"git ls-remote failed: {result.stderr.strip()}")
+    return result.returncode == 0
+
+
+def check(root, tag_exists=None):
+    """Returns (errors, warnings), both lists of messages. tag_exists(tag) is only given with --tags."""
     errors, warnings = [], []
 
     try:
@@ -81,6 +99,11 @@ def check(root):
     if pinned is not None:
         if version_tuple(pinned) is None:
             errors.append(f'"release-as" {pinned!r} is not a plain X.Y.Z version (MSI versions must be numeric)')
+        elif tag_exists is not None and tag_exists(f"v{pinned}"):
+            errors.append(
+                f'"release-as" {pinned} already has the tag v{pinned}: remove "release-as" from '
+                "release-please-config.json, or the next release PR proposes that version again and collides with the tag"
+            )
         elif version_tuple(current) and version_tuple(pinned) <= version_tuple(current):
             warnings.append(
                 f'"release-as" {pinned} is not above the released version {current}: remove it, or the next release '
@@ -123,8 +146,15 @@ def check(root):
 
 
 def main():
-    root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
-    errors, warnings = check(root)
+    args = sys.argv[1:]
+    with_tags = "--tags" in args
+    args = [arg for arg in args if arg != "--tags"]
+    root = Path(args[0] if args else ".").resolve()
+    tag_exists = (lambda tag: remote_tag_exists(root, tag)) if with_tags else None
+    try:
+        errors, warnings = check(root, tag_exists)
+    except RuntimeError as error:
+        errors, warnings = [str(error)], []
     on_actions = os.environ.get("GITHUB_ACTIONS") == "true"
     for message in warnings:
         print(f"::warning::{message}" if on_actions else f"warning: {message}")
