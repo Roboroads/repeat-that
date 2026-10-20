@@ -20,6 +20,7 @@ use windows::Win32::System::Threading::{
 use windows::core::{HSTRING, Interface, PWSTR, w};
 
 use super::backend;
+use crate::before_duck::BeforeDuck;
 use crate::process_tree::{Process, ProcessTable};
 use crate::{AudioApp, Result};
 
@@ -34,7 +35,6 @@ pub(super) fn list_apps() -> Result<Vec<AudioApp>> {
         if pid != 0 && root != own_root && !roots.contains(&root) {
             roots.push(root);
         }
-        Ok(())
     })?;
 
     let mut apps: Vec<AudioApp> = roots
@@ -61,30 +61,38 @@ pub(super) fn list_apps() -> Result<Vec<AudioApp>> {
 
 /// Sets every audio session in `root`'s process tree to `level` times its volume from before ducking. At `1.0` the
 /// sessions get their old volume back and are forgotten.
-pub(super) fn duck(root: u32, level: f32, before_duck: &mut HashMap<String, f32>) -> Result<()> {
+///
+/// A session that fails, e.g. because it was torn down meanwhile, is skipped so the others still get the new volume.
+pub(super) fn duck(root: u32, level: f32, before_duck: &mut BeforeDuck) -> Result<()> {
     let processes = process_table()?;
     for_each_session(|session| {
         let pid = unsafe { session.GetProcessId() }.unwrap_or(0);
-        if pid == 0 || !processes.is_in_tree(pid, root) {
-            return Ok(());
+        if pid != 0 && processes.is_in_tree(pid, root) {
+            let _ = duck_session(session, level, before_duck);
         }
-        let id = take_co_string(unsafe { session.GetSessionInstanceIdentifier() }.map_err(backend("session id"))?);
-        let volume: ISimpleAudioVolume = session.cast().map_err(backend("ISimpleAudioVolume"))?;
-        let target = if level >= 1.0 {
-            match before_duck.remove(&id) {
-                Some(original) => original,
-                None => return Ok(()),
-            }
-        } else {
-            let current = unsafe { volume.GetMasterVolume() }.map_err(backend("GetMasterVolume"))?;
-            *before_duck.entry(id).or_insert(current) * level
-        };
-        unsafe { volume.SetMasterVolume(target, std::ptr::null()) }.map_err(backend("SetMasterVolume"))
     })
 }
 
-/// Calls `f` for every live, non-system audio session on every active output device.
-fn for_each_session(mut f: impl FnMut(&IAudioSessionControl2) -> Result<()>) -> Result<()> {
+fn duck_session(
+    session: &IAudioSessionControl2,
+    level: f32,
+    before_duck: &mut BeforeDuck,
+) -> windows::core::Result<()> {
+    let id = take_co_string(unsafe { session.GetSessionInstanceIdentifier() }?);
+    let volume: ISimpleAudioVolume = session.cast()?;
+    let Some(target) = before_duck.target(&id, level, || unsafe { volume.GetMasterVolume() }.ok()) else {
+        return Ok(());
+    };
+    unsafe { volume.SetMasterVolume(target, std::ptr::null()) }?;
+    if level >= 1.0 {
+        before_duck.restored(&id);
+    }
+    Ok(())
+}
+
+/// Calls `f` for every live, non-system audio session on every active output device. Fails only when the devices
+/// can't be listed.
+fn for_each_session(mut f: impl FnMut(&IAudioSessionControl2)) -> Result<()> {
     unsafe {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(backend("MMDeviceEnumerator"))?;
@@ -109,7 +117,7 @@ fn for_each_session(mut f: impl FnMut(&IAudioSessionControl2) -> Result<()>) -> 
                 {
                     continue;
                 }
-                f(&session)?;
+                f(&session);
             }
         }
     }

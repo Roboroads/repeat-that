@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+mod before_duck;
 pub mod mock;
 mod process_tree;
 #[cfg(windows)]

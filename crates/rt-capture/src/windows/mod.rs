@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
+use crate::before_duck::BeforeDuck;
 use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, FrameSink, Result, clamp_duck_level};
 
 /// Captures one app through WASAPI process loopback (Windows 10 2004+), including its child processes.
@@ -17,8 +18,8 @@ use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, Fr
 /// Captures of a ducked app are amplified by the inverse of the duck level to keep their level.
 #[derive(Default)]
 pub struct WasapiSource {
-    /// Volume of each ducked audio session before ducking, by session instance id.
-    before_duck: Mutex<HashMap<String, f32>>,
+    /// Volume of each ducked audio session before ducking.
+    before_duck: Mutex<BeforeDuck>,
     /// Current duck level of each app, by PID, shared with its captures.
     levels: Mutex<HashMap<u32, DuckLevel>>,
 }
