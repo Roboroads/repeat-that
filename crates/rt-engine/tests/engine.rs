@@ -750,6 +750,44 @@ fn waits_for_the_target_and_reconnects_when_it_restarts() {
 }
 
 #[test]
+fn a_reconnect_during_a_replay_ducks_the_restarted_app() {
+    let output = TestOutput::new(RATE);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    source.play(&sentence(4.0));
+    source.wait_played();
+    wait_buffered(&handle, 4.2);
+    handle.replay();
+    wait_until(secs(1.0), "ducked", || source.levels() == [0.2]);
+
+    // Discord restarts with a new PID while the replay plays.
+    source.set_apps(vec![]);
+    source.end_captures();
+    wait_for(&handle, secs(1.0), "waiting", |s| s.capture == CaptureState::Waiting);
+    source.set_apps(vec![discord(2)]);
+    wait_for(&handle, secs(2.5), "capturing", |s| {
+        s.capture == CaptureState::Capturing
+    });
+    thread::sleep(Duration::from_millis(300));
+    assert_ne!(handle.status().playback, PlaybackState::Idle, "still replaying");
+    let volumes = || -> Vec<(u32, f32)> {
+        source
+            .volumes()
+            .into_iter()
+            .map(|(_, pid, level)| (pid, level))
+            .collect()
+    };
+    assert!(
+        volumes().contains(&(2, 0.2)),
+        "the restarted app isn't ducked: {:?}",
+        volumes()
+    );
+
+    wait_idle(&handle, secs(5.0));
+    thread::sleep(Duration::from_millis(600));
+    assert_eq!(volumes().last(), Some(&(2, 1.0)));
+}
+
+#[test]
 fn matches_the_mock_app_by_name() {
     let source = Arc::new(MockSource::from_wav(FIXTURE).unwrap());
     let output = TestOutput::new(RATE);

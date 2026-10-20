@@ -83,11 +83,17 @@ impl Duck {
             DuckCmd::Restore => self.restore_at = Some(Instant::now() + RESTORE_DELAY),
             DuckCmd::SetApp(app) => {
                 if app != self.app {
-                    self.wanted = 1.0;
-                    self.restore_at = None;
+                    // The old app gets its own volume back.
+                    let wanted = std::mem::replace(&mut self.wanted, 1.0);
                     self.apply();
                     self.app = app;
                     self.applied = 1.0;
+                    if self.app.is_some() {
+                        // The target is back with a new PID (wipes clear the app first): ducked like the old one.
+                        self.wanted = wanted;
+                    } else {
+                        self.restore_at = None;
+                    }
                 }
             }
             DuckCmd::Shutdown => {}
