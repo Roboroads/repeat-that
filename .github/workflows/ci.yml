@@ -39,14 +39,19 @@ jobs:
           if [ "$EVENT" = pull_request ]; then
             # On pull requests the checkout is the merge of the PR into its base, so HEAD^1..HEAD is what the PR
             # changes. `--no-renames` lists both sides of a rename, so moving code into docs/ still counts as code.
-            code=false
-            while IFS= read -r file; do
-              case "$file" in
-                # Docs only: Markdown anywhere, docs/, LICENSE and the issue templates.
-                *.md | docs/* | LICENSE | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
-                *) echo "code: $file"; code=true ;;
-              esac
-            done < <(git diff --name-only --no-renames HEAD^1 HEAD)
+            # Whenever the list is unavailable the answer stays code=true, so the build runs.
+            if ! files=$(git diff --name-only --no-renames HEAD^1 HEAD) || [ -z "$files" ]; then
+              echo "::warning::Could not list the changed files, treating the change as code"
+            else
+              code=false
+              while IFS= read -r file; do
+                case "$file" in
+                  # Docs only: Markdown anywhere, docs/, LICENSE and the issue templates.
+                  *.md | docs/* | LICENSE | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
+                  *) echo "code: $file"; code=true ;;
+                esac
+              done <<< "$files"
+            fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code=$code"
