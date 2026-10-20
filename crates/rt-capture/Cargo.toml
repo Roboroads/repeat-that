@@ -26,6 +26,8 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# `#[implement]` expands to `::windows_core` paths, so this has to stay on the version `windows` re-exports as
+# `windows::core`. Bump both together.
 windows-core = "0.62"
 
 [dev-dependencies]
