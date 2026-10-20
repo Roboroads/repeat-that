@@ -14,7 +14,7 @@ use crate::TargetApp;
 use crate::duck::DuckCmd;
 use crate::playback::PlayCmd;
 use crate::status::{CaptureState, StatusHub};
-use crate::worker::{CaptureQueue, SharedCore, WorkerCmd, lock, pack};
+use crate::worker::{CaptureQueue, FormatChange, SharedCore, WorkerCmd, lock};
 
 /// How often a missing target is looked for.
 const POLL_EVERY: Duration = Duration::from_secs(2);
@@ -22,6 +22,8 @@ const POLL_EVERY: Duration = Duration::from_secs(2);
 const CHECK_EVERY: Duration = Duration::from_millis(100);
 /// The capture queue holds this much audio at 48 kHz stereo, so the worker can fall behind for a while.
 const QUEUE_LEN: usize = 48_000 * 2 * 2;
+/// Format changes the worker can fall behind on. Audio in yet another format is dropped until it catches up.
+const FORMAT_CHANGES: usize = 16;
 
 pub(crate) enum ControlCmd {
     SetTarget(Option<TargetApp>),
@@ -190,13 +192,15 @@ impl Control {
     }
 
     fn start(&mut self, app: AudioApp) -> CaptureState {
-        let (producer, consumer) = rtrb::RingBuffer::new(QUEUE_LEN);
-        let format = Arc::new(AtomicU64::new(0));
-        let sink = sink(producer, Arc::clone(&format), Arc::clone(&self.dropped));
+        let (samples, samples_out) = rtrb::RingBuffer::new(QUEUE_LEN);
+        let (formats, formats_out) = rtrb::RingBuffer::new(FORMAT_CHANGES);
+        let sink = sink(samples, formats, Arc::clone(&self.dropped));
         match self.source.start(&app, sink) {
             Ok(capture) => {
                 self.capture = Some(capture);
-                let _ = self.worker.send(WorkerCmd::Attach(CaptureQueue { consumer, format }));
+                let _ = self
+                    .worker
+                    .send(WorkerCmd::Attach(CaptureQueue::new(samples_out, formats_out)));
                 let _ = self.duck.send(DuckCmd::SetApp(Some(app)));
                 CaptureState::Capturing
             }
@@ -215,18 +219,26 @@ impl Control {
     }
 }
 
-/// Puts captured frames into the queue. Runs on the capture thread, so it never blocks: frames that don't fit are
-/// dropped and counted.
-fn sink(mut producer: rtrb::Producer<f32>, format: Arc<AtomicU64>, dropped: Arc<AtomicU64>) -> FrameSink {
-    let mut last = 0;
-    Box::new(move |frames: &[f32], frame_format: CaptureFormat| {
-        let packed = pack(frame_format);
-        if packed != last {
-            format.store(packed, Ordering::Release);
-            last = packed;
+/// Puts captured frames into the queue, and every change of their format into the format queue, with where in the
+/// stream it happens. Runs on the capture thread, so it never blocks: frames that don't fit are dropped and counted.
+fn sink(
+    mut samples: rtrb::Producer<f32>,
+    mut formats: rtrb::Producer<FormatChange>,
+    dropped: Arc<AtomicU64>,
+) -> FrameSink {
+    let mut current = None;
+    let mut pushed = 0u64;
+    Box::new(move |frames: &[f32], format: CaptureFormat| {
+        if current != Some(format) {
+            if formats.push(FormatChange { at: pushed, format }).is_err() {
+                dropped.fetch_add(frames.len() as u64, Ordering::Relaxed);
+                return;
+            }
+            current = Some(format);
         }
-        if producer.push_entire_slice(frames).is_err() {
-            dropped.fetch_add(frames.len() as u64, Ordering::Relaxed);
+        match samples.push_entire_slice(frames) {
+            Ok(()) => pushed += frames.len() as u64,
+            Err(_) => _ = dropped.fetch_add(frames.len() as u64, Ordering::Relaxed),
         }
     })
 }

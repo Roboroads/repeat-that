@@ -1,6 +1,5 @@
 //! The worker thread: drains captured audio from the capture's queue into the [`Recorder`].
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -38,22 +37,32 @@ pub(crate) fn lock(core: &SharedCore) -> std::sync::MutexGuard<'_, Core> {
     core.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The capture side of a capture's queue: interleaved samples, and their format once the first ones came in.
+/// The worker's end of a capture's queues: interleaved samples, and where in them the format changes.
 pub(crate) struct CaptureQueue {
-    pub(crate) consumer: rtrb::Consumer<f32>,
-    pub(crate) format: Arc<AtomicU64>,
+    pub(crate) samples: rtrb::Consumer<f32>,
+    pub(crate) formats: rtrb::Consumer<FormatChange>,
+    /// The format of the samples being taken; `None` before the first ones.
+    pub(crate) format: Option<AudioFormat>,
+    /// Samples taken from the queue so far.
+    pub(crate) taken: u64,
 }
 
-/// A format packed into an `AtomicU64`, `0` before the first frames.
-pub(crate) fn pack(format: CaptureFormat) -> u64 {
-    (u64::from(format.sample_rate) << 16) | u64::from(format.channels)
+impl CaptureQueue {
+    pub(crate) fn new(samples: rtrb::Consumer<f32>, formats: rtrb::Consumer<FormatChange>) -> Self {
+        Self {
+            samples,
+            formats,
+            format: None,
+            taken: 0,
+        }
+    }
 }
 
-fn unpack(packed: u64) -> Option<AudioFormat> {
-    (packed != 0).then_some(AudioFormat {
-        sample_rate: (packed >> 16) as u32,
-        channels: (packed & 0xffff) as u16,
-    })
+/// From sample `at` of a capture's queue on, the samples are in `format`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FormatChange {
+    pub(crate) at: u64,
+    pub(crate) format: CaptureFormat,
 }
 
 pub(crate) enum WorkerCmd {
@@ -169,28 +178,52 @@ impl Worker {
         }
     }
 
-    /// Moves everything the capture delivered so far into the recorder.
+    /// Moves everything the capture delivered so far into the recorder, each part in the format it came in.
     fn drain(&mut self) {
-        let Some(queue) = &mut self.queue else { return };
-        let Some(format) = unpack(queue.format.load(Ordering::Acquire)) else {
-            return;
-        };
-        let channels = usize::from(format.channels.max(1));
-        let available = queue.consumer.slots();
-        let n = available - available % channels;
-        if n == 0 {
-            return;
+        loop {
+            let Some(queue) = &mut self.queue else { return };
+            // Format changes due where the worker is in the stream.
+            while let Ok(change) = queue.formats.peek() {
+                if change.at > queue.taken {
+                    break;
+                }
+                queue.format = Some(AudioFormat {
+                    sample_rate: change.format.sample_rate,
+                    channels: change.format.channels,
+                });
+                let _ = queue.formats.pop();
+            }
+            let Some(format) = queue.format else { return };
+            let channels = usize::from(format.channels.max(1));
+            // Up to the next format change, if one is on its way.
+            let next_change = queue.formats.peek().ok().map(|c| (c.at - queue.taken) as usize);
+            let available = queue.samples.slots().min(next_change.unwrap_or(usize::MAX));
+            let mut n = available - available % channels;
+            if n == 0 {
+                if next_change.is_none_or(|left| left > available) || available == 0 {
+                    return;
+                }
+                // A partial frame before a change can't be played: skip it.
+                n = available;
+            }
+            let Ok(chunk) = queue.samples.read_chunk(n) else { return };
+            let (a, b) = chunk.as_slices();
+            self.scratch.clear();
+            self.scratch.extend_from_slice(a);
+            self.scratch.extend_from_slice(b);
+            chunk.commit_all();
+            queue.taken += n as u64;
+            if n % channels == 0 {
+                self.record(format);
+            }
+            self.scratch.fill(0.0);
         }
-        let Ok(chunk) = queue.consumer.read_chunk(n) else {
-            return;
-        };
-        let (a, b) = chunk.as_slices();
-        self.scratch.clear();
-        self.scratch.extend_from_slice(a);
-        self.scratch.extend_from_slice(b);
-        chunk.commit_all();
+    }
 
+    /// Pushes the scratch buffer, in `format`, into the recorder: a new one if the format changed.
+    fn record(&mut self, format: AudioFormat) {
         self.ensure_vad();
+        let channels = usize::from(format.channels.max(1));
         // In parts, so a backlog (the VAD loading, a slow machine) doesn't keep the player from the buffer for long.
         let part = (format.sample_rate as usize / 1000 * PART_MS).max(1) * channels;
         for samples in self.scratch.chunks(part) {
@@ -216,7 +249,6 @@ impl Worker {
                 recorder.push(samples);
             }
         }
-        self.scratch.fill(0.0);
     }
 
     fn ensure_vad(&mut self) {
@@ -242,8 +274,8 @@ impl Worker {
     /// Wipes the queue and the recorder.
     fn clear(&mut self) {
         if let Some(mut queue) = self.queue.take() {
-            let n = queue.consumer.slots();
-            if let Ok(chunk) = queue.consumer.read_chunk(n) {
+            let n = queue.samples.slots();
+            if let Ok(chunk) = queue.samples.read_chunk(n) {
                 chunk.commit_all();
             }
         }

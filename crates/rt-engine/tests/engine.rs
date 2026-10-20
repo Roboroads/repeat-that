@@ -64,6 +64,8 @@ struct Segment {
     samples: Vec<f32>,
     pos: usize,
     fast: bool,
+    /// The format the capture delivers it in, and goes on in; `None` for the format it's in.
+    format: Option<CaptureFormat>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -94,11 +96,21 @@ impl FakeSource {
         self.queue(samples, false);
     }
 
+    /// Plays `samples` fast in another format, as if the device changed format mid-stream. The capture goes on in it.
+    fn play_as(&self, format: CaptureFormat, samples: &[f32]) {
+        self.queue_as(samples, true, Some(format));
+    }
+
     fn queue(&self, samples: &[f32], fast: bool) {
+        self.queue_as(samples, fast, None);
+    }
+
+    fn queue_as(&self, samples: &[f32], fast: bool, format: Option<CaptureFormat>) {
         lock(&self.inner.script).push_back(Segment {
             samples: samples.to_vec(),
             pos: 0,
             fast,
+            format,
         });
     }
 
@@ -165,13 +177,18 @@ impl FakeSource {
 }
 
 impl FakeInner {
-    /// Fills `out` from the script, up to `n` samples. Returns whether the audio taken is to be delivered fast, or
-    /// `None` if nothing was queued.
-    fn take(&self, n: usize, out: &mut Vec<f32>) -> Option<bool> {
+    /// Fills `out` with up to 10 ms from the script, in the format of its first segment (`current` if it has none).
+    /// Returns that format and whether to deliver it fast, or `None` if nothing was queued.
+    fn take(&self, current: CaptureFormat, out: &mut Vec<f32>) -> Option<(CaptureFormat, bool)> {
         let mut script = lock(&self.script);
-        let fast = script.front()?.fast;
+        let front = script.front()?;
+        let (fast, format) = (front.fast, front.format.unwrap_or(current));
+        let n = chunk_len(format);
         while out.len() < n {
             let Some(segment) = script.front_mut() else { break };
+            if segment.format.unwrap_or(current) != format {
+                break;
+            }
             let end = (segment.pos + n - out.len()).min(segment.samples.len());
             out.extend_from_slice(&segment.samples[segment.pos..end]);
             segment.pos = end;
@@ -179,8 +196,13 @@ impl FakeInner {
                 script.pop_front();
             }
         }
-        Some(fast)
+        Some((format, fast))
     }
+}
+
+/// 10 ms of interleaved samples.
+fn chunk_len(format: CaptureFormat) -> usize {
+    (format.sample_rate / 100) as usize * usize::from(format.channels)
 }
 
 impl AppAudioSource for FakeSource {
@@ -204,15 +226,18 @@ impl AppAudioSource for FakeSource {
         let inner = Arc::clone(&self.inner);
         let stopped = Arc::clone(&stop);
         let thread = thread::spawn(move || {
-            let chunk = (format.sample_rate / 100) as usize * usize::from(format.channels);
-            let mut samples = Vec::with_capacity(chunk);
+            let mut format = format;
+            let mut samples = Vec::new();
             let mut next = Instant::now();
             while !stopped.load(Ordering::Relaxed) {
                 samples.clear();
-                let fast = inner.take(chunk, &mut samples);
-                samples.resize(chunk, 0.0);
+                let taken = inner.take(format, &mut samples);
+                if let Some((taken_format, _)) = taken {
+                    format = taken_format;
+                }
+                samples.resize(chunk_len(format), 0.0);
                 sink(&samples, format);
-                if fast == Some(true) {
+                if taken.is_some_and(|(_, fast)| fast) {
                     // 20 times real time.
                     thread::sleep(Duration::from_micros(500));
                     next = Instant::now();
@@ -1095,6 +1120,24 @@ fn another_capture_format_rebuilds_the_recorder() {
     assert_eq!(status.capture, CaptureState::Capturing);
     // Half a second of speech and its padding after it; the capture started with it, so there's no padding before.
     assert_near(status.buffered.as_secs_f32(), 0.7, 0.1, "buffered");
+}
+
+#[test]
+fn a_format_change_mid_stream_starts_a_new_buffer() {
+    let output = TestOutput::new(RATE);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    let mono = CaptureFormat {
+        sample_rate: 16_000,
+        channels: 1,
+    };
+    // The device changes format while they talk: stereo speech runs straight into mono speech.
+    source.play(&tone(1.0));
+    source.play_as(mono, &[tone_in(mono, 1.0, 0.5), vec![0.0; 16_000]].concat());
+    source.wait_played();
+    thread::sleep(Duration::from_millis(600));
+    // Only the mono part: a second of speech and the padding after it, none of the stereo samples taken for mono.
+    assert_near(handle.status().buffered.as_secs_f32(), 1.2, 0.1, "buffered");
+    assert_eq!(handle.dropped_samples(), 0);
 }
 
 #[test]
