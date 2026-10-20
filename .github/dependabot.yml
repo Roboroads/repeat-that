@@ -8,7 +8,7 @@ updates:
       # Listed before `cargo`: a dependency joins the first group that matches. `windows` and `windows-core` must move
       # together (`#[implement]` expands to `::windows_core` paths), so they get one PR.
       windows:
-        patterns: ["windows", "windows-*"]
+        patterns: ["windows", "windows-core"]
       cargo:
         patterns: ["*"]
     ignore:
