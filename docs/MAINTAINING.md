@@ -48,3 +48,33 @@ release PR to trigger CI.
 - [ ] Turn on Dependabot alerts and security updates (version updates are already set up in `.github/dependabot.yml`)
 - [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing
 - [ ] Add topics and a social preview image so people can find the project
+
+## macOS signing and notarization
+
+macOS releases are signed with a Developer ID Application certificate and notarized with Apple's `notarytool`. The
+milestone 6 release workflow does both through tauri-action, which reads the repository secrets below (Settings →
+Secrets and variables → Actions). They are needed before the first macOS release, not before the repository goes
+public. The names come from the Tauri [macOS code signing guide](https://v2.tauri.app/distribute/sign/macos/) and
+[environment variable reference](https://v2.tauri.app/reference/environment-variables/).
+
+Signing:
+- `APPLE_CERTIFICATE`: the Developer ID Application certificate exported from Keychain Access as a `.p12`,
+  base64-encoded (`base64 -i certificate.p12`).
+- `APPLE_CERTIFICATE_PASSWORD`: the password set when exporting the `.p12`.
+- `APPLE_SIGNING_IDENTITY`: the certificate name from `security find-identity -v -p codesigning`, for example
+  `Developer ID Application: Your Name (TEAMID)`. Tauri can work it out from `APPLE_CERTIFICATE` when this is unset, but
+  setting it removes the guesswork.
+
+Notarization, with an App Store Connect API key (the recommended route, since it doesn't depend on an Apple ID password
+or two-factor prompts). Create the key under Users and Access → Integrations in App Store Connect with Developer access.
+Apple lets you download the `.p8` file once.
+- `APPLE_API_ISSUER`: the Issuer ID shown above the keys table.
+- `APPLE_API_KEY`: the Key ID of that key.
+- `APPLE_API_KEY_PATH`: the path to the `.p8` file. A secret is a string, so store the file's contents as a secret
+  (the workflow can call it `APPLE_API_KEY_CONTENT`; that name is ours, Tauri doesn't read it) and add a step that
+  writes it to a file and sets this variable to the file's path.
+
+Notarization with an Apple ID instead: `APPLE_ID` (the account email), `APPLE_PASSWORD` (an app-specific password, not
+the account password) and `APPLE_TEAM_ID`. Tauri requires all three together. Use one notarization route, not both.
+
+A Developer ID certificate is valid for five years. Renew it before then and update the three signing secrets.

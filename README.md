@@ -34,8 +34,8 @@ connections, accents, background noise, or just a moment of distraction.
 | Linux (Debian/Ubuntu, `.deb`) | Debian 12 / Ubuntu 22.04 with PipeWire | PipeWire per-stream capture | 🗺️ Planned |
 | macOS (Intel + Apple Silicon, universal) | macOS 14.2 | Core Audio process taps | 🗺️ Planned |
 
-**macOS note:** the builds are not notarized by Apple (that costs $99/year), so macOS blocks the app the first time you
-open it. [Here's how to open it anyway](docs/install-macos.md). It takes one click in System Settings.
+**macOS note:** macOS releases will be signed with a Developer ID certificate and notarized by Apple, so they open like
+any other app.
 
 ## Privacy
 

@@ -100,16 +100,16 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 GitHub Actions builds:
 - Windows: NSIS `.exe` + `.msi` (x64, ARM64)
 - Linux: `.deb` (+ AppImage later)
-- macOS: universal `.dmg`, **ad-hoc signed** (`bundle.macOS.signingIdentity = "-"`) and **not notarized**: the project
-  doesn't use a paid Apple Developer account. Apple Silicon refuses to run unsigned code at all, so the ad-hoc signature
-  is needed. Users open the app once via *Open Anyway* or by removing the quarantine flag. See
-  [install-macos.md](install-macos.md).
-- Every release publishes a `SHA256SUMS` file so users can verify downloads before bypassing Gatekeeper.
+- macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
+  ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
+  credentials are GitHub Actions secrets, listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization).
+- Every release publishes a `SHA256SUMS` file so users can verify downloads.
 
-Ad-hoc signatures change with every build, so macOS may ask for the audio-capture permission again after an update. The
-app should detect that capture returns no audio and point the user to the permission setting.
+macOS ties the audio-capture permission to the app's signing identity. A Developer ID signature stays the same from
+one release to the next, so an update doesn't reset the permission. The user can still deny it or revoke it later, so
+the app should detect that capture returns no audio and point the user to the permission setting.
 
-The Tauri updater verifies updates with its own key pair (stored as a GitHub Actions secret), which works without Apple
-signing.
+The Tauri updater verifies updates with its own key pair (stored as a GitHub Actions secret), separate from the Apple
+and Windows code signing.
 
 Open-source code signing on Windows: apply to [SignPath Foundation](https://signpath.org).
