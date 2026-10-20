@@ -5,12 +5,15 @@
 //! cargo run -p rt-capture --example probe -- list
 //! cargo run -p rt-capture --example probe -- capture <pid or name> [seconds] [--duck]
 //! cargo run -p rt-capture --example probe -- duck <pid or name> [level] [seconds]
+//! cargo run -p rt-capture --example probe -- icon <pid, name or exe path> [size in pixels]
 //! ```
 //!
 //! `capture` prints the level once a second and every utterance the VAD finds. With `--duck` it also ducks the app to
-//! 20% from second 5 to 10, which shows whether ducking changes what is captured.
+//! 20% from second 5 to 10, which shows whether ducking changes what is captured. `icon` prints the size of an app's
+//! icon and how much of it is not transparent; it writes no file.
 
 use std::env;
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -38,8 +41,15 @@ fn main() -> Result<(), Error> {
             let secs = rest.get(1).map(|s| s.parse()).transpose()?.unwrap_or(3);
             duck(source.as_ref(), &find(source.as_ref(), app)?, level, secs)
         }
+        ["icon", app, rest @ ..] => {
+            let size = rest.first().map(|s| s.parse()).transpose()?.unwrap_or(32);
+            icon(source.as_ref(), app, size)
+        }
         _ => {
-            eprintln!("usage: probe list | capture <pid|name> [seconds] [--duck] | duck <pid|name> [level] [seconds]");
+            eprintln!(
+                "usage: probe list | capture <pid|name> [seconds] [--duck] | duck <pid|name> [level] [seconds] \
+                 | icon <pid|name|exe path> [size]"
+            );
             std::process::exit(2);
         }
     }
@@ -174,5 +184,30 @@ fn duck(source: &dyn AppAudioSource, app: &AudioApp, level: f32, secs: u64) -> R
     thread::sleep(Duration::from_secs(secs));
     source.set_app_volume(app, 1.0)?;
     println!("volume restored");
+    Ok(())
+}
+
+/// Prints the size of the icon of an app, or of the executable at `query`, and the share of its pixels that are not
+/// transparent. Writes nothing.
+fn icon(source: &dyn AppAudioSource, query: &str, size: u32) -> Result<(), Error> {
+    let exe = if Path::new(query).is_file() {
+        query.into()
+    } else {
+        let app = find(source, query)?;
+        app.exe_path
+            .ok_or_else(|| format!("{} (PID {}) has no known executable", app.name, app.pid))?
+    };
+    let icon = rt_capture::app_icon(&exe, size).ok_or_else(|| format!("no {size} px icon for {}", exe.display()))?;
+    let pixels = icon.rgba.as_chunks::<4>().0;
+    let percent =
+        |keep: fn(&[u8; 4]) -> bool| 100.0 * pixels.iter().filter(|p| keep(p)).count() as f64 / pixels.len() as f64;
+    println!(
+        "{}: {}x{} icon, {:.0}% of the pixels are not transparent, {:.0}% fully opaque",
+        exe.display(),
+        icon.width,
+        icon.height,
+        percent(|p| p[3] > 0),
+        percent(|p| p[3] == 255),
+    );
     Ok(())
 }

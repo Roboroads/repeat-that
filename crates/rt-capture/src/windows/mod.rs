@@ -1,5 +1,6 @@
 //! Windows backend: audio sessions for the app list and ducking, WASAPI process loopback for capture.
 
+pub(crate) mod icon;
 mod loopback;
 mod sessions;
 
