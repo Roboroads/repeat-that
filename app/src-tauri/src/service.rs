@@ -184,6 +184,7 @@ impl<R: Runtime> StorePersistence<R> {
                 path.display()
             ));
         }
+        set_aside_corrupt_file(path);
         // Saved explicitly with the result checked, not in the background.
         let store = app
             .store_builder(path)
@@ -191,6 +192,25 @@ impl<R: Runtime> StorePersistence<R> {
             .build()
             .map_err(|err| err.to_string())?;
         Ok(StorePersistence { store })
+    }
+}
+
+/// A settings file that can be read but is not a JSON object is moved to `settings.json.bad` (replacing an older
+/// backup), so the store starts from nothing, the defaults apply, and the next save writes a fresh file without
+/// throwing away what the user had. A missing, empty or unreadable file is left alone.
+fn set_aside_corrupt_file(path: &Path) {
+    let Ok(bytes) = std::fs::read(path) else { return };
+    if bytes.trim_ascii().is_empty() || serde_json::from_slice::<serde_json::Map<String, Value>>(&bytes).is_ok() {
+        return;
+    }
+    let mut backup = path.as_os_str().to_owned();
+    backup.push(".bad");
+    match std::fs::rename(path, &backup) {
+        Ok(()) => eprintln!(
+            "the settings file is not valid JSON; kept as {} and started from the defaults",
+            Path::new(&backup).display()
+        ),
+        Err(err) => eprintln!("the settings file is not valid JSON and could not be set aside: {err}"),
     }
 }
 
@@ -921,6 +941,68 @@ mod store_tests {
         assert_eq!(file["settings"]["bufferSeconds"], 75);
     }
 
+    fn backup_of(dir: &TempDir) -> PathBuf {
+        dir.0.join(format!("{SETTINGS_FILE}.bad"))
+    }
+
+    #[test]
+    fn a_corrupt_file_is_set_aside_so_the_user_keeps_a_copy() {
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(dir.file(), "{ this is not json").unwrap();
+        let app = app();
+        let persistence = open(&app, &dir);
+        assert!(!dir.file().exists(), "the corrupt file is moved away");
+        assert_eq!(fs::read_to_string(backup_of(&dir)).unwrap(), "{ this is not json");
+        assert_eq!(persistence.load(), None);
+
+        persistence.save(&settings()).unwrap();
+        assert!(dir.file().exists());
+        assert!(backup_of(&dir).exists(), "saving doesn't touch the backup");
+    }
+
+    #[test]
+    fn a_file_that_is_json_but_not_an_object_is_set_aside_too() {
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(dir.file(), "[1, 2, 3]").unwrap();
+        let app = app();
+        assert_eq!(open(&app, &dir).load(), None);
+        assert_eq!(fs::read_to_string(backup_of(&dir)).unwrap(), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn a_newer_corrupt_file_replaces_the_older_backup() {
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(backup_of(&dir), "old").unwrap();
+        fs::write(dir.file(), "new {").unwrap();
+        let app = app();
+        open(&app, &dir);
+        assert_eq!(fs::read_to_string(backup_of(&dir)).unwrap(), "new {");
+    }
+
+    #[test]
+    fn a_readable_file_stays_where_it_is() {
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(dir.file(), r#"{ "other": 7 }"#).unwrap();
+        let app = app();
+        open(&app, &dir);
+        assert!(dir.file().exists());
+        assert!(!backup_of(&dir).exists());
+    }
+
+    #[test]
+    fn an_empty_file_is_not_worth_a_backup() {
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(dir.file(), "  \n").unwrap();
+        let app = app();
+        assert_eq!(open(&app, &dir).load(), None);
+        assert!(!backup_of(&dir).exists());
+    }
+
     #[test]
     fn a_save_creates_the_missing_folder() {
         let dir = TempDir::new();
@@ -963,6 +1045,27 @@ mod store_tests {
         let app = app();
         start(&app);
         assert!(app.state::<SettingsService>().get().first_run_done);
+    }
+
+    #[test]
+    fn the_service_runs_on_the_defaults_over_a_corrupt_file_and_rewrites_it_at_the_next_save() {
+        let dir = TempDir::new();
+        fs::create_dir_all(&dir.0).unwrap();
+        fs::write(dir.file(), "\u{0}\u{0} garbage").unwrap();
+        let app = app();
+        let service = SettingsService::start(
+            Arc::new(open(&app, &dir)),
+            Arc::new(FakeAutostart::default()),
+            Arc::new(HotkeyManager::new(
+                Box::new(Arc::new(FakeBackend::default())),
+                Arc::new(|_| {}),
+            )),
+            Box::new(|_| {}),
+        );
+        assert_eq!(service.get(), Settings::default());
+        service.update(json!({ "bufferSeconds": 50 })).unwrap();
+        let file: Value = serde_json::from_str(&fs::read_to_string(dir.file()).unwrap()).unwrap();
+        assert_eq!(file["settings"]["bufferSeconds"], 50);
     }
 
     #[test]
