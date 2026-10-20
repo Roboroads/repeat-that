@@ -27,7 +27,7 @@
 - [ ] Global hotkeys (replay/step back, stop, catch-up)
 - [ ] App icons extracted from the executable for the app picker
 - [ ] Settings UI: app picker, buffer length, VAD sensitivity, output device, hotkeys, speed, ducking, autostart
-- [ ] Windows installers from CI
+- [ ] Windows installers from CI, published with a `SHA256SUMS` file
 
 ## Milestone 5 — Linux
 - [ ] PipeWire capture backend, app volume via PipeWire
@@ -39,7 +39,7 @@
 - [ ] Universal binary, `.dmg` signed with a Developer ID Application certificate and notarized
 - [ ] The `.dmg` itself is signed, notarized and stapled, not only the `.app` inside it
 - [ ] Capture works under the hardened runtime in a notarized build (`NSAudioCaptureUsageDescription`, entitlements as needed)
-- [ ] `SHA256SUMS` published with every release
+- [ ] The `.dmg` is listed in the release's `SHA256SUMS`
 - [ ] Detect a missing or revoked audio-capture permission and show how to fix it
 
 ## Milestone 7 — Live transcript
