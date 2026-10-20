@@ -1,6 +1,7 @@
 //! End-to-end tests of the Windows backend against a real audio device: a child process plays a tone, and we list,
 //! capture and duck it, and check that the duck guard restores it when the process that ducked it is killed. CI
-//! installs a virtual audio device for this; run them locally with
+//! installs a virtual audio device for this. The last test reads an executable's icon from the shell and needs no
+//! audio. Run them locally with
 //!
 //! ```sh
 //! cargo build -p rt-capture --example probe
@@ -11,12 +12,13 @@
 
 #![cfg(windows)]
 
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{env, thread};
 
-use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, WasapiSource};
+use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, WasapiSource, app_icon};
 
 const TONE_HZ: f64 = 1000.0;
 /// The player's sine has an amplitude of 0.5, so an RMS of about 0.35 at full volume.
@@ -222,6 +224,38 @@ fn the_duck_guard_restores_an_app_ducked_by_a_killed_process() {
     assert!(restored <= Duration::from_secs(2), "restored only after {restored:?}");
     wait_for(Duration::from_secs(2), || (!journal.exists()).then_some(()))
         .expect("the duck guard removes the journal once everything is restored");
+}
+
+#[test]
+#[ignore = "needs the Windows shell and the system's powershell.exe"]
+fn extracts_the_icon_of_an_executable() {
+    let system = env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let powershell = system.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    assert!(powershell.exists(), "{} is missing", powershell.display());
+
+    for size in [32, 64] {
+        let icon = app_icon(&powershell, size).unwrap_or_else(|| panic!("no {size} px icon for powershell.exe"));
+        assert_eq!((icon.width, icon.height), (size, size));
+        assert_eq!(icon.rgba.len(), (size * size * 4) as usize);
+
+        let pixels = icon.rgba.as_chunks::<4>().0;
+        let visible = pixels.iter().filter(|p| p[3] > 0).count();
+        let opaque = pixels.iter().filter(|p| p[3] == 255).count();
+        let colored = pixels.iter().filter(|p| p[3] == 255 && p[..3] != [0; 3]).count();
+        let percent = |n: usize| 100.0 * n as f64 / pixels.len() as f64;
+        println!(
+            "powershell.exe at {size} px: {:.0}% visible, {:.0}% opaque, {:.0}% opaque and not black",
+            percent(visible),
+            percent(opaque),
+            percent(colored),
+        );
+        assert!(opaque > 0, "no opaque pixels at {size} px");
+        // A lost color bitmap would leave the icon black.
+        assert!(colored > 0, "all opaque pixels are black at {size} px");
+    }
+
+    // A file that isn't there has no icon.
+    assert!(app_icon(&system.join("this-does-not-exist.exe"), 32).is_none());
 }
 
 /// Captures continuously while ducking to 25% and back three times, and returns the RMS of each 1 ms window (one
