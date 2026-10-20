@@ -50,7 +50,7 @@
 This milestone can run in parallel with 5–7.
 
 - [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release, and a link to `SHA256SUMS` with how to verify it
-- [ ] Short demo video of a replay in a call (Discord or Teams), made with the [brag](https://github.com/latent-spaces/brag) plugin
+- [ ] Short demo video of a replay in a call (Discord or Teams)
 - [ ] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary
 - [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist)
 - [ ] Apply for free open-source code signing from SignPath Foundation (Windows), with the website as the project page
