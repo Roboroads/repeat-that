@@ -113,11 +113,11 @@ the app should detect that capture returns no audio and point the user to the pe
 Milestone 6 has to make capture work under the hardened runtime, which notarization requires and Tauri turns on by
 default (`bundle.macOS.hardenedRuntime`). Apple's
 [documentation for Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
-asks for the `NSAudioCaptureUsageDescription` key in `Info.plist` (Tauri merges `src-tauri/Info.plist` into the
+asks for the `NSAudioCaptureUsageDescription` key in `Info.plist` (Tauri merges `app/src-tauri/Info.plist` into the
 bundle's) and names no entitlement. The sample app [AudioCap](https://github.com/insidegui/AudioCap) uses taps with the
 hardened runtime and ships `com.apple.security.device.audio-input`, but it is also sandboxed, so that doesn't prove the
-entitlement is needed here. Put entitlements in an `Entitlements.plist` set through `bundle.macOS.entitlements`, test on
-a signed, notarized build, and keep only what capture turns out to need.
+entitlement is needed here. Put entitlements in `app/src-tauri/Entitlements.plist`, set through
+`bundle.macOS.entitlements`, test on a signed, notarized build, and keep only what capture turns out to need.
 
 Tauri signs the `.dmg` with the same identity, but it notarizes and staples only the `.app` inside it. Milestone 6 also
 has to notarize and staple the `.dmg` in the release workflow (`xcrun notarytool submit` with the same API key, then
