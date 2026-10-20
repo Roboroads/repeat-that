@@ -5,13 +5,58 @@ on:
     branches: [main]
   pull_request:
 
+# A new push to a pull request cancels that PR's older run. Runs on main are not cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Tells the build jobs whether a pull request touches anything but documentation. Hosted runners (macOS above all) are
+  # scarce, so a docs-only change should not wait for one. A workflow-level `paths-ignore` would skip the whole workflow
+  # and leave the required checks in .github/rulesets/main.json pending forever, so the jobs always run and report
+  # success; only their build and test steps are skipped.
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          code=true
+          if [ "$EVENT" = pull_request ]; then
+            # On pull requests the checkout is the merge of the PR into its base, so HEAD^1..HEAD is what the PR
+            # changes. `--no-renames` lists both sides of a rename, so moving code into docs/ still counts as code.
+            code=false
+            while IFS= read -r file; do
+              case "$file" in
+                # Docs only: Markdown anywhere, docs/, LICENSE and the issue templates.
+                *.md | docs/* | LICENSE | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
+                *) echo "code: $file"; code=true ;;
+              esac
+            done < <(git diff --name-only --no-renames HEAD^1 HEAD)
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code=$code"
+
   rust:
     name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    needs: changes
+    # Without code changes every leg runs on the plentiful Linux runner instead of queueing for its own OS, and skips
+    # its steps. That also skips the Windows-only steps below, because `runner.os` is Linux then.
+    runs-on: ${{ needs.changes.outputs.code == 'true' && matrix.os || 'ubuntu-latest' }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -19,12 +64,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.code == 'true'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.code == 'true'
       - run: cargo fmt --all --check
+        if: needs.changes.outputs.code == 'true'
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: needs.changes.outputs.code == 'true'
       - run: cargo test --workspace
+        if: needs.changes.outputs.code == 'true'
       # End-to-end test of Windows capture: a virtual audio device (VB-CABLE) and the audio service, which Windows
       # Server runners have turned off.
       - name: Set up audio (Windows)
