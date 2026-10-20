@@ -8,7 +8,8 @@ disagrees with the release tag, so this fails when:
   * the config or manifest is not valid JSON, or the root package is missing from either
   * tags would carry a component prefix (the release workflow expects `vX.Y.Z`)
   * `release-as` is set but is not a plain X.Y.Z version
-  * Cargo.toml (`workspace.package.version`) or app/package.json (`version`) is not listed in `extra-files`
+  * Cargo.toml (`workspace.package.version`), app/package.json (`version`) or one of their lockfiles (the workspace
+    crates in Cargo.lock, `version` and `packages[""].version` in app/package-lock.json) is not listed in `extra-files`
   * an `extra-files` entry points at a missing file or a jsonpath that does not resolve to the manifest version
   * app/src-tauri/tauri.conf.json sets its own `version` (it must inherit the Cargo one)
 
@@ -28,11 +29,20 @@ import tomllib
 from pathlib import Path
 
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
-# Files that carry the product version: (path, type, jsonpath).
+# Files that carry the product version: (path, type, jsonpath). The lockfiles are on the list so a release leaves
+# them in step with the manifests; `$.package[?(!@.source)]` is every Cargo.lock entry that is not from a registry,
+# that is, the workspace crates.
 REQUIRED = [
     ("Cargo.toml", "toml", "$.workspace.package.version"),
+    ("Cargo.lock", "toml", "$.package[?(!@.source)].version"),
     ("app/package.json", "json", "$.version"),
+    ("app/package-lock.json", "json", "$.version"),
+    ("app/package-lock.json", "json", "$.packages[''].version"),
 ]
+
+# One step of a jsonpath: `.key`, `['']` (the empty key, as in package-lock.json) or `[?(!@.key)]` (array entries
+# without that key).
+PATH_STEP = re.compile(r"\.(?P<key>[A-Za-z0-9_-]+)|(?P<empty>\[''\])|\[\?\(!@\.(?P<missing>[A-Za-z0-9_-]+)\)\]")
 
 
 def version_tuple(text):
@@ -41,15 +51,28 @@ def version_tuple(text):
 
 
 def resolve(document, jsonpath):
-    """Resolve a plain `$.a.b.c` path, the only form this repo uses. Returns None when it does not resolve."""
-    if not re.fullmatch(r"\$(\.[A-Za-z0-9_-]+)+", jsonpath):
-        raise ValueError(f"unsupported jsonpath {jsonpath!r} (only plain $.a.b.c is checked)")
-    node = document
-    for key in jsonpath[2:].split("."):
-        if not isinstance(node, dict) or key not in node:
-            return None
-        node = node[key]
-    return node
+    """Values at a jsonpath, as a list (empty when nothing matches). Supports only the steps PATH_STEP knows."""
+    if not jsonpath.startswith("$"):
+        raise ValueError(f"unsupported jsonpath {jsonpath!r}")
+    nodes, position = [document], 1
+    while position < len(jsonpath):
+        step = PATH_STEP.match(jsonpath, position)
+        if step is None:
+            raise ValueError(f"unsupported jsonpath {jsonpath!r} (this check knows .key, [''] and [?(!@.key)])")
+        position = step.end()
+        if step.group("key") is not None or step.group("empty") is not None:
+            key = step.group("key") if step.group("key") is not None else ""
+            nodes = [node[key] for node in nodes if isinstance(node, dict) and key in node]
+        else:
+            missing = step.group("missing")
+            nodes = [
+                item
+                for node in nodes
+                if isinstance(node, list)
+                for item in node
+                if isinstance(item, dict) and missing not in item
+            ]
+    return nodes
 
 
 def load(root, relative, kind):
@@ -110,28 +133,28 @@ def check(root, tag_exists=None):
                 "PR proposes that version again"
             )
 
-    listed = {}
+    listed = set()
     for entry in package.get("extra-files", []):
         if not isinstance(entry, dict):
             errors.append(f"extra-files entry {entry!r} is a plain path; give it a type and a jsonpath")
             continue
         path, kind, jsonpath = entry.get("path"), entry.get("type"), entry.get("jsonpath")
-        listed[path] = (kind, jsonpath)
+        listed.add((path, kind, jsonpath))
         if kind not in ("json", "toml") or not path or not jsonpath:
             errors.append(f"extra-files entry {entry!r} needs type json|toml, path and jsonpath")
             continue
         try:
-            value = resolve(load(root, path, kind), jsonpath)
+            values = resolve(load(root, path, kind), jsonpath)
         except (OSError, ValueError) as error:
             errors.append(f"extra-files {path}: {error}")
             continue
-        if value is None:
+        if not values:
             errors.append(f"extra-files {path}: {jsonpath} does not resolve to a value")
-        elif value != current:
-            errors.append(f"extra-files {path}: {jsonpath} is {value!r}, the manifest says {current!r}")
+        elif any(value != current for value in values):
+            errors.append(f"extra-files {path}: {jsonpath} is {sorted(set(map(str, values)))}, the manifest says {current!r}")
 
     for path, kind, jsonpath in REQUIRED:
-        if listed.get(path) != (kind, jsonpath):
+        if (path, kind, jsonpath) not in listed:
             errors.append(f"extra-files must bump {jsonpath} in {path} (type {kind})")
 
     try:

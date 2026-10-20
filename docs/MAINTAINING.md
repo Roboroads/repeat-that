@@ -37,8 +37,9 @@ Windows installers, attaches them and then publishes the release, which is also 
 `fix!:`) bump the minor version.
 
 The version lives in `Cargo.toml` (`workspace.package.version`, which the app crate and `tauri.conf.json` inherit) and
-`app/package.json`. Both are listed under `extra-files` in `release-please-config.json`. It does not touch
-`Cargo.lock` or `app/package-lock.json`; they pick up the new version the next time cargo or npm runs.
+`app/package.json`, and their lockfiles carry it too. All of them are listed under `extra-files` in
+`release-please-config.json`, so the release PR bumps them together: `Cargo.lock` through a filter that picks the
+workspace crates (the entries without a `source`), and `app/package-lock.json` at the top and under `packages[""]`.
 `.github/scripts/check-release-config.py` checks that the files and the manifest agree. It runs as the `Release config`
 job of the `Build Windows installers` workflow whenever a PR touches the release config or the app.
 
