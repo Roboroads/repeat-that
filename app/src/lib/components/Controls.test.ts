@@ -104,6 +104,7 @@ describe('ducking section', () => {
     const slider = screen.getByRole('slider', { name: 'Volume during replay' });
     expect(slider).toHaveAttribute('min', '5');
     expect(slider).toHaveAttribute('max', '100');
+    expect(slider).toHaveAttribute('step', '5');
     expect(screen.getByText('20%')).toBeInTheDocument();
 
     await fireEvent.change(slider, { target: { value: '55' } });
