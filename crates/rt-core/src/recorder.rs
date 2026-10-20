@@ -224,6 +224,27 @@ mod tests {
         assert!(!rec.buffer().speech_pending());
     }
 
+    #[test]
+    fn clear_and_flush_end_pending_speech() {
+        let mut rec = recorder();
+        feed(&mut rec, &stereo(0.1, 0.5));
+        assert!(rec.buffer().speech_pending());
+        rec.clear();
+        assert!(!rec.buffer().speech_pending());
+
+        feed(&mut rec, &stereo(0.1, 0.5));
+        assert!(rec.buffer().speech_pending());
+        rec.flush();
+        assert!(!rec.buffer().speech_pending());
+
+        // Wiping just the buffer doesn't stop the speech the recorder is hearing.
+        feed(&mut rec, &stereo(0.1, 0.5));
+        rec.buffer_mut().clear();
+        assert!(!rec.buffer().speech_pending());
+        feed(&mut rec, &stereo(0.05, 0.5));
+        assert!(rec.buffer().speech_pending());
+    }
+
     /// Reports the frame's level as its speech probability, so thresholds between 0 and 1 matter.
     struct LevelVad;
 

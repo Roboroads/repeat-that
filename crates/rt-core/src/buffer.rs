@@ -169,7 +169,9 @@ impl SpeechBuffer {
         self.speech_pending
     }
 
-    pub fn set_speech_pending(&mut self, pending: bool) {
+    /// Mirrors the segmenter's state. Only the [`Recorder`](crate::Recorder) sets it, after every push and flush;
+    /// [`SpeechBuffer::clear`] resets it, and the recorder sets it again from what it still hears.
+    pub(crate) fn set_speech_pending(&mut self, pending: bool) {
         self.speech_pending = pending;
     }
 
