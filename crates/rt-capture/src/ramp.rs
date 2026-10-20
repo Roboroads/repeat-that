@@ -1,10 +1,10 @@
 //! Ducking fades an app's volume in small steps instead of changing it at once.
 //!
 //! A capture compensates each step for audio played at that step's volume, but it can only estimate when a volume
-//! change reaches the audio: Windows doesn't say, and on CI it came up to 10 ms early or 7 ms late, by a different
-//! amount in every fade. With one big step that leaves milliseconds at 4× or a quarter of the level, an audible click.
-//! With half-dB steps 10 ms apart, an error of up to 20 ms leaves the capture two steps (1 dB) off at most, for a few
-//! milliseconds, which nobody hears. The fade also sounds smoother to the user.
+//! change reaches the audio: Windows doesn't say, and on CI the steps of a fade came up to 10 ms early or 8 ms late,
+//! by a different amount in every fade, and the odd step another 10 ms off. With one big step that leaves milliseconds
+//! at 4× or a quarter of the level, an audible click. With half-dB steps 10 ms apart, the capture is a step or two
+//! off for a few milliseconds per step, rarely three (1.5 dB), which nobody hears. The fade also sounds smoother.
 
 // Only the Windows backend uses this so far; the tests run everywhere.
 #![cfg_attr(not(windows), allow(dead_code))]

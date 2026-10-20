@@ -250,8 +250,9 @@ fn amplify(frames: &mut [f32], level: f32) {
 
 /// How long after `SetMasterVolume` returns the audio engine plays the app at the new volume. Windows doesn't report
 /// this. With a 10 ms engine period it measured 30–37 ms for single changes, and the steps of a fade landed anywhere
-/// from 10 ms before this estimate to 7 ms after it, by the same amount for every step of one fade: presumably where
-/// the fade's calls fall in the engine's period. Ducking fades in half-dB steps 10 ms apart, so that is inaudible.
+/// from 10 ms before this estimate to 8 ms after it, by about the same amount for every step of one fade: presumably
+/// where the fade's calls fall in the engine's period. Now and then one step lands another 10 ms off. Ducking fades in
+/// half-dB steps 10 ms apart, so that is inaudible.
 const VOLUME_LATENCY: u64 = 330_000;
 
 /// When a volume set right now takes effect, on the clock of the packet timestamps.

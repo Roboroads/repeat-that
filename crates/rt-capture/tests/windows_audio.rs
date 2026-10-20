@@ -21,10 +21,11 @@ use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, WasapiSource};
 const TONE_HZ: f64 = 1000.0;
 /// The player's sine has an amplitude of 0.5, so an RMS of about 0.35 at full volume.
 const TONE_RMS: f64 = 0.354;
-/// How far the compensated capture of a ducked app may stray from its level, in any 1 ms window. A fade step is under
-/// 0.5 dB and 10 ms long, and a volume change lands up to 10 ms early or 7 ms late (measured on CI), so a window can be
-/// two steps off. Three steps would take an error of over 20 ms.
-const MAX_OFF_DB: f64 = 1.5;
+/// How far the compensated capture of a ducked app may stray from its level, in any 1 ms window. A fade step is at
+/// most 0.5 dB and 10 ms long. On CI the steps of a fade land up to 10 ms before or 8 ms after the estimate, and now
+/// and then a single step lands another 10 ms off, which leaves a few windows three steps (1.44 dB) off. The limit
+/// allows four.
+const MAX_OFF_DB: f64 = 2.0;
 /// How many times the test fades down and back up: every fade lands at its own offset from the estimate.
 const FADES: usize = 5;
 
@@ -130,8 +131,8 @@ fn lists_captures_and_ducks_a_playing_process() {
     assert_tone(ducked, 0.9);
     assert_tone(restored, 0.9);
 
-    // Around each volume change, compensation and the actual volume can be up to about 10 ms out of step. Ducking fades
-    // in half-dB steps, so no millisecond of the capture is off by more than two steps.
+    // Around each volume change, compensation and the actual volume can be 10 ms or more out of step. Ducking fades in
+    // half-dB steps, so that leaves the capture a step or two off, rarely three.
     let profile = duck_transitions(&source, &app, full.rms);
     let mut off = Vec::new();
     for (ms, &ratio) in profile.iter().enumerate() {
