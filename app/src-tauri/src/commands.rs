@@ -28,10 +28,7 @@ pub fn suspend_hotkeys(settings: State<'_, SettingsService>, suspended: bool) {
     settings.suspend_hotkeys(suspended);
 }
 
-// Not on Windows: the mock runtime pulls in the menu code, which needs the Common Controls v6 manifest, and the test
-// executable of this library has none (it fails to start with `STATUS_ENTRYPOINT_NOT_FOUND`). Only binaries get the
-// manifest from `tauri-build`.
-#[cfg(all(test, not(windows)))]
+#[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
@@ -92,13 +89,19 @@ mod tests {
     /// Invokes `cmd` the way the frontend does and returns what the promise would resolve or reject with.
     fn invoke(h: &Harness, cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
         // The origin of the app's own pages, which is what lets a command through without a capability.
+        // The origin of the app's own pages, which is what lets a command through without a capability.
+        let origin = if cfg!(windows) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        };
         get_ipc_response(
             &h.window,
             InvokeRequest {
                 cmd: cmd.into(),
                 callback: CallbackFn(0),
                 error: CallbackFn(1),
-                url: "tauri://localhost".parse().unwrap(),
+                url: origin.parse().unwrap(),
                 body: InvokeBody::Json(args),
                 headers: Default::default(),
                 invoke_key: INVOKE_KEY.to_string(),
