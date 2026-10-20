@@ -1001,6 +1001,23 @@ fn dropping_the_engine_wipes_and_restores_the_volume() {
     handle.set_paused(true);
 }
 
+#[test]
+fn quitting_during_a_replay_fades_out() {
+    let output = TestOutput::new(RATE);
+    let (source, engine, handle) = capturing(&output, EngineConfig::default());
+    source.play(&sentence(3.0));
+    source.wait_played();
+    wait_buffered(&handle, 3.2);
+    handle.replay();
+    wait_until(secs(2.0), "half a second played", || output_secs(&output) >= 0.5);
+
+    drop(engine);
+    let samples = output.samples();
+    let tail = &samples[samples.len() - 48..];
+    let peak = tail.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    assert!(peak < 0.05, "it ends at {peak}, without a fade");
+}
+
 // --- Output -------------------------------------------------------------------------------------------------------
 
 #[test]

@@ -118,6 +118,10 @@ impl PlayerThread {
             }
         }
         self.stop_now();
+        // Quitting during a replay: let the fade-out play, so it doesn't click.
+        if let Some((_, at)) = &self.closing {
+            std::thread::sleep(at.saturating_duration_since(Instant::now()));
+        }
     }
 
     fn handle(&mut self, command: PlayCmd) {
