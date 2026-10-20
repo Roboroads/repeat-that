@@ -15,6 +15,10 @@ pub struct PlayerConfig {
     /// A replay starts at the sentence still being spoken once it is this long. Before that it starts at the last
     /// finished utterance, so it doesn't open with a word or two out of context.
     pub min_open_start: Duration,
+    /// ...but only if that utterance ended at most this long ago (in captured time, see
+    /// [`SpeechBuffer::since_last_finished`]). After a longer silence it has nothing to do with what's being said now,
+    /// and the replay starts at the sentence in progress anyway.
+    pub max_context_age: Duration,
     /// Once playback has caught up with someone still talking, it waits until this much of their speech has come in
     /// before it plays on, so it doesn't stutter on every few milliseconds that arrive.
     pub live_margin: Duration,
@@ -30,6 +34,7 @@ impl Default for PlayerConfig {
             gap: Duration::from_millis(250),
             speed: 1.0,
             min_open_start: Duration::from_millis(1500),
+            max_context_age: Duration::from_secs(10),
             live_margin: Duration::from_millis(100),
             max_wait: Duration::from_secs(2),
         }
@@ -63,6 +68,7 @@ pub struct Player {
     min_open_start: usize,
     live_margin: usize,
     max_wait: usize,
+    max_context_age: Duration,
     stretcher: Stretcher,
     playing: Option<Playback>,
 }
@@ -140,6 +146,7 @@ impl Player {
             min_open_start: duration_to_samples(config.min_open_start, sample_rate),
             live_margin: duration_to_samples(config.live_margin, sample_rate),
             max_wait: duration_to_samples(config.max_wait, sample_rate),
+            max_context_age: config.max_context_age,
             stretcher: Stretcher::new(sample_rate, speed),
             playing: None,
         }
@@ -168,8 +175,9 @@ impl Player {
     }
 
     /// The replay button. When idle, starts at the sentence in progress if it is at least `min_open_start` long,
-    /// otherwise at the last finished utterance (or the sentence in progress if there is none). While replaying, steps
-    /// back one utterance from the one playing now. Returns `false` if there was nothing to play.
+    /// otherwise at the last finished utterance if that ended within `max_context_age` (or the sentence in progress if
+    /// there is none, or it is older). While replaying, steps back one utterance from the one playing now. Returns
+    /// `false` if there was nothing to play.
     pub fn replay(&mut self, buffer: &SpeechBuffer) -> bool {
         let target = match self.current_id() {
             // Already at the oldest one: start it over.
@@ -185,7 +193,10 @@ impl Player {
     fn start_id(&self, buffer: &SpeechBuffer) -> Option<u64> {
         let open = buffer.open_id();
         let open_len = open.and_then(|id| buffer.get(id)).map_or(0, |u| u.samples.len());
-        if open.is_some() && open_len >= self.min_open_start {
+        let recent_finished = buffer
+            .since_last_finished()
+            .is_some_and(|age| age <= self.max_context_age);
+        if open.is_some() && (open_len >= self.min_open_start || !recent_finished) {
             open
         } else {
             buffer.latest_finished_id().or(open)
@@ -586,6 +597,39 @@ mod tests {
                 ended: true
             }
         );
+    }
+
+    #[test]
+    fn starts_at_a_short_sentence_in_progress_after_a_long_silence() {
+        let config = PlayerConfig {
+            max_context_age: Duration::from_secs(10),
+            ..no_gap()
+        };
+        let mut buf = buffer_with(&[1.0]);
+        // 9 s after the last sentence ended, someone starts talking: that sentence still goes first.
+        buf.advance_clock(9_000);
+        let open = buf.open(vec![2.0; 500]);
+        let mut player = Player::new(RATE, config.clone());
+        player.replay(&buf);
+        assert_eq!(player.current_id(), Some(open - 1));
+
+        // After a minute of silence it has nothing to do with what's said now.
+        let mut buf = buffer_with(&[1.0]);
+        buf.advance_clock(60_000);
+        let open = buf.open(vec![2.0; 500]);
+        let mut player = Player::new(RATE, config.clone());
+        player.replay(&buf);
+        assert_eq!(player.current_id(), Some(open));
+        // Stepping back still reaches it.
+        player.replay(&buf);
+        assert_eq!(player.current_id(), Some(open - 1));
+
+        // Without a sentence in progress, the last one plays however old it is.
+        let mut buf = buffer_with(&[1.0]);
+        buf.advance_clock(60_000);
+        let mut player = Player::new(RATE, config);
+        player.replay(&buf);
+        assert_eq!(player.current_id(), Some(0));
     }
 
     #[test]

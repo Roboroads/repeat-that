@@ -56,6 +56,7 @@ impl Recorder {
     pub fn push(&mut self, interleaved: &[f32]) -> usize {
         self.mono.clear();
         downmix(interleaved, self.channels, &mut self.mono);
+        self.buffer.advance_clock(self.mono.len());
         let mut sink = BufferSink {
             buffer: &mut self.buffer,
             finished: 0,
@@ -222,6 +223,18 @@ mod tests {
         rec.flush();
         assert!(rec.buffer().is_empty());
         assert!(!rec.buffer().speech_pending());
+    }
+
+    #[test]
+    fn keeps_time_since_the_last_utterance() {
+        let mut rec = recorder();
+        feed(&mut rec, &[stereo(1.0, 0.5), stereo(1.0, 0.0)].concat());
+        // The utterance closed after 700 ms of the pause.
+        let age = rec.buffer().since_last_finished().unwrap().as_secs_f32();
+        assert!((0.25..0.35).contains(&age), "{age}");
+        feed(&mut rec, &stereo(2.0, 0.0));
+        let age = rec.buffer().since_last_finished().unwrap().as_secs_f32();
+        assert!((2.25..2.35).contains(&age), "{age}");
     }
 
     #[test]

@@ -78,7 +78,8 @@ apps without writing audio to disk.
   is never evicted. A *speech pending* flag says speech has started that isn't long enough to be an utterance yet.
 - **`Player`**: renders the replay in small blocks from a position inside the current utterance.
   - *Replay*: starts at the sentence in progress if it already has 1.5 s of audio, otherwise at the last finished
-    utterance. Pressing again during a replay steps one more utterance back.
+    utterance, unless that ended over 10 s ago and is unrelated to what's said now. Pressing again during a replay
+    steps one more utterance back.
   - *Play through to live*: after each utterance it plays the next, including everything recorded during the replay.
     Silences between utterances are replaced by a short fixed gap (~250 ms), so it still sounds natural and catches up
     even at 1.0×. When it reaches someone still talking, it follows their sentence as it comes in, at normal speed,

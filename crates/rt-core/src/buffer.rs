@@ -31,6 +31,10 @@ pub struct SpeechBuffer {
     /// Whether the newest utterance is still open.
     open: bool,
     speech_pending: bool,
+    /// Samples captured so far, silence included, as counted by the recorder.
+    clock: u64,
+    /// `clock` when the most recent finished utterance ended.
+    last_close: Option<u64>,
 }
 
 impl SpeechBuffer {
@@ -43,7 +47,22 @@ impl SpeechBuffer {
             utterances: VecDeque::new(),
             open: false,
             speech_pending: false,
+            clock: 0,
+            last_close: None,
         }
+    }
+
+    /// Counts captured samples, silence included, so the buffer knows how long ago its utterances ended. Only the
+    /// [`Recorder`](crate::Recorder) calls it; without it, utterances never age.
+    pub(crate) fn advance_clock(&mut self, samples: usize) {
+        self.clock += samples as u64;
+    }
+
+    /// How long ago, in captured time, the most recent finished utterance ended. `None` if there is none.
+    pub fn since_last_finished(&self) -> Option<Duration> {
+        self.latest_finished_id()?;
+        let samples = self.clock - self.last_close?;
+        Some(Duration::from_secs_f64(samples as f64 / self.sample_rate as f64))
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -114,6 +133,9 @@ impl SpeechBuffer {
     /// Finishes the open utterance: nothing more is appended to it. Returns its id, or `None` if none was open.
     pub(crate) fn close(&mut self) -> Option<u64> {
         let id = self.open_id();
+        if id.is_some() {
+            self.last_close = Some(self.clock);
+        }
         self.open = false;
         id
     }
@@ -198,6 +220,7 @@ impl SpeechBuffer {
         self.total_samples = 0;
         self.open = false;
         self.speech_pending = false;
+        self.last_close = None;
     }
 }
 
@@ -341,6 +364,24 @@ mod tests {
         buf.set_max_speech(Duration::from_secs(1));
         assert_eq!(buf.len(), 1);
         assert_eq!(buf.speech_duration(), Duration::from_millis(3500));
+    }
+
+    #[test]
+    fn tells_how_long_ago_the_last_utterance_ended() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(10));
+        assert_eq!(buf.since_last_finished(), None);
+        buf.advance_clock(500);
+        buf.open(speech(0.5, 1.0));
+        buf.advance_clock(500);
+        assert_eq!(buf.since_last_finished(), None);
+        buf.close();
+        assert_eq!(buf.since_last_finished(), Some(Duration::ZERO));
+        buf.advance_clock(2000);
+        buf.open(speech(0.5, 2.0));
+        buf.advance_clock(500);
+        assert_eq!(buf.since_last_finished(), Some(Duration::from_millis(2500)));
+        buf.clear();
+        assert_eq!(buf.since_last_finished(), None);
     }
 
     #[test]
