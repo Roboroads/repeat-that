@@ -8,14 +8,14 @@ permissions:
   contents: write
   pull-requests: write
 
-# One run at a time. Queue instead of cancelling: a run cancelled halfway could leave a release PR or draft half-made.
-concurrency:
-  group: release-please
-  cancel-in-progress: false
-
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    # One run at a time. Queue instead of cancelling: a run cancelled halfway could leave a release PR or draft
+    # half-made. It is on this job, not the workflow, so the slow installer build below doesn't hold up the next run.
+    concurrency:
+      group: release-please
+      cancel-in-progress: false
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
