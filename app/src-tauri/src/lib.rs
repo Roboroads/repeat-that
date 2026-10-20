@@ -19,8 +19,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         // Start order: single instance first, so a second launch exits before it sets anything up, then the plugins the
         // rest of the app uses, then the tray (in `setup`). The audio engine follows once it exists.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            window::show_settings(app)
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            window::on_second_launch(app, &args)
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_store::Builder::new().build())
