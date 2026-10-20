@@ -10,8 +10,8 @@
 
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 pub mod mock;
@@ -147,20 +147,39 @@ impl Drop for ThreadCapture {
 
 /// A duck level shared between [`AppAudioSource::set_app_volume`] and capture threads.
 #[derive(Clone)]
-pub(crate) struct DuckLevel(Arc<AtomicU32>);
+pub(crate) struct DuckLevel(Arc<Mutex<DuckState>>);
+
+/// The current duck level, and when it replaced the previous one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct DuckState {
+    pub level: f32,
+    pub previous: f32,
+    /// When `level` took effect, in the backend's clock (100 ns units on Windows). Audio from before this moment was
+    /// played at `previous`.
+    pub since: u64,
+}
 
 impl DuckLevel {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(AtomicU32::new(1.0f32.to_bits())))
+        Self(Arc::new(Mutex::new(DuckState {
+            level: 1.0,
+            previous: 1.0,
+            since: 0,
+        })))
     }
 
-    pub(crate) fn get(&self) -> f32 {
-        f32::from_bits(self.0.load(Ordering::Relaxed))
+    pub(crate) fn get(&self) -> DuckState {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Stores `level`, clamped with [`clamp_duck_level`].
-    pub(crate) fn set(&self, level: f32) {
-        self.0.store(clamp_duck_level(level).to_bits(), Ordering::Relaxed);
+    /// Stores `level`, clamped with [`clamp_duck_level`], as of `since`.
+    pub(crate) fn set(&self, level: f32, since: u64) {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        *state = DuckState {
+            level: clamp_duck_level(level),
+            previous: state.level,
+            since,
+        };
     }
 }
 

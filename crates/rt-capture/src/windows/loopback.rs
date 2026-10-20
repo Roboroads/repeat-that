@@ -9,16 +9,17 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Media::Audio::{
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-    AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-    AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
-    IActivateAudioInterfaceCompletionHandler, IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient,
-    IAudioClient, PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX,
+    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR, AUDCLNT_SHAREMODE_SHARED,
+    AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
+    AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+    AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
+    IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+    IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
+    PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX,
 };
 use windows::Win32::System::Com::BLOB;
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
+use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows::Win32::System::Threading::{
     CreateEventW, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
 };
@@ -27,7 +28,7 @@ use windows::core::{HRESULT, IUnknown, Interface, Ref};
 use windows_core::implement;
 
 use super::{Com, backend};
-use crate::{CaptureError, CaptureFormat, CaptureHandle, DuckLevel, FrameSink, Result, ThreadCapture};
+use crate::{CaptureError, CaptureFormat, CaptureHandle, DuckLevel, DuckState, FrameSink, Result, ThreadCapture};
 
 /// Process loopback has no mix format of its own; the audio engine converts to whatever we ask for.
 const FORMAT: CaptureFormat = CaptureFormat {
@@ -84,7 +85,7 @@ fn run(pid: u32, level: &DuckLevel, mut sink: FrameSink, stop: &AtomicBool, read
         }
         // The stream can fail later on, e.g. when the audio service restarts. The handle then reports that capture is
         // no longer running.
-        if stream.drain(level.get(), &mut frames, &mut sink).is_err() {
+        if stream.drain(level, &mut frames, &mut sink).is_err() {
             break;
         }
     }
@@ -143,14 +144,17 @@ impl Stream {
         }
     }
 
-    /// Hands every waiting packet to `sink`, amplified by `1 / level`.
-    fn drain(&self, level: f32, frames: &mut Vec<f32>, sink: &mut FrameSink) -> windows::core::Result<()> {
+    /// Hands every waiting packet to `sink`, amplified by `1 / level`. The engine timestamps each packet, so the gain
+    /// switches at the sample where the app's volume changed.
+    fn drain(&self, level: &DuckLevel, frames: &mut Vec<f32>, sink: &mut FrameSink) -> windows::core::Result<()> {
         unsafe {
             while self.capture.GetNextPacketSize()? > 0 {
                 let mut data = std::ptr::null_mut();
                 let mut count = 0u32;
                 let mut flags = 0u32;
-                self.capture.GetBuffer(&mut data, &mut count, &mut flags, None, None)?;
+                let mut time = 0u64;
+                self.capture
+                    .GetBuffer(&mut data, &mut count, &mut flags, None, Some(&mut time))?;
                 let len = count as usize * usize::from(FORMAT.channels);
                 frames.clear();
                 if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
@@ -158,8 +162,9 @@ impl Stream {
                 } else {
                     // The buffer is only guaranteed to be byte aligned.
                     let bytes = std::slice::from_raw_parts(data, len * 4);
-                    let gain = 1.0 / level;
-                    frames.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_ne_bytes(b) * gain));
+                    frames.extend(bytes.as_chunks::<4>().0.iter().map(|&b| f32::from_ne_bytes(b)));
+                    let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0;
+                    compensate(frames, level.get(), timed.then_some(time));
                 }
                 self.capture.ReleaseBuffer(count)?;
                 if !frames.is_empty() {
@@ -169,6 +174,40 @@ impl Stream {
         }
         Ok(())
     }
+}
+
+/// Undoes ducking on a packet that starts at `time` (100 ns units): frames from before the last change were played at
+/// the previous level. Without a timestamp the whole packet gets the current level.
+fn compensate(frames: &mut [f32], duck: DuckState, time: Option<u64>) {
+    let channels = usize::from(FORMAT.channels);
+    let switch_frame = match time {
+        Some(time) if duck.since > time => {
+            let ticks = u128::from(duck.since - time) * u128::from(FORMAT.sample_rate);
+            usize::try_from(ticks.div_ceil(10_000_000)).unwrap_or(usize::MAX)
+        }
+        _ => 0,
+    };
+    let split = switch_frame.saturating_mul(channels).min(frames.len());
+    let (before, after) = frames.split_at_mut(split);
+    for (part, level) in [(before, duck.previous), (after, duck.level)] {
+        if level < 1.0 {
+            let gain = 1.0 / level;
+            part.iter_mut().for_each(|s| *s *= gain);
+        }
+    }
+}
+
+/// The current time on the clock of the packet timestamps: the performance counter in 100 ns units.
+pub(super) fn now() -> u64 {
+    let (mut counter, mut frequency) = (0i64, 0i64);
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut counter);
+        let _ = QueryPerformanceFrequency(&mut frequency);
+    }
+    if frequency <= 0 {
+        return 0;
+    }
+    (i128::from(counter) * 10_000_000 / i128::from(frequency)) as u64
 }
 
 impl Drop for Stream {
@@ -251,5 +290,50 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
             let _ = done.send(());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DUCKED_AT_1S: DuckState = DuckState {
+        level: 0.25,
+        previous: 1.0,
+        since: 10_000_000,
+    };
+
+    #[test]
+    fn switches_gain_at_the_sample_where_the_volume_changed() {
+        // 10 stereo frames starting 5 frames (at 48 kHz) before the change.
+        let mut frames = vec![0.25f32; 20];
+        let start = 10_000_000 - 5 * 10_000_000 / 48_000;
+        compensate(&mut frames, DUCKED_AT_1S, Some(start));
+        // The engine's frame clock rounds, so the switch lands on frame 5 or 6.
+        let first_boosted = frames.iter().position(|&s| s == 1.0).unwrap();
+        assert!(first_boosted == 10 || first_boosted == 12, "{frames:?}");
+        assert!(frames[..first_boosted].iter().all(|&s| s == 0.25));
+        assert!(frames[first_boosted..].iter().all(|&s| s == 1.0));
+    }
+
+    #[test]
+    fn packets_after_the_change_get_the_new_gain() {
+        let mut frames = vec![0.25f32; 8];
+        compensate(&mut frames, DUCKED_AT_1S, Some(20_000_000));
+        assert!(frames.iter().all(|&s| s == 1.0));
+    }
+
+    #[test]
+    fn packets_before_the_change_keep_the_old_gain() {
+        let mut frames = vec![0.5f32; 8];
+        compensate(&mut frames, DUCKED_AT_1S, Some(1_000));
+        assert!(frames.iter().all(|&s| s == 0.5));
+    }
+
+    #[test]
+    fn without_a_timestamp_the_current_level_applies() {
+        let mut frames = vec![0.25f32; 8];
+        compensate(&mut frames, DUCKED_AT_1S, None);
+        assert!(frames.iter().all(|&s| s == 1.0));
     }
 }

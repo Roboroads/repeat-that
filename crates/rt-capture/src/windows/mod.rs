@@ -49,8 +49,8 @@ impl AppAudioSource for WasapiSource {
         let mut before_duck = self.before_duck.lock().unwrap_or_else(|e| e.into_inner());
         let level = clamp_duck_level(level);
         sessions::duck(app.pid, level, &mut before_duck)?;
-        // Only compensate once the volume has actually changed.
-        self.level(app.pid).set(level);
+        // Captures switch their compensation at this moment, for audio the engine processed from then on.
+        self.level(app.pid).set(level, loopback::now());
         Ok(())
     }
 }

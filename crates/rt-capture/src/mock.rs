@@ -87,7 +87,7 @@ impl MockSource {
 
     /// The level last set with [`AppAudioSource::set_app_volume`]. It doesn't change the delivered audio.
     pub fn level(&self) -> f32 {
-        self.level.get()
+        self.level.get().level
     }
 
     fn check(&self, app: &AudioApp) -> Result<()> {
@@ -140,7 +140,7 @@ impl AppAudioSource for MockSource {
 
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()> {
         self.check(app)?;
-        self.level.set(level);
+        self.level.set(level, 0);
         Ok(())
     }
 }
