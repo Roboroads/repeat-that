@@ -107,7 +107,12 @@ export class SettingsStore {
    */
   async update(patch: SettingsPatch, options: UpdateOptions = {}): Promise<api.ApiError | null> {
     const { optimistic = true, report = true } = options;
-    if (this.settings === null) return null;
+    if (this.settings === null) {
+      // Nothing to change yet. Answering "saved" would let a caller go on as if it had worked.
+      const error = new api.ApiError('backend', 'The settings are not loaded yet.');
+      if (report) this.error = error.message;
+      return error;
+    }
     if (optimistic) this.settings = { ...this.settings, ...patch };
 
     this.inFlight++;
