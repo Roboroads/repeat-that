@@ -1,7 +1,8 @@
 # Security policy
 
-Repeat That keeps captured audio in memory only, has no account and no telemetry, and has no network features yet (the
-only planned one is an update check). See [PRIVACY.md](PRIVACY.md). That means the realistic security bugs are in the
+Repeat That keeps captured audio in memory only, has no account and no telemetry, and has no network features yet (a
+Tauri auto-updater that downloads and installs new builds is planned, see the [roadmap](ROADMAP.md)). See
+[PRIVACY.md](PRIVACY.md). That means the realistic security bugs are in the
 app itself: another program being able to read the audio buffer, captured audio ending up on disk, or another app's
 volume being left lowered. The one thing capture does write to disk is the duck journal, which holds app volumes only,
 so that file is expected.
@@ -22,6 +23,7 @@ In scope:
 - the app
 - the capture backends (WASAPI on Windows today, PipeWire and Core Audio once they exist)
 - the duck guard process and the duck journal
+- the auto-updater, once it exists
 - release artifacts and their `SHA256SUMS` files
 
 Bugs in a third-party dependency belong upstream unless Repeat That uses it in a way that makes it exploitable.
