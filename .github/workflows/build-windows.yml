@@ -98,7 +98,7 @@ jobs:
           projectPath: app
           args: --bundles nsis,msi
 
-      # Tauri names its bundles after productName ("Repeat that_0.1.0_x64-setup.exe"). GitHub turns the spaces in
+      # Tauri names its bundles after productName ("Repeat That_0.1.0_x64-setup.exe"). GitHub turns the spaces in
       # release asset names into dots, so rename first and let SHA256SUMS list the names people will download.
       - name: Stage installers and write SHA256SUMS
         shell: bash
@@ -122,7 +122,7 @@ jobs:
             cp "$file" "installers/${name// /-}"
           done
 
-          # Name looks like Repeat-that_<version>_x64-setup.exe
+          # Name looks like Repeat-That_<version>_x64-setup.exe
           version=$(basename "${nsis[0]}" | cut -d_ -f2)
           if [[ -n "$TAG" && "$TAG" != "v$version" ]]; then
             echo "::error::tag $TAG does not match the app version $version; is release-please-config.json bumping every version file?"

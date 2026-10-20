@@ -1,6 +1,6 @@
 # Installing on Windows
 
-Repeat that?! needs 64-bit Windows 10 version 2004 (build 19041) or newer, or Windows 11. Windows on ARM isn't
+Repeat That needs 64-bit Windows 10 version 2004 (build 19041) or newer, or Windows 11. Windows on ARM isn't
 supported yet.
 
 The app is free and volunteer-run, and the installers aren't code-signed yet (we're applying for free signing through
@@ -13,8 +13,8 @@ Get the installer from the [Releases page](https://github.com/Roboroads/repeat-t
 
 | File | What it is |
 | --- | --- |
-| `Repeat-that_<version>_x64-setup.exe` | The normal installer. Installs for your user only and doesn't ask for administrator rights. |
-| `Repeat-that_<version>_x64_en-US.msi` | For managed PCs and scripted installs. Installs for all users, so it asks for administrator rights. |
+| `Repeat-That_<version>_x64-setup.exe` | The normal installer. Installs for your user only and doesn't ask for administrator rights. |
+| `Repeat-That_<version>_x64_en-US.msi` | For managed PCs and scripted installs. Installs for all users, so it asks for administrator rights. |
 | `SHA256SUMS` | Checksums of the two installers, to [verify your download](verify-downloads.md). |
 
 If you aren't sure, take the `.exe`.
@@ -25,8 +25,8 @@ If you aren't sure, take the `.exe`.
    then **Run anyway**.
 2. Follow the installer. If the WebView2 runtime that the settings window needs isn't on your PC yet (Windows 11 and
    up-to-date Windows 10 have it), the installer downloads it, so you need an internet connection for that one time.
-3. Repeat that?! starts in the system tray and opens its settings window on the first run. If you can't see the tray icon,
-   click the **^** arrow next to the clock.
+3. Repeat That starts in the system tray and opens its settings window on the first run. If you can't see the tray icon,
+   click the **^** arrow next to the clock. Later you can start it from the **Repeat That** entry in the Start menu.
 
 After that, pick the app whose audio you want to keep (Discord, Teams, your browser, ...) in the settings window.
 Captured audio stays in memory and is never written to disk; see [PRIVACY.md](../PRIVACY.md).
@@ -40,8 +40,8 @@ Compare your download with the release's `SHA256SUMS` before you run it; see [ve
 There's no automatic updater yet. To update, download the newer installer and run it over the old version; your
 settings are kept.
 
-To uninstall, use **Settings → Apps → Installed apps → Repeat that**. The uninstaller offers to delete the app's data
-(`%APPDATA%\me.roboroads.repeatthat`, which holds your settings and the chosen app's name and path, never audio).
+To uninstall, use **Settings → Apps → Installed apps → Repeat That**. The uninstaller offers to delete the app's data
+(`%APPDATA%\me.roboroads.repeat-that`, which holds your settings and the chosen app's name and path, never audio).
 
 ## Build from source
 

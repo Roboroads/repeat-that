@@ -62,7 +62,7 @@ in [`install-windows.md`](install-windows.md).
 - **Running it by hand** (Actions → Build Windows installers → Run workflow, once the workflow is on `main`): leave
   `tag` empty for a dry run that only produces artifacts (the job summary shows the checksums), or give an existing tag
   such as `v0.1.0` to rebuild that tag and replace its release assets. Use the second form when a release's build failed.
-- Asset names use hyphens (`Repeat-that_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat that_...`: GitHub rewrites
+- Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
 
 ### First release
