@@ -18,9 +18,11 @@ jobs:
   # Tells the build jobs whether a pull request touches anything but documentation. Hosted runners (macOS above all) are
   # scarce, so a docs-only change should not wait for one. A workflow-level `paths-ignore` would skip the whole workflow
   # and leave the required checks in .github/rulesets/main.json pending forever, so the jobs always run and report
-  # success; only their build and test steps are skipped.
+  # success; only their build and test steps are skipped. Only pull requests are classified: a push to main skips this
+  # job and always builds.
   changes:
     name: Detect code changes
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -33,30 +35,26 @@ jobs:
           fetch-depth: 2
       - name: Classify changed files
         id: filter
-        env:
-          EVENT: ${{ github.event_name }}
         run: |
+          # The checkout is the merge of the PR into its base, so HEAD^1..HEAD is what the PR changes. `--no-renames`
+          # lists both sides of a rename, so moving code into docs/ still counts as code. Whenever the list is
+          # unavailable the answer stays code=true, so the build runs.
           code=true
-          if [ "$EVENT" = pull_request ]; then
-            # On pull requests the checkout is the merge of the PR into its base, so HEAD^1..HEAD is what the PR
-            # changes. `--no-renames` lists both sides of a rename, so moving code into docs/ still counts as code.
-            # Whenever the list is unavailable the answer stays code=true, so the build runs.
-            if ! files=$(git diff --name-only --no-renames HEAD^1 HEAD) || [ -z "$files" ]; then
-              echo "::warning::Could not list the changed files, treating the change as code"
-            else
-              code=false
-              while IFS= read -r file; do
-                case "$file" in
-                  # Docs only: docs/, the issue templates, and Markdown or LICENSE in the repository root. Markdown
-                  # deeper in the tree sits next to code (a crate can embed its README with include_str!, which runs
-                  # the doctests), so it counts as code.
-                  docs/* | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
-                  */*) echo "code: $file"; code=true ;;
-                  *.md | LICENSE) echo "docs: $file" ;;
-                  *) echo "code: $file"; code=true ;;
-                esac
-              done <<< "$files"
-            fi
+          if ! files=$(git diff --name-only --no-renames HEAD^1 HEAD) || [ -z "$files" ]; then
+            echo "::warning::Could not list the changed files, treating the change as code"
+          else
+            code=false
+            while IFS= read -r file; do
+              case "$file" in
+                # Docs only: docs/, the issue templates, and Markdown or LICENSE in the repository root. Markdown
+                # deeper in the tree sits next to code (a crate can embed its README with include_str!, which runs
+                # the doctests), so it counts as code.
+                docs/* | .github/ISSUE_TEMPLATE/*) echo "docs: $file" ;;
+                */*) echo "code: $file"; code=true ;;
+                *.md | LICENSE) echo "docs: $file" ;;
+                *) echo "code: $file"; code=true ;;
+              esac
+            done <<< "$files"
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "code=$code"
@@ -64,9 +62,11 @@ jobs:
   rust:
     name: Rust (${{ matrix.os }})
     needs: changes
-    # Without code changes every leg runs on the plentiful Linux runner instead of queueing for its own OS, and skips
-    # its steps. That also skips the Windows-only steps below, because `runner.os` is Linux then.
-    runs-on: ${{ needs.changes.outputs.code == 'true' && matrix.os || 'ubuntu-latest' }}
+    # `changes` is skipped on pushes, and if it fails the build should still run, so this job runs unless the whole run
+    # is cancelled. Only `code == 'false'` skips the build: then every leg runs on the plentiful Linux runner instead of
+    # queueing for its own OS, and finishes without running any steps.
+    if: ${{ !cancelled() }}
+    runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -75,17 +75,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
       - run: cargo fmt --all --check
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
       - run: cargo test --workspace
-        if: needs.changes.outputs.code == 'true'
+        if: needs.changes.outputs.code != 'false'
       # End-to-end test of Windows capture: a virtual audio device (VB-CABLE) and the audio service, which Windows
       # Server runners have turned off.
       - name: Set up audio (Windows)
