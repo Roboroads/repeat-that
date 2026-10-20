@@ -78,8 +78,8 @@ impl EngineControl for NoEngine {
 pub trait ActionHost {
     fn show_settings(&self);
     fn quit(&self);
-    fn is_paused(&self) -> bool;
-    fn set_paused(&self, paused: bool);
+    /// Flips between paused and not paused as one step, so two toggles at once end up back where they started.
+    fn toggle_paused(&self);
     fn engine(&self) -> SharedEngine;
 }
 
@@ -92,12 +92,14 @@ impl<R: Runtime> ActionHost for AppHandle<R> {
         self.exit(0);
     }
 
-    fn is_paused(&self) -> bool {
-        tray::lock_status(&self.state::<SharedStatus>()).is_paused()
-    }
-
-    fn set_paused(&self, paused: bool) {
-        tray::lock_status(&self.state::<SharedStatus>()).set_paused(paused);
+    fn toggle_paused(&self) {
+        {
+            // One lock for the read and the write; `refresh` locks the status again, so this one is dropped first.
+            let shared = self.state::<SharedStatus>();
+            let mut status = tray::lock_status(&shared);
+            let paused = status.is_paused();
+            status.set_paused(!paused);
+        }
         tray::refresh(self);
     }
 
@@ -111,7 +113,7 @@ pub fn dispatch(action: AppAction, host: &dyn ActionHost) {
     match action {
         AppAction::OpenSettings => host.show_settings(),
         AppAction::Quit => host.quit(),
-        AppAction::TogglePause => host.set_paused(!host.is_paused()),
+        AppAction::TogglePause => host.toggle_paused(),
         AppAction::Replay => host.engine().replay(),
         AppAction::Stop => host.engine().stop(),
         AppAction::CatchUp => host.engine().toggle_catch_up(),
@@ -150,6 +152,12 @@ mod tests {
         engine: Arc<FakeEngine>,
     }
 
+    impl FakeHost {
+        fn is_paused(&self) -> bool {
+            self.paused.get()
+        }
+    }
+
     impl ActionHost for FakeHost {
         fn show_settings(&self) {
             self.calls.borrow_mut().push("show_settings".into());
@@ -159,13 +167,9 @@ mod tests {
             self.calls.borrow_mut().push("quit".into());
         }
 
-        fn is_paused(&self) -> bool {
-            self.paused.get()
-        }
-
-        fn set_paused(&self, paused: bool) {
-            self.paused.set(paused);
-            self.calls.borrow_mut().push(format!("set_paused({paused})"));
+        fn toggle_paused(&self) {
+            self.paused.set(!self.paused.get());
+            self.calls.borrow_mut().push("toggle_paused".into());
         }
 
         fn engine(&self) -> SharedEngine {
@@ -191,13 +195,10 @@ mod tests {
     #[test]
     fn toggle_pause_flips_the_state_both_ways() {
         let host = FakeHost::default();
-        assert_eq!(run(AppAction::TogglePause, &host), ["set_paused(true)"]);
+        assert_eq!(run(AppAction::TogglePause, &host), ["toggle_paused"]);
         assert!(host.is_paused());
         dispatch(AppAction::TogglePause, &host);
-        assert_eq!(
-            host.calls.borrow().as_slice(),
-            ["set_paused(true)", "set_paused(false)"]
-        );
+        assert_eq!(host.calls.borrow().as_slice(), ["toggle_paused", "toggle_paused"]);
         assert!(!host.is_paused());
     }
 

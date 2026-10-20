@@ -49,20 +49,45 @@ fn embed_windows_manifest_in_all_executables() {
         .expect("embed the Windows manifest");
 }
 
+/// Written into the placeholder page so a release build can tell it from the real frontend.
+const PLACEHOLDER_MARKER: &str = "<!-- repeat-that: frontend placeholder -->";
+
 /// `tauri::generate_context!` embeds `app/dist` and fails to compile without it. CI and `tauri build` run
-/// `npm run build` first; this stub only keeps `cargo clippy/test --workspace` working on a fresh checkout where the
-/// frontend was never built. `dist/` is git-ignored.
+/// `npm run build` first. Without a built frontend a debug build gets a placeholder page and a warning, so that
+/// `cargo clippy/test --workspace` keeps working on a fresh checkout. A release build stops instead, because it would
+/// ship the placeholder as the settings window. `dist/` is ignored by version control, and the next `npm run build`
+/// empties it.
 fn ensure_frontend_dist() {
     let dist = Path::new("../dist");
     let index = dist.join("index.html");
     println!("cargo:rerun-if-changed={}", index.display());
-    if index.exists() {
+
+    let page = std::fs::read(&index).ok();
+    let is_placeholder = page
+        .as_deref()
+        .is_some_and(|html| String::from_utf8_lossy(html).contains(PLACEHOLDER_MARKER));
+    if page.is_some() && !is_placeholder {
         return;
     }
-    std::fs::create_dir_all(dist).expect("create ../dist");
-    std::fs::write(
-        index,
-        "<!doctype html><title>Repeat that?!</title><p>The frontend is not built. Run <code>npm run build</code> in app/.",
-    )
-    .expect("write ../dist/index.html");
+    if std::env::var("PROFILE").as_deref() == Ok("release") {
+        panic!(
+            "the frontend is not built, and a release build must not embed the placeholder page. Run `npm run build` \
+             in app/ first, or build with `npm run tauri build`, which does that for you."
+        );
+    }
+    if page.is_none() {
+        std::fs::create_dir_all(dist).expect("create ../dist");
+        std::fs::write(
+            &index,
+            format!(
+                "{PLACEHOLDER_MARKER}<!doctype html><title>Repeat that?!</title><p>The frontend is not built. Run \
+                 <code>npm run build</code> in app/."
+            ),
+        )
+        .expect("write ../dist/index.html");
+    }
+    println!(
+        "cargo:warning=the frontend is not built, so the app embeds a placeholder page (debug builds only). Run `npm run \
+         build` in app/ for the real settings window."
+    );
 }
