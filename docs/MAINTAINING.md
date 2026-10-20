@@ -82,13 +82,12 @@ Repository secrets (Settings → Secrets and variables → Actions):
 - `APPLE_API_KEY_CONTENT`: the full text of the `.p8` file. The name is ours, Tauri doesn't read it.
 
 Set in the workflow, not a secret:
-- `APPLE_API_KEY_PATH`: the path to the `.p8` file, which Tauri reads from disk. A step before the tauri-action step
-  writes the secret to a file and exports the path for the later steps. It runs only on the macOS job and uses bash, so
-  it doesn't break the Windows and Linux jobs of a build matrix:
+- `APPLE_API_KEY_PATH`: the path to the `.p8` file, which Tauri reads from disk. In the macOS build workflow (for
+  example `build-macos.yml`), a step before the tauri-action step writes the secret to a file and exports the path for
+  the later steps:
 
 ```yaml
 - name: Write the App Store Connect API key
-  if: runner.os == 'macOS'
   shell: bash
   env:
     KEY_ID: ${{ secrets.APPLE_API_KEY }}
