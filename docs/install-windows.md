@@ -59,7 +59,7 @@ that folder yourself if you want it gone after an `.msi` uninstall.
 Installers come from CI, but you can build your own:
 
 ```powershell
-# needs Rust (https://rustup.rs), Node.js and the Visual Studio C++ build tools
+# needs Rust (https://rustup.rs), Node.js 22 LTS or later and the Visual Studio C++ build tools
 git clone https://github.com/Roboroads/repeat-that
 cd repeat-that\app
 npm ci
