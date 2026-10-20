@@ -1,6 +1,6 @@
 # Privacy
 
-Repeat that?! handles other people's voices, so privacy is a core design rule, not an afterthought.
+Repeat That handles other people's voices, so privacy is a core design rule, not an afterthought.
 
 ## What the app does with audio
 
@@ -16,7 +16,7 @@ Repeat that?! handles other people's voices, so privacy is a core design rule, n
 ## A note on recording laws
 
 Laws about recording conversations differ by country and region. Some places require consent from everyone in the
-conversation; others treat short-lived buffers that are never stored differently from recordings. Repeat that?! is
+conversation; others treat short-lived buffers that are never stored differently from recordings. Repeat That is
 designed to act like a short "memory aid" rather than a recorder, but **you are responsible for using it in line with
 the laws that apply to you and the policies of your employer or the platform you're using**. When in doubt, let the
 people you're talking to know you use it.

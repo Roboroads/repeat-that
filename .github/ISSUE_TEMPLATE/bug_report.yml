@@ -29,7 +29,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: Repeat that?! version
+      label: Repeat That version
   - type: textarea
     id: logs
     attributes:
