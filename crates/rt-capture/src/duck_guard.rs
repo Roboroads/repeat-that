@@ -3,7 +3,8 @@
 //! exit the journal is empty and the guard just ends. It only touches volumes, never audio.
 //!
 //! The guard is the app's own executable, started with hidden arguments, so the app must call [`run_if_requested`]
-//! first thing in `main`. Only the Windows backend starts it (see `WasapiSource::with_duck_guard`) for now.
+//! first thing in `main`. The OS modules that have a guard (`HAS_DUCK_GUARD`) start it, for now only Windows (see
+//! `WasapiSource::with_duck_guard`).
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -18,17 +19,18 @@ pub fn run_if_requested() -> bool {
     run(&args)
 }
 
-/// [`run_if_requested`] for the arguments `args` (without the program name). The OS decides what a guard is and
-/// whether it has one, see `run_duck_guard` in its module.
+/// [`run_if_requested`] for the arguments `args` (without the program name). The OS decides what a guard is, see
+/// `run_duck_guard` in its module, and whether it has one: where it has none, a request for one is left to the app.
 fn run(args: &[OsString]) -> bool {
     match requested(args) {
-        Some((journal, parent)) => crate::os::run_duck_guard(&journal, parent),
-        None => false,
+        Some((journal, parent)) if crate::os::HAS_DUCK_GUARD => crate::os::run_duck_guard(&journal, parent),
+        _ => false,
     }
 }
 
 /// The arguments that start a guard for `journal` that waits for process `parent`.
-#[cfg_attr(not(windows), allow(dead_code))]
+// Called by the OS modules that start a guard (`HAS_DUCK_GUARD`); one without a guard doesn't.
+#[allow(dead_code)]
 pub(crate) fn args(journal: &Path, parent: u32) -> [OsString; 3] {
     [GUARD_ARG.into(), journal.into(), parent.to_string().into()]
 }
@@ -79,7 +81,7 @@ mod tests {
 
     #[test]
     fn an_os_without_a_guard_never_runs_one() {
-        if crate::HAS_PLATFORM_BACKEND {
+        if crate::os::HAS_DUCK_GUARD {
             return;
         }
         // Nothing starts a guard there, so a request for one is left to the app instead of ending it.

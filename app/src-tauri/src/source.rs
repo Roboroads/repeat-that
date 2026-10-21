@@ -88,18 +88,69 @@ fn make(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSour
 
 /// The OS backend with a duck journal (and on Windows a guard). Restoring what an earlier run's journal lists talks to
 /// the audio service, and on Windows sets up COM for the thread, which is why [`LazySource`] makes it away from the UI
-/// thread. A backend that can't be set up leaves the app with nothing to capture, and the status says why.
+/// thread.
 fn platform(duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
-    match rt_capture::platform_source_with(PlatformOptions { duck_journal }) {
+    set_up(move || {
+        rt_capture::platform_source_with(PlatformOptions {
+            duck_journal: duck_journal.clone(),
+        })
+    })
+}
+
+/// The source `setup` makes. A backend that can't be used on this OS (`Unsupported`) leaves the app with nothing to
+/// capture, and the status says why. Any other failure, like a permission the user hasn't given yet, is tried again on
+/// the next use, so capture starts as soon as the cause is gone.
+fn set_up(
+    setup: impl Fn() -> rt_capture::Result<Box<dyn AppAudioSource>> + Send + Sync + 'static,
+) -> Arc<dyn AppAudioSource> {
+    match setup() {
         Ok(source) => Arc::from(source),
-        Err(err) => {
-            eprintln!("could not set up audio capture: {err}");
-            Arc::new(Unsupported(match err {
-                // Already a sentence for the user.
-                CaptureError::Unsupported(why) => why,
-                other => other.to_string(),
-            }))
+        // Already a sentence for the user.
+        Err(CaptureError::Unsupported(why)) => {
+            eprintln!("audio capture is not supported: {why}");
+            Arc::new(Unsupported(why))
         }
+        Err(err) => {
+            eprintln!("could not set up audio capture, trying again on the next use: {err}");
+            Arc::new(Retrying {
+                setup: Box::new(setup),
+                source: Mutex::new(None),
+            })
+        }
+    }
+}
+
+/// Makes the source of a backend that failed to set up, on the first use after that works. The engine's reconnect poll
+/// and the app list commands are those uses, and the error they get is the one of the new attempt.
+struct Retrying {
+    setup: Box<dyn Fn() -> rt_capture::Result<Box<dyn AppAudioSource>> + Send + Sync>,
+    source: Mutex<Option<Arc<dyn AppAudioSource>>>,
+}
+
+impl Retrying {
+    /// The source, set up now if it isn't yet. Setting up can block, like the source's own calls do.
+    fn get(&self) -> rt_capture::Result<Arc<dyn AppAudioSource>> {
+        let mut source = lock(&self.source);
+        if let Some(source) = source.as_ref() {
+            return Ok(Arc::clone(source));
+        }
+        let made: Arc<dyn AppAudioSource> = Arc::from((self.setup)()?);
+        *source = Some(Arc::clone(&made));
+        Ok(made)
+    }
+}
+
+impl AppAudioSource for Retrying {
+    fn list_apps(&self) -> rt_capture::Result<Vec<AudioApp>> {
+        self.get()?.list_apps()
+    }
+
+    fn start(&self, app: &AudioApp, sink: FrameSink) -> rt_capture::Result<Box<dyn CaptureHandle>> {
+        self.get()?.start(app, sink)
+    }
+
+    fn set_app_volume(&self, app: &AudioApp, level: f32) -> rt_capture::Result<()> {
+        self.get()?.set_app_volume(app, level)
     }
 }
 
@@ -296,6 +347,85 @@ mod tests {
             reason_of_the_backend
         );
         assert_eq!(reason(source.set_app_volume(&app, 0.2)), reason_of_the_backend);
+    }
+
+    /// A setup that fails with `error` until its `grant`th attempt, then makes a fake app. Counts the attempts.
+    fn setup_granted_at(
+        grant: usize,
+        error: fn() -> CaptureError,
+    ) -> (
+        impl Fn() -> rt_capture::Result<Box<dyn AppAudioSource>> + Send + Sync + 'static,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let setup = move || {
+            if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1 < grant {
+                return Err(error());
+            }
+            Ok(Box::new(MockSource::from_wav(DEBUG_FIXTURE.unwrap()).unwrap()) as Box<dyn AppAudioSource>)
+        };
+        (setup, attempts)
+    }
+
+    fn attempts(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    const ALLOW: &str = "Allow Repeat That to record audio in System Settings";
+
+    fn denied() -> CaptureError {
+        CaptureError::PermissionDenied(ALLOW.into())
+    }
+
+    #[test]
+    fn a_setup_that_is_refused_is_tried_again_on_every_use_until_it_works() {
+        let (setup, tries) = setup_granted_at(4, denied);
+        let app = AudioApp {
+            pid: 1,
+            name: "Discord".into(),
+            exe_path: None,
+        };
+        let source = set_up(setup);
+        assert_eq!(attempts(&tries), 1, "set up once at launch");
+        // Every use is a new attempt that says what is wrong, so capture resumes once the user has allowed it.
+        match source.list_apps() {
+            Err(CaptureError::PermissionDenied(how)) => assert_eq!(how, ALLOW),
+            other => panic!("expected PermissionDenied, got {:?}", other.map(drop)),
+        }
+        assert!(matches!(
+            source.start(&app, Box::new(|_, _| {})),
+            Err(CaptureError::PermissionDenied(_))
+        ));
+        assert_eq!(attempts(&tries), 3);
+        assert_eq!(source.list_apps().unwrap().len(), 1, "allowed on the fourth attempt");
+        assert_eq!(source.list_apps().unwrap().len(), 1);
+        assert_eq!(attempts(&tries), 4, "a source that works is kept");
+    }
+
+    #[test]
+    fn other_setup_errors_than_unsupported_are_tried_again_too() {
+        let (setup, tries) = setup_granted_at(2, || CaptureError::Backend("the audio service isn't up yet".into()));
+        let source = set_up(setup);
+        assert!(matches!(source.list_apps(), Ok(apps) if apps.len() == 1));
+        assert_eq!(attempts(&tries), 2);
+    }
+
+    #[test]
+    fn an_unsupported_setup_is_final() {
+        let (setup, tries) = setup_granted_at(usize::MAX, || CaptureError::Unsupported("no PipeWire here".into()));
+        let source = set_up(setup);
+        for _ in 0..2 {
+            match source.list_apps() {
+                Err(CaptureError::Unsupported(why)) => assert_eq!(why, "no PipeWire here"),
+                other => panic!("expected Unsupported, got {:?}", other.map(drop)),
+            }
+        }
+        assert_eq!(
+            attempts(&tries),
+            1,
+            "the engine doesn't retry it, and neither does the source"
+        );
     }
 
     /// A source that counts how often it was made, and waits for `release` while it is made, if one is given.

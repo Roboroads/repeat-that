@@ -111,11 +111,11 @@ pub struct TargetApp {
 }
 
 impl TargetApp {
-    /// Whether `app` is this target: the same executable (case-insensitive on Windows), or the same name when the
-    /// target has no executable (the mock source).
+    /// Whether `app` is this target: the same executable (by the file name rules of the OS, see
+    /// [`rt_capture::same_exe_path`]), or the same name when the target has no executable (the mock source).
     pub fn matches(&self, app: &AudioApp) -> bool {
         match (&self.exe_path, &app.exe_path) {
-            (Some(target), Some(exe)) => same_path(target, exe),
+            (Some(target), Some(exe)) => rt_capture::same_exe_path(target, exe),
             (Some(_), None) => false,
             (None, _) => self.name == app.name,
         }
@@ -129,16 +129,6 @@ impl From<&AudioApp> for TargetApp {
             name: app.name.clone(),
         }
     }
-}
-
-#[cfg(windows)]
-fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
-}
-
-#[cfg(not(windows))]
-fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a == b
 }
 
 /// The running engine. Dropping it stops playback and capture, wipes the buffer and restores the app's volume.
@@ -370,10 +360,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
-    fn matches_executables_case_insensitively_on_windows() {
-        let target = TargetApp::from(&app("Discord", Some(r"C:\Apps\Discord.exe")));
-        assert!(target.matches(&app("Discord", Some(r"c:\apps\discord.EXE"))));
+    fn matches_executables_by_the_rule_of_the_os() {
+        // Windows ignores the case of paths; the OS modules of rt-capture say which others do.
+        let (exe, other_case) = (r"C:\Apps\Discord.exe", r"c:\apps\discord.EXE");
+        let target = TargetApp::from(&app("Discord", Some(exe)));
+        assert_eq!(
+            target.matches(&app("Discord", Some(other_case))),
+            rt_capture::same_exe_path(exe.as_ref(), other_case.as_ref())
+        );
     }
 
     #[test]

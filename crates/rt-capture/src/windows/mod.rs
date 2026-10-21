@@ -29,13 +29,16 @@ use crate::{
 };
 
 pub(crate) const HAS_BACKEND: bool = true;
+pub(crate) const HAS_DUCK_GUARD: bool = true;
+/// Windows file names are case-insensitive.
+pub(crate) const EXE_PATHS_IGNORE_CASE: bool = true;
 
 /// The WASAPI source. A duck journal in `options` also gives it the duck guard, which reads the journal to know what to
 /// restore, so there is no guard without one.
-pub(crate) fn source(options: &PlatformOptions) -> Result<Box<dyn AppAudioSource>> {
+pub(crate) fn source(options: PlatformOptions) -> Result<Box<dyn AppAudioSource>> {
     let source = WasapiSource::new();
-    Ok(Box::new(match &options.duck_journal {
-        Some(journal) => source.with_duck_journal(journal.clone()).with_duck_guard(),
+    Ok(Box::new(match options.duck_journal {
+        Some(journal) => source.with_duck_journal(journal).with_duck_guard(),
         None => source,
     }))
 }

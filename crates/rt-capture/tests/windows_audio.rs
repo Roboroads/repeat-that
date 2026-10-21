@@ -18,7 +18,8 @@ use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 use std::{env, thread};
 
-use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, WasapiSource, app_icon};
+use rt_capture::windows::WasapiSource;
+use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, app_icon};
 
 const TONE_HZ: f64 = 1000.0;
 /// The player's sine has an amplitude of 0.5, so an RMS of about 0.35 at full volume.

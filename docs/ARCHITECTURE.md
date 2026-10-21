@@ -35,19 +35,27 @@ does so with the options each OS decides what to do with (Windows: a duck journa
 `HAS_PLATFORM_BACKEND` says whether this OS has one at all.
 
 **One module per OS.** `lib.rs` includes exactly one OS module under the name `os`: `windows`, or `unsupported` on an OS
-without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same four
+without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same
 items, and the platform-neutral entry points only call these:
 
 | Item | Used by |
 |---|---|
 | `HAS_BACKEND: bool` | `HAS_PLATFORM_BACKEND`, which the app uses to choose between the backend, a mock and "unsupported" |
-| `source(&PlatformOptions) -> Result<Box<dyn AppAudioSource>>` | `platform_source()` and `platform_source_with()` |
+| `HAS_DUCK_GUARD: bool` | `duck_guard::run_if_requested()`: where there is no guard, a request for one is left to the app |
+| `EXE_PATHS_IGNORE_CASE: bool` | `same_exe_path()`, which the engine uses to find its target app again (`true` on Windows) |
+| `source(PlatformOptions) -> Result<Box<dyn AppAudioSource>>` | `platform_source()` and `platform_source_with()` |
 | `icon(exe, size) -> Option<IconImage>` | `app_icon()` |
-| `run_duck_guard(journal, parent) -> bool` | `duck_guard::run_if_requested()`, which `main` calls first thing; `true` once a guard has run, `false` where the OS has none |
+| `run_duck_guard(journal, parent) -> bool` | `duck_guard::run_if_requested()`, which `main` calls first thing; `true` once a guard has run |
 
 A new backend adds its module, a `use <module> as os;` line and its OS to the `not(any(..))` of `unsupported` in
-`lib.rs`, and nothing else in the platform-neutral code. When the OS refuses capture, a backend returns
-`CaptureError::PermissionDenied`, whose message says how to allow it; the engine retries it like any other error.
+`lib.rs`, and nothing else in the platform-neutral code. A `pub mod` gives tests and tools the backend's own types
+(`rt_capture::windows::WasapiSource`).
+
+When the OS refuses capture, a backend returns `CaptureError::PermissionDenied`, whose message says how to allow it
+(its `Display` puts "audio capture is not allowed:" in front, like the other variants name their kind). The engine
+shows it as an ordinary retried error for now; a dedicated state for it comes with the macOS permission UI. If the
+backend refuses already while the app sets it up, the app's source sets it up again on its next use (the engine's
+reconnect poll, an app list), so capture starts as soon as the permission is given. `Unsupported` is final.
 
 | Backend | API | Notes |
 |---|---|---|
