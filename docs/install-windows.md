@@ -11,10 +11,9 @@ That's expected; the steps below get you past it.
 
 Get the installer from the [Releases page](https://github.com/Roboroads/repeat-that/releases). Each release has:
 
-| File | What it is |
-| --- | --- |
-| `Repeat-That_<version>_x64-setup.exe` | The installer. Installs for your user only (under `%LOCALAPPDATA%`) and doesn't ask for administrator rights. |
-| `SHA256SUMS` | The checksum of the installer, to [verify your download](verify-downloads.md). |
+- `Repeat-That_<version>_x64-setup.exe` is the installer. It installs for your user only (under `%LOCALAPPDATA%`) and
+  doesn't ask for administrator rights.
+- `SHA256SUMS` holds the checksum of the installer, to [verify your download](verify-downloads.md).
 
 ## Install
 

@@ -164,7 +164,8 @@ duck thread:    the blocking set_app_volume fades, latest level wins
 
 ## Releases
 GitHub Actions builds:
-- Windows: NSIS `.exe` (per-user install, no admin rights), x64 only for v0.1 (ARM64 later: `ort` has no CPU build for it yet)
+- Windows: NSIS `.exe` (per-user install, no admin rights), x64 only for v0.1 (ARM64 later: `ort` has no CPU build for
+  it yet)
 - Linux: `.deb` (+ AppImage later)
 - macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
   ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization

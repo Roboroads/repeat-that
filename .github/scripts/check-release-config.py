@@ -123,7 +123,7 @@ def check(root, tag_exists=None):
     pinned = package.get("release-as", config.get("release-as"))
     if pinned is not None:
         if version_tuple(pinned) is None:
-            errors.append(f'"release-as" {pinned!r} is not a plain X.Y.Z version (build-windows.yml only accepts tags like v0.1.0)')
+            errors.append(f'"release-as" {pinned!r} is not a plain X.Y.Z version')
         elif tag_exists is not None and tag_exists(f"v{pinned}"):
             errors.append(
                 f'"release-as" {pinned} already has the tag v{pinned}: remove "release-as" from '

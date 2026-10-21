@@ -40,5 +40,5 @@ shasum -a 256 -c --ignore-missing SHA256SUMS   # macOS
 
 Your file must show `OK`. Listed files you didn't download are skipped.
 
-`SHA256SUMS` sits on the same release page as the installers, so this catches a corrupted or incomplete download. It
+`SHA256SUMS` sits on the same release page as the installer, so this catches a corrupted or incomplete download. It
 doesn't prove who built the file.

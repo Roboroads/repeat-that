@@ -33,7 +33,7 @@ on `main` is one Conventional Commits line. The `PR title` workflow rejects titl
 
 [release-please](https://github.com/googleapis/release-please) reads those commits on `main` and keeps a release PR
 open that bumps the version and updates `CHANGELOG.md`. Merging that PR creates a draft GitHub release, builds the
-Windows installers, attaches them and then publishes the release, which is also when its tag appears (see
+Windows installer, attaches it and then publishes the release, which is also when its tag appears (see
 [Windows installers](#windows-installers)). Before 1.0, `feat` bumps the patch version and breaking changes (`feat!:`,
 `fix!:`) bump the minor version.
 
@@ -115,7 +115,7 @@ Windows. Install instructions for users are in [`install-windows.md`](install-wi
 Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again and collides with the
 tag. The `release-please` workflow runs the config check with `--tags` before it acts (the script explains why): once
 `v0.1.0` exists and the pin is still there, that run fails and no further release PRs are opened until the pin is gone.
-Hold the 0.1.0 release PR until the app captures and replays audio, because merging it publishes the installers.
+Hold the 0.1.0 release PR until the app captures and replays audio, because merging it publishes the installer.
 
 ### Version numbers
 

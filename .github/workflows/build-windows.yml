@@ -97,6 +97,13 @@ jobs:
             echo "::error::$TAG is published and already has $existing. Replacing them changes files people may have downloaded and verified. Run again with 'replace' ticked if you really mean it."
             exit 1
           fi
+          # Anything else on the release would not be in the new SHA256SUMS (this workflow attaches the .exe and
+          # SHA256SUMS only), and uploading over the release doesn't remove it.
+          stale=$(jq -r '[.assets[].name | select((endswith(".exe") or . == "SHA256SUMS") | not)] | join(", ")' <<<"$info")
+          if [[ -n "$stale" ]]; then
+            echo "::error::$TAG has assets this workflow does not produce: $stale. SHA256SUMS would not list them. Remove them (gh release delete-asset $TAG <name>) and run again."
+            exit 1
+          fi
 
   build:
     name: Installers (Windows x64)
@@ -169,11 +176,11 @@ jobs:
             find "$bundle" -type f | sort
             exit 1
           fi
-          # The NSIS .exe is the only Windows installer. Anything bundled next to it means the targets in
-          # tauri.windows.conf.json were not applied.
-          extra=$(find "$bundle" -type f -not -path "$bundle/nsis/*")
+          # The NSIS .exe is the only Windows installer. Another installer next to it means the targets in
+          # tauri.windows.conf.json were not applied. Other files (logs, signatures, ...) are none of our business.
+          extra=$(find "$bundle" -type f \( -name '*.msi' -o -name '*.exe' \) -not -path "$bundle/nsis/*")
           if [[ -n "$extra" ]]; then
-            echo "::error::expected only the NSIS installer under $bundle, found more"
+            echo "::error::expected only the NSIS installer under $bundle, found another installer"
             echo "$extra"
             exit 1
           fi
@@ -239,6 +246,19 @@ jobs:
           cd installers
           ls -l
           sha256sum --check SHA256SUMS
+
+          # Every asset on the release must be one of the files uploaded below, so that SHA256SUMS covers all of them.
+          # An asset left over from an earlier run or an older version of this workflow would sit there unchecked, and
+          # --clobber only replaces assets that have the same name as a new one. Delete it by hand to continue.
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          stale=()
+          for asset in $assets; do
+            [[ -f "$asset" ]] || stale+=("$asset")
+          done
+          if [[ ${#stale[@]} -gt 0 ]]; then
+            echo "::error::$TAG has assets that SHA256SUMS would not list: ${stale[*]}. Remove them (gh release delete-asset $TAG <name>) and run again."
+            exit 1
+          fi
 
           # Without --clobber gh refuses to touch an asset that already exists. A draft has no public files to
           # protect, so a re-run may overwrite its own earlier upload; a published release only on request.
