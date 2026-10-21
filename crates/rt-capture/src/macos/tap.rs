@@ -648,7 +648,14 @@ fn watch(shared: &Shared) {
                 let mut description = lock(&shared.description);
                 if description.processes != processes {
                     let old = std::mem::replace(&mut description.processes, processes);
-                    if description.apply(shared.tap).is_err() {
+                    let applied = description.apply(shared.tap);
+                    if cfg!(debug_assertions) {
+                        eprintln!(
+                            "tap of PID {}: processes {old:?} -> {:?}: {applied:?}",
+                            shared.pid, description.processes
+                        );
+                    }
+                    if applied.is_err() {
                         description.processes = old;
                     }
                 }

@@ -22,7 +22,7 @@ use std::{env, thread};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rt_capture::macos::{CoreAudioSource, responsible_pid};
 use rt_capture::permission::{self, PermissionStatus};
-use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureFormat, CaptureHandle};
+use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureFormat, CaptureHandle, FrameSink};
 
 const TONE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tone_1khz.wav");
 /// The tone is a sine at half of full scale.
@@ -47,14 +47,9 @@ impl Drop for Killed {
     }
 }
 
-/// Plays the tone fixture, `rate` times as fast (1.5 plays it at 1.5 kHz).
-fn play_tone(rate: f32) -> Killed {
-    Killed(
-        Command::new("/usr/bin/afplay")
-            .args(["-r", &rate.to_string(), "-q", "1", TONE])
-            .spawn()
-            .expect("start afplay"),
-    )
+/// Plays the tone fixture.
+fn play_tone() -> Killed {
+    Killed(Command::new("/usr/bin/afplay").arg(TONE).spawn().expect("start afplay"))
 }
 
 /// Whether these tests may capture. With `RT_REQUIRE_TCC=1` they must, otherwise they are skipped without permission.
@@ -102,22 +97,6 @@ fn tail(samples: &[f32], channels: usize, rate: u32, duration: Duration) -> &[f3
     &samples[samples.len().saturating_sub(len)..]
 }
 
-/// How strong `freq` is in interleaved `samples` (first channel), as the amplitude of a sine at that frequency.
-fn tone_strength(samples: &[f32], channels: usize, rate: u32, freq: f64) -> f64 {
-    let (mut re, mut im, mut n) = (0.0, 0.0, 0usize);
-    for (i, frame) in samples.chunks_exact(channels).enumerate() {
-        let phase = 2.0 * std::f64::consts::PI * freq * i as f64 / f64::from(rate);
-        re += f64::from(frame[0]) * phase.cos();
-        im += f64::from(frame[0]) * phase.sin();
-        n += 1;
-    }
-    if n == 0 {
-        0.0
-    } else {
-        2.0 * (re * re + im * im).sqrt() / n as f64
-    }
-}
-
 /// A capture whose audio is kept in memory.
 struct Recording {
     handle: Box<dyn CaptureHandle>,
@@ -125,20 +104,25 @@ struct Recording {
 }
 
 impl Recording {
+    /// Starts capturing `app` once it plays: a player that was just started takes a moment to open Core Audio.
     fn start(source: &dyn AppAudioSource, app: &AudioApp) -> Self {
         let samples = Arc::new(Mutex::new((Vec::new(), None)));
-        let sink = Arc::clone(&samples);
-        let handle = source
-            .start(
-                app,
-                Box::new(move |frames, format| {
-                    let mut sink = lock(&sink);
-                    sink.0.extend_from_slice(frames);
-                    sink.1 = Some(format);
-                }),
-            )
-            .unwrap_or_else(|e| panic!("capture {app:?}: {e}"));
-        Self { handle, samples }
+        let started = Instant::now();
+        loop {
+            let sink = Arc::clone(&samples);
+            let sink: FrameSink = Box::new(move |frames, format| {
+                let mut sink = lock(&sink);
+                sink.0.extend_from_slice(frames);
+                sink.1 = Some(format);
+            });
+            match source.start(app, sink) {
+                Ok(handle) => return Self { handle, samples },
+                Err(CaptureError::AppNotFound(_)) if started.elapsed() < Duration::from_secs(10) => {
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(e) => panic!("capture {app:?}: {e}"),
+            }
+        }
     }
 
     /// What was captured since the last take.
@@ -230,7 +214,7 @@ fn captures_a_tone_at_its_level() {
         return;
     }
     let source = CoreAudioSource::new();
-    let player = play_tone(1.0);
+    let player = play_tone();
     let pid = player.0.id();
 
     // Listed under the process macOS holds responsible for it (the CI agent or a terminal), or as itself.
@@ -333,7 +317,7 @@ fn ducking_replays_the_app_at_the_level_while_capture_keeps_full_level() {
         return;
     }
     let source = CoreAudioSource::new();
-    let player = play_tone(1.0);
+    let player = play_tone();
     let app = player_app(&player);
     let recording = Recording::start(&source, &app);
     let loopback = Loopback::open();
@@ -400,7 +384,7 @@ fn ducking_to_zero_mutes_the_device_while_capture_keeps_full_level() {
         return;
     }
     let source = CoreAudioSource::new();
-    let player = play_tone(1.0);
+    let player = play_tone();
     let app = player_app(&player);
     let recording = Recording::start(&source, &app);
     let loopback = Loopback::open();
@@ -449,7 +433,7 @@ fn a_killed_process_that_ducked_leaves_the_app_audible() {
         "{} is missing; build it with `cargo build -p rt-capture --example probe`",
         probe.display()
     );
-    let player = play_tone(1.0);
+    let player = play_tone();
     let loopback = Loopback::open();
     thread::sleep(Duration::from_millis(500));
     let full = loopback.level(Duration::from_millis(500));
@@ -490,7 +474,7 @@ fn a_process_that_joins_the_app_is_captured_too() {
         return;
     }
     let source = CoreAudioSource::new();
-    let first = play_tone(1.0);
+    let first = play_tone();
     let Some(group) = responsible_pid(first.0.id()) else {
         println!("skipped: macOS doesn't say which process is responsible for the player");
         return;
@@ -501,20 +485,28 @@ fn a_process_that_joins_the_app_is_captured_too() {
     .expect("the player's app is listed");
     let recording = Recording::start(&source, &app);
     thread::sleep(Duration::from_millis(500));
-    let (before, format) = recording.record(Duration::from_millis(500));
-    let channels = usize::from(format.channels);
-    let strength = |samples: &[f32]| tone_strength(samples, channels, format.sample_rate, 1500.0);
-    assert!(strength(&before) < 0.05, "no 1.5 kHz yet ({:.3})", strength(&before));
+    let first_level = rms(&recording.record(Duration::from_millis(500)).0);
+    assert!(
+        (first_level / TONE_RMS - 1.0).abs() < LEVEL_TOLERANCE,
+        "the first player at {first_level:.3}"
+    );
 
-    // A second player in the same app: the same tone, played at 1.5 kHz.
-    let started = Instant::now();
-    let _second = play_tone(1.5);
-    let joined = wait_for(Duration::from_secs(5), || {
-        let (samples, _) = recording.record(Duration::from_millis(200));
-        (strength(&samples) > 0.2).then(|| started.elapsed())
-    });
-    println!("summary: a second player in {} was captured after {joined:?}", app.name);
-    joined.expect("the second player is captured");
+    // A second player joins the app, and the first one quits: what is captured then comes from the second one alone.
+    let second = play_tone();
+    // The watcher looks every 500 ms, or sooner when Core Audio says the process list changed.
+    thread::sleep(Duration::from_secs(2));
+    drop(first);
+    thread::sleep(Duration::from_millis(500));
+    let second_level = rms(&recording.record(Duration::from_millis(500)).0);
+    println!(
+        "summary: a second player in {} (PID {}) was captured at {second_level:.3} RMS after the first one quit",
+        app.name,
+        second.0.id()
+    );
+    assert!(
+        (second_level / TONE_RMS - 1.0).abs() < LEVEL_TOLERANCE,
+        "the second player at {second_level:.3}"
+    );
     assert!(recording.handle.is_running());
 }
 
@@ -529,7 +521,7 @@ fn without_permission_starting_says_so() {
         return;
     }
     let source = CoreAudioSource::new();
-    let player = play_tone(1.0);
+    let player = play_tone();
     thread::sleep(Duration::from_millis(500));
     match source.start(&player_app(&player), Box::new(|_, _| {})) {
         Err(CaptureError::PermissionDenied(how)) => println!("summary: without permission: denied, {how}"),
