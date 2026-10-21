@@ -1,7 +1,8 @@
 //! One app's process tap: a private tap of the app's processes, in a private aggregate device whose main subdevice is
 //! the app's own output device. Its IOProc hands the tapped audio to a capture, and plays the replay while the app is
-//! ducked (see `passthrough`). A watcher thread keeps the tap's process list up to date, and ends the tap when the app
-//! quits, its device goes away, or the user takes back the permission.
+//! ducked (see `passthrough`). While the app is ducked, a second tap in an aggregate of its own mutes it (see
+//! `Description`). A watcher thread keeps the taps' process lists up to date, and ends the tap when the app quits, its
+//! device goes away, or the user takes back the permission.
 
 use std::ffi::{CStr, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -105,9 +106,10 @@ struct Io {
 /// is ducked.
 ///
 /// The mute is a tap of its own, made when the app is muted and removed when it is unmuted. Muting through the
-/// capture's own tap would change that tap's description, and its audio drops out for some 35 ms whenever that happens
-/// (CI measured it), which is a gap in the replay right when the app is muted. A tap only mutes while it is read
-/// (CI measured that too), so the muting tap gets an aggregate device of its own, which runs while it exists.
+/// capture's own tap means changing that tap's description, and CI then heard a 35 ms gap in the replay right when the
+/// app was muted: the tap's audio drops out while it changes. A tap only mutes while it is read (CI found that too), so
+/// the muting tap gets an aggregate device of its own, which runs while it exists. The capture's tap still changes when
+/// the app's processes do (see `watch`), which may cost the capture such a dropout then.
 struct Description {
     uuid: String,
     processes: Vec<AudioObjectID>,
@@ -160,10 +162,11 @@ impl Description {
                 unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
             })
         };
+        let captured = change(tap, &self.uuid, false);
         if let Some((Parts { tap: Some(mute), .. }, uuid)) = &self.mute {
             change(*mute, uuid, true)?;
         }
-        change(tap, &self.uuid, false)
+        captured
     }
 
     /// Mutes (`true`) or unmutes the app by making or removing the muting tap, reading it through an aggregate device

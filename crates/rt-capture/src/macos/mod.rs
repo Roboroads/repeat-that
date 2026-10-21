@@ -2,9 +2,10 @@
 //!
 //! An app is the group of processes macOS holds responsible to it (see `processes`), named after its outermost `.app`
 //! bundle. A capture taps the group's audio through a private process tap in an aggregate device on the app's own output
-//! device (see `tap`). macOS has no per-app volume, so ducking mutes the app through the tap and plays what the tap
-//! records on that device ourselves, at the duck level (see `passthrough`). The tap records before the mute, so the
-//! capture keeps its full level, and a private tap goes away with this process: no duck journal or guard is needed.
+//! device (see `tap`). macOS has no per-app volume, so ducking mutes the app through a second, muting tap and plays
+//! what the first one records on that device ourselves, at the duck level (see `passthrough`). Taps record before the
+//! mute, so the capture keeps its full level, and private taps go away with this process: no duck journal or guard is
+//! needed.
 //!
 //! Capturing other apps needs the user's permission (see `permission`). The parts that are pure code, like grouping
 //! processes and the ducking state machine, also build in tests on other OSes, so their tests run everywhere.
@@ -80,8 +81,8 @@ mod os {
 
     /// Captures and ducks apps through Core Audio process taps (macOS 14.2+).
     ///
-    /// Each app has one tap at a time, shared by its capture and its duck. Ducking mutes the app through the tap and
-    /// plays the tapped audio on the app's own device at the duck level, so captures keep the full level. Taps are
+    /// Each app has one tap at a time, shared by its capture and its duck. Ducking mutes the app through a second tap
+    /// and plays the tapped audio on the app's own device at the duck level, so captures keep the full level. Taps are
     /// private: macOS removes them, and their mute, when this process ends, also when it crashes.
     #[derive(Default)]
     pub struct CoreAudioSource {

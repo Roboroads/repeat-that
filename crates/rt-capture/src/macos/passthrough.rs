@@ -1,6 +1,6 @@
-//! Ducking on macOS. macOS has no per-app volume, so a ducked app is muted through its tap and we play what the tap
-//! records on the app's own device ourselves, at the duck level. The tap records before the mute, so capture keeps the
-//! full level.
+//! Ducking on macOS. macOS has no per-app volume, so a ducked app is muted (through a tap that mutes, see `tap`) and
+//! we play what its capture tap records on the app's own device ourselves, at the duck level. Taps record before the
+//! mute, so capture keeps the full level.
 //!
 //! Handing the app's audio over to our replay can't be timed to the sample: the mute lands some milliseconds after we
 //! ask for it, and our replay reaches the speaker through a path of its own. The order makes sure the app is never
@@ -66,7 +66,7 @@ pub(crate) struct IoStatus {
 pub(crate) enum Step {
     /// Give the IOProc this command, then ask again once it has played more.
     Wait(Command),
-    /// Mute the app through the tap (`true`) or unmute it, tell [`Sequencer::set_muted`], and ask again right away.
+    /// Mute the app (`true`) or unmute it, tell [`Sequencer::set_muted`], and ask again right away.
     Mute(bool),
     /// The level is reached. The IOProc keeps this command.
     Done(Command),
