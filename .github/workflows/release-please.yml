@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 # The GITHUB_TOKEN of this workflow only checks out the repository. release-please acts with RELEASE_PLEASE_TOKEN
-# (below), and the installer job asks for its own write access.
+# (below), and the release job asks for its own write access.
 permissions:
   contents: read
 
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     # One run at a time. A run in progress is never cancelled (it could leave a release PR or draft half-made); a
     # waiting run is replaced by a newer one, which is fine as release-please always works from the latest main. It is
-    # on this job, not the workflow, so the slow installer build below doesn't hold up the next run.
+    # on this job, not the workflow, so the slow release build below doesn't hold up the next run.
     concurrency:
       group: release-please
       cancel-in-progress: false
@@ -54,17 +54,18 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  # Builds and attaches the installers when this run created a release; build-windows.yml says why it is called here
-  # and not from an `on: release` trigger. The release is a draft ("draft" in release-please-config.json) that the
-  # called workflow publishes once the files are attached, so a failed build leaves a draft instead of a public
-  # release without files. A draft has no tag yet, hence the commit.
-  windows-installers:
-    name: Windows installers
+  # Builds every platform and attaches the files when this run created a release; publish-release.yml says why it is
+  # called here and not from an `on: release` trigger. The release is a draft ("draft" in release-please-config.json)
+  # that the called workflow publishes once the files are attached, so a failed build leaves a draft instead of a
+  # public release without files. A draft has no tag yet, hence the commit.
+  publish-release:
+    name: Publish release
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     permissions:
       contents: write
-    uses: ./.github/workflows/build-windows.yml
+      actions: read # asked for by the late attach job of the called workflow, which a caller must grant even if unused
+    uses: ./.github/workflows/publish-release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
       sha: ${{ needs.release-please.outputs.sha }}

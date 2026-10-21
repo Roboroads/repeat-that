@@ -1,22 +1,22 @@
 name: Build Windows installers
 
-# Builds the Windows x64 installer (the NSIS .exe) and checksums it.
-#   * pull_request / workflow_dispatch without a tag: dry run. The installer and SHA256SUMS are workflow artifacts.
-#   * with a tag (workflow_call from release-please.yml, or workflow_dispatch to redo an existing release): the same
-#     files are also attached to that GitHub release. release-please.yml calls this one directly rather than relying on
-#     an `on: release` trigger: that would fire only once the release is public, and a release that a workflow
-#     publishes with GITHUB_TOKEN doesn't start workflows at all.
-# release-please creates releases as drafts (`"draft": true` in its config), so nobody sees a release without
-# installers: the `publish` job attaches the files and only then publishes the draft. A draft's tag doesn't exist
-# until it is published, so a run for a draft gets the commit to build in `sha`.
+# Builds the Windows x64 installer (the NSIS .exe) and uploads it as the artifact `release-windows-<file name>`. It
+# only builds: checking the release, writing SHA256SUMS and attaching files to a release are publish-release.yml's
+# job, which calls this workflow (for releases and for its dry runs) and collects every platform's
+# `release-<platform>-*` artifacts.
+#   * pull_request / workflow_dispatch: a dry run. The installer is a workflow artifact, so a change can be tried on a
+#     real Windows PC before it merges, and the job summary shows its checksum.
+#   * with a tag (workflow_call from publish-release.yml): builds exactly that release, and fails when the app version
+#     doesn't match the tag. A draft release has no tag yet, so a run for a draft gets the commit to build in `sha`.
 
 on:
   workflow_call:
     inputs:
       tag:
-        description: Release tag to build and attach the installers to, for example v0.1.0
+        description: Release tag to build, for example v0.1.0. Empty for a dry run.
         type: string
-        required: true
+        required: false
+        default: ""
       sha:
         description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
         type: string
@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build and attach the installers to. Empty for a dry run (artifacts only).
+        description: Release tag to build, for example v0.1.0. Empty for a dry run. Nothing is attached to a release.
         type: string
         required: false
         default: ""
@@ -34,10 +34,6 @@ on:
         type: string
         required: false
         default: ""
-      replace:
-        description: Replace installers already attached to a published release. Their hashes change, so only when you must.
-        type: boolean
-        default: false
   pull_request:
     paths:
       - app/**
@@ -46,15 +42,17 @@ on:
       - Cargo.lock
       - release-please-config.json
       - .release-please-manifest.json
-      - .github/scripts/**
+      - .github/scripts/check-release-config.py
       - .github/workflows/build-windows.yml
       - .github/workflows/release-please.yml
 
 permissions:
   contents: read
 
+# `github.workflow` is the calling workflow's name in a called workflow, so this run and the one publish-release.yml
+# starts for the same pull request don't cancel each other.
 concurrency:
-  group: build-windows-${{ inputs.tag || github.ref }}
+  group: build-windows-${{ github.workflow }}-${{ inputs.tag || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -71,45 +69,8 @@ jobs:
       - uses: actions/checkout@v7
       - run: python3 .github/scripts/check-release-config.py
 
-  # Fails in seconds, before the 15-minute build, when there is no release to attach to or when it is public and
-  # already has installers (replacing those would change files people may have downloaded and verified).
-  check-release:
-    name: Check release
-    if: ${{ inputs.tag }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # drafts are only visible with write access; this job only reads
-    steps:
-      - name: Look at the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-          REPLACE: ${{ inputs.replace }}
-        run: |
-          if ! info=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets); then
-            echo "::error::There is no release (published or draft) for $TAG. release-please creates it; create it first when running by hand."
-            exit 1
-          fi
-          draft=$(jq -r .isDraft <<<"$info")
-          existing=$(jq -r '[.assets[].name | select(endswith(".exe") or . == "SHA256SUMS")] | join(", ")' <<<"$info")
-          echo "draft: $draft; installer assets already attached: ${existing:-none}"
-          if [[ "$draft" != true && -n "$existing" && "$REPLACE" != true ]]; then
-            echo "::error::$TAG is published and already has $existing. Replacing them changes files people may have downloaded and verified. Run again with 'replace' ticked if you really mean it."
-            exit 1
-          fi
-          # Anything else on the release would not be in the new SHA256SUMS (this workflow attaches the .exe and
-          # SHA256SUMS only), and uploading over the release doesn't remove it.
-          stale=$(jq -r '[.assets[].name | select((endswith(".exe") or . == "SHA256SUMS") | not)] | join(", ")' <<<"$info")
-          if [[ -n "$stale" ]]; then
-            echo "::error::$TAG has assets this workflow does not produce: $stale. SHA256SUMS would not list them. Remove them (gh release delete-asset $TAG <name>) and run again."
-            exit 1
-          fi
-
   build:
     name: Installers (Windows x64)
-    needs: check-release
-    # check-release is skipped on pull requests and dry runs, so don't wait for it to succeed, only not to fail.
-    if: ${{ !cancelled() && needs.check-release.result != 'failure' }}
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -153,7 +114,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # Builds the frontend (beforeBuildCommand) and the app, then bundles it. No tagName/releaseId: the action only
-      # builds, and the file is staged, checksummed and uploaded below so the release assets have predictable names.
+      # builds, and the file is staged and uploaded below so the release assets have predictable names.
       # The bundle targets come from app/src-tauri/tauri.windows.conf.json (NSIS only); the next step checks that.
       - name: Build installer
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
@@ -162,7 +123,8 @@ jobs:
 
       # Tauri names its bundles after productName ("Repeat That_0.1.0_x64-setup.exe"). GitHub turns the spaces in
       # release asset names into dots, so rename first and let SHA256SUMS list the name people will download.
-      - name: Stage installer and write SHA256SUMS
+      - name: Stage installer
+        id: stage
         shell: bash
         env:
           TAG: ${{ inputs.tag }}
@@ -187,7 +149,8 @@ jobs:
 
           mkdir installers
           name=$(basename "${nsis[0]}")
-          cp "${nsis[0]}" "installers/${name// /-}"
+          installer="${name// /-}"
+          cp "${nsis[0]}" "installers/$installer"
 
           # Name looks like Repeat-That_<version>_x64-setup.exe
           version=$(basename "${nsis[0]}" | cut -d_ -f2)
@@ -195,81 +158,27 @@ jobs:
             echo "::error::tag $TAG does not match the app version $version; is release-please-config.json bumping every version file?"
             exit 1
           fi
+          echo "artifact=release-windows-$installer" >> "$GITHUB_OUTPUT"
 
+          # publish-release.yml writes SHA256SUMS over every platform; this is only for whoever tries the build.
           cd installers
-          sha256sum --text -- *.exe | tee SHA256SUMS
           {
             echo "### Windows installer $version"
             echo
             echo '```'
             ls -l
             echo
-            cat SHA256SUMS
+            sha256sum --text -- *.exe
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Single files, uploaded as they are (no zip), so the installer is one click away on the run page.
+      # The artifact name starts with release-windows- so publish-release.yml picks it up (release-*) and knows the
+      # platform. It is a zip holding the one installer; the installer is compressed already, so no compression.
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v7
         with:
+          name: ${{ steps.stage.outputs.artifact }}
           path: installers/*-setup.exe
-          archive: false
+          compression-level: 0
           if-no-files-found: error
           retention-days: 30
-      - name: Upload SHA256SUMS
-        uses: actions/upload-artifact@v7
-        with:
-          path: installers/SHA256SUMS
-          archive: false
-          if-no-files-found: error
-          retention-days: 30
-
-  publish:
-    name: Attach to release
-    if: ${{ inputs.tag }}
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: installers
-          merge-multiple: true
-
-      - name: Verify and upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
-          REPLACE: ${{ inputs.replace }}
-        run: |
-          cd installers
-          ls -l
-          sha256sum --check SHA256SUMS
-
-          # Every asset on the release must be one of the files uploaded below, so that SHA256SUMS covers all of them.
-          # An asset left over from an earlier run or an older version of this workflow would sit there unchecked, and
-          # --clobber only replaces assets that have the same name as a new one. Delete it by hand to continue.
-          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-          stale=()
-          for asset in $assets; do
-            [[ -f "$asset" ]] || stale+=("$asset")
-          done
-          if [[ ${#stale[@]} -gt 0 ]]; then
-            echo "::error::$TAG has assets that SHA256SUMS would not list: ${stale[*]}. Remove them (gh release delete-asset $TAG <name>) and run again."
-            exit 1
-          fi
-
-          # Without --clobber gh refuses to touch an asset that already exists. A draft has no public files to
-          # protect, so a re-run may overwrite its own earlier upload; a published release only on request.
-          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
-          flags=()
-          if [[ "$draft" == true || "$REPLACE" == true ]]; then
-            flags=(--clobber)
-          fi
-          gh release upload "$TAG" *.exe SHA256SUMS "${flags[@]}" --repo "$GITHUB_REPOSITORY"
-
-          # Only now does the release become public (nothing to do when it already was).
-          if [[ "$draft" == true ]]; then
-            gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
-          fi
