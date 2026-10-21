@@ -1,6 +1,8 @@
 // What the specs know about the settings page. Selectors follow the roles and labels a user (or a screen reader) sees,
 // not the CSS, so a restyle does not break them.
 import { $, browser } from '@wdio/globals';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
 
 /** The fake app the debug build on Linux plays: the speech fixture, named after its file. */
 export const FAKE_APP = 'speech_8s';
@@ -65,6 +67,8 @@ export async function invoke<T = void>(command: string): Promise<T> {
 export interface BackendStatus {
   capture: { state: string };
   playback: string;
+  /** How far the replay is from live; `null` while idle. */
+  behindMs: number | null;
   bufferedMs: number;
 }
 
@@ -72,3 +76,55 @@ export const backendStatus = () => invoke<BackendStatus>('get_status');
 
 /** The settings as the backend has them, which is what a reload shows. */
 export const backendSettings = () => invoke<{ bufferSeconds: number }>('get_settings');
+
+/** The built app, where `wdio.conf.ts` starts it from. */
+function applicationPath(): string {
+  const repoDir = path.resolve(import.meta.dirname, '..', '..', '..');
+  const targetDir = process.env.CARGO_TARGET_DIR ? path.resolve(process.env.CARGO_TARGET_DIR) : path.join(repoDir, 'target');
+  return path.join(targetDir, 'debug', 'repeat-that');
+}
+
+export interface LaunchResult {
+  /** Everything the second app printed. */
+  output: string;
+}
+
+/**
+ * Starts the app again with `args`, in the session of the app that is running: the same folders and the same D-Bus, which
+ * is how the single-instance check finds the running one. That is what a key bound to `repeat-that --replay` does. The
+ * second app is meant to hand its arguments over and exit with 0 by itself, so this waits for that, and fails (with
+ * what the app printed) if it exits with anything else or takes longer than `timeoutMs`.
+ */
+export async function launchAgain(args: string[], timeoutMs = 20_000): Promise<LaunchResult> {
+  const root = process.env.E2E_APP_HOME as string;
+  const folder = (name: string) => path.join(root, name);
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: folder('home'),
+    TMPDIR: folder('tmp'),
+    XDG_RUNTIME_DIR: folder('run'),
+    XDG_CONFIG_HOME: folder('config'),
+    XDG_DATA_HOME: folder('data'),
+    XDG_CACHE_HOME: folder('cache'),
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${folder('bus')}`,
+    LIBGL_ALWAYS_SOFTWARE: '1',
+    REPEAT_THAT_NULL_OUTPUT: '1',
+  };
+  const child = spawn(applicationPath(), args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
+  child.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) resolve({ output });
+      else reject(new Error(`the second app ended with ${code ?? signal} after \`${args.join(' ')}\`:\n${output}`));
+    });
+  });
+}
+
+/** How many windows the webdriver session sees. The app has the one. */
+export async function windowCount(): Promise<number> {
+  return (await browser.getWindowHandles()).length;
+}
