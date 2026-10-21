@@ -131,6 +131,9 @@ jobs:
       - name: Capture test (Windows)
         if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         run: cargo test -p rt-capture --test windows_audio -- --ignored --nocapture
+      - name: Engine test (Windows)
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
+        run: cargo test -p rt-engine --test windows_engine -- --ignored --nocapture
 
   frontend:
     name: Frontend

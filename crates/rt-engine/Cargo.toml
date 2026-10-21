@@ -1,0 +1,21 @@
+[package]
+name = "rt-engine"
+description = "Audio engine of Repeat That: capture, speech buffer, playback and ducking on their own threads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cpal = "0.18"
+rt-capture = { path = "../rt-capture" }
+rt-core = { path = "../rt-core" }
+rtrb = "0.4"
+
+[dev-dependencies]
+hound = "3.5"
+
+[target.'cfg(windows)'.dev-dependencies]
+# The end-to-end test reads session volumes on its own.
+windows = { version = "0.62", features = ["Win32_Media_Audio", "Win32_System_Com"] }
