@@ -33,8 +33,8 @@ on `main` is one Conventional Commits line. The `PR title` workflow rejects titl
 
 [release-please](https://github.com/googleapis/release-please) reads those commits on `main` and keeps a release PR
 open that bumps the version and updates `CHANGELOG.md`. Merging that PR creates a draft GitHub release, builds the
-Windows installer, attaches it and then publishes the release, which is also when its tag appears (see
-[Windows installers](#windows-installers)). Before 1.0, `feat` bumps the patch version and breaking changes (`feat!:`,
+installers, attaches them and then publishes the release, which is also when its tag appears (see
+[Release assets](#release-assets)). Before 1.0, `feat` bumps the patch version and breaking changes (`feat!:`,
 `fix!:`) bump the minor version.
 
 The version lives in `Cargo.toml` (`workspace.package.version`, which the app crate and `tauri.conf.json` inherit) and
@@ -78,36 +78,130 @@ error, and no release PR is opened or updated until it is renewed. To renew it:
 2. Replace the secret: `gh secret set RELEASE_PLEASE_TOKEN --repo Roboroads/repeat-that`, then paste the token.
 3. Re-run the failed `release-please` run (Actions → release-please) to check that it works, then delete the old token.
 
-## Windows installers
+## Release assets
 
-[`build-windows.yml`](../.github/workflows/build-windows.yml) builds the Windows x64 installer (an NSIS `.exe` that
-installs per user, without administrator rights) plus a `SHA256SUMS` file. It is the only Windows installer: the
-bundle targets for Windows are set to `nsis` in
-[`tauri.windows.conf.json`](../app/src-tauri/tauri.windows.conf.json), which Tauri merges over `tauri.conf.json` on
-Windows. Install instructions for users are in [`install-windows.md`](install-windows.md).
+[`publish-release.yml`](../.github/workflows/publish-release.yml) owns every release: it builds each platform, checks
+the builds, writes one `SHA256SUMS` over all assets, attaches them to the GitHub release and publishes it. The build
+workflows, such as [`build-windows.yml`](../.github/workflows/build-windows.yml), only build and upload their files as
+`release-<platform>-<file>` artifacts.
+[`.github/scripts/release_assets.py`](../.github/scripts/release_assets.py) is the one place that knows the platforms
+and makes the decisions. Its unit tests (`test_release_assets.py`) run in every full run of the workflow, and by hand
+with `python3 -m unittest discover -s .github/scripts`.
 
-- **Pull requests** that touch `app/`, `crates/`, the Cargo files or the release config run the workflow. The
-  installer and `SHA256SUMS` are uploaded as workflow artifacts (kept for 30 days), so a change can be tried on a real
-  Windows PC before it merges.
-- **Releases.** release-please creates its GitHub release as a draft. `release-please.yml` calls `build-windows.yml`
-  itself when its run created a release, rather than relying on an `on: release` trigger: that would fire only once
-  the release is public, and a release that a workflow publishes with `GITHUB_TOKEN` doesn't start workflows at all.
-  The `publish` job attaches the installer and `SHA256SUMS` to the draft.
-- **Draft first.** release-please creates the release as a draft (`"draft": true` in its config), and `publish` makes it
-  public only after the files are attached, so there is never a public release without the installer. A draft has no
-  tag yet (publishing creates it at the release commit), which is why the call passes the commit as `sha`. If the build
-  fails, the draft stays: re-run the failed jobs of that `release-please` run. The release PR is already labelled as
-  released, so merging another PR doesn't retry it.
-- **Running it by hand** (Actions → Build Windows installers → Run workflow, once the workflow is on `main`): leave
-  `tag` empty for a dry run that only produces artifacts (the job summary shows the checksums). Give a `tag` to build
-  and attach the installer to that release. For a draft, also give the release commit as `sha`, because the tag doesn't
-  exist yet; the draft is published when the files are attached.
+| Platform | Required | Files | Build job in `publish-release.yml` |
+|---|---|---|---|
+| `windows` | yes | `*-setup.exe` | `windows`, calls `build-windows.yml` |
+| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | added with the Linux packages |
+| `flatpak` | yes | `*.flatpak` | added with the Flatpak |
+| `macos` | **no** | `*.dmg` | added with the macOS build |
+
+A required platform must build before a release is published: if one fails, nothing is published and the draft stays.
+An optional platform (macOS) that fails or is skipped only warns, in the job summary and as a `::warning::`; the
+release goes out without it and the [late attach](#late-macos-attach) adds it later. Jobs that call a reusable
+workflow can't use `continue-on-error`, which is why the first step of the `Publish` job reads the result of every
+build job and decides itself. To add a platform: add a job named like the platform that `uses:` its build workflow, add
+it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it fails the run when the three disagree).
+
+- **Pull requests.** Each build workflow runs its own dry run when a PR touches the app, the crates or the Cargo files.
+  A PR that touches the publishing itself (`publish-release.yml`, a build workflow, `release_assets.py` or its tests)
+  also runs `publish-release.yml` as a dry run: it builds every platform, runs the script's unit tests and the same
+  checks as a release, and uploads the combined `SHA256SUMS` as a workflow artifact. No release is touched.
+- **Releases.** release-please creates its GitHub release as a draft. `release-please.yml` calls
+  `publish-release.yml` itself when its run created a release, rather than relying on an `on: release` trigger: that
+  would fire only once the release is public, and a release that a workflow publishes with `GITHUB_TOKEN` doesn't
+  start workflows at all.
+- **Draft first.** release-please creates the release as a draft (`"draft": true` in its config), and the `Publish`
+  job makes it public only after the files are attached, so there is never a public release without its installers.
+  A draft has no tag yet (publishing creates it at the release commit), which is why the call passes the commit as
+  `sha`. If a build fails, the draft stays: re-run the failed jobs of that `release-please` run. The release PR is
+  already labelled as released, so merging another PR doesn't retry it. A re-run rebuilds every platform.
+- **Running it by hand** (Actions → Publish release → Run workflow): leave `tag` empty for a dry run that builds every
+  platform and uploads the combined `SHA256SUMS` (the job summary shows it). Give a `tag` to build and attach to that
+  release. For a draft, also give the release commit as `sha`, because the tag doesn't exist yet; the draft is
+  published when the files are attached.
 - **No silent replacement.** The `Check release` job runs first and fails within seconds if the release doesn't exist,
-  or if it is public and already has an installer: replacing it changes a file people may have downloaded and
-  verified against `SHA256SUMS`. A draft has no public files, so its assets are overwritten freely. To replace the
-  installer of a published release on purpose, run the workflow by hand with `replace` ticked.
+  or if it is public and already has installers: replacing them changes files people may have downloaded and verified
+  against `SHA256SUMS`. A draft has no public files, so its assets are overwritten freely. To replace the files of a
+  published release on purpose, run the workflow by hand with `replace` ticked.
+- **No stale assets.** Every file already on the release must be one this run produces, so that `SHA256SUMS` lists it.
+  Anything else fails the run (delete it with `gh release delete-asset <tag> <name>`). The one exception is an
+  optional platform's file that this run did not rebuild, such as a `.dmg` attached late earlier: it is kept. Its line
+  is carried over from the release's current `SHA256SUMS`, and the downloaded file is checked against that line
+  before anything is uploaded.
+- **Only successful platforms count.** The files of a platform whose job did not succeed are left out, even if its
+  build uploaded them before a later step failed. For an optional platform that means a warning and a release without
+  it.
+- **Checked before upload.** `SHA256SUMS` is written over the produced and kept files and verified with
+  `sha256sum --check`. The files are uploaded first and `SHA256SUMS` last, in calls of their own, so an upload that
+  stops half way never leaves a `SHA256SUMS` that lists files that aren't there. After the upload the release must
+  hold exactly those files plus `SHA256SUMS`, and only then is the draft published. If the upload stops, run the
+  failed job again (`gh run rerun <run id> --failed`, the log prints the command): it uploads everything again. On a
+  published release, run the workflow again with `replace` ticked instead.
 - Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
+
+### Windows installer
+
+`build-windows.yml` builds the Windows x64 installer: an NSIS `.exe` that installs per user, without administrator
+rights. It is the only Windows installer: the bundle targets for Windows are set to `nsis` in
+[`tauri.windows.conf.json`](../app/src-tauri/tauri.windows.conf.json), which Tauri merges over `tauri.conf.json` on
+Windows, and the build fails if another installer shows up. Install instructions for users are in
+[`install-windows.md`](install-windows.md).
+
+On a pull request, the installer is a workflow artifact (kept for 30 days) named `release-windows-<file>`, so a change
+can be tried on a real Windows PC before it merges. Artifacts are downloaded as a zip holding the installer. The job
+summary shows its checksum. The workflow checks that the app version matches the tag when it is given one.
+
+### Late macOS attach
+
+macOS is optional, so a macOS build or notarization that fails doesn't hold back Windows and Linux. The late attach adds
+the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. It is the
+`late-attach` mode of `publish-release.yml`, with two ways in:
+
+- **From the macOS build** (the normal route): run the macOS build workflow by hand with the release tag. It builds and
+  notarizes the `.dmg`, uploads `release-macos-*`, then calls `publish-release.yml` with `mode: late-attach` in the
+  same run. A workflow that calls it needs `contents: write` and `actions: read`.
+- **From an earlier build** without rebuilding: Actions → Publish release → Run workflow, with `mode` `late-attach`,
+  the `tag`, `platform` `macos` and `artifacts_run_id` set to the number in the URL of the successful macOS build
+  run (`.../actions/runs/<number>`). Artifacts are kept for 30 days, so after that the build has to run again. That run
+  is trusted with the release's files, so it is checked first: it must be a run of `build-macos.yml` that was started
+  by hand (a pull request build is not notarized), that succeeded, on the default branch of this repository (not a
+  fork), and its commit must be the tag's commit or one of its ancestors (for a draft, the commit the draft targets).
+
+What it does, in order, stopping at the first problem:
+
+1. The release must exist (published or draft) and `platform` must be an optional platform. With `artifacts_run_id`,
+   the earlier run is checked as described above.
+2. The downloaded files must all belong to that platform, and their names must carry the tag's version
+   (`Repeat-That_0.2.0_universal.dmg` for `v0.2.0`). A file of another platform or another version fails.
+3. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
+   missing from the release. Without `replace`, the release must not have a file for that platform yet.
+4. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new line, and every line
+   must hold for the file next to it, so it extends a consistent base. Lines already in it never change; the job fails
+   otherwise.
+5. With `replace`, every file of the platform on the release is replaced or, when its name differs from the new
+   file's, deleted, so the release never carries two `.dmg` files. Only their lines change or go.
+6. The `.dmg` is uploaded first, then `SHA256SUMS` (replacing the old one), then the files that leave the release are
+   deleted, so `SHA256SUMS` never lists a file that isn't there yet. `SHA256SUMS` is the only file the late attach may
+   replace on a published release. Right before replacing it, the job checks that nobody changed it since it was
+   read; if so, it stops instead of dropping that change.
+
+**If the job stops half way.** The most likely case is a `.dmg` that is uploaded while `SHA256SUMS` is not. Run the
+failed job again (`gh run rerun <run id> --failed`; the log prints the command and the new `SHA256SUMS`). A `.dmg`
+that is on the release but not in `SHA256SUMS`, and identical to the one just built, is taken as the leftover of that
+stop: it isn't uploaded again, and the job finishes by replacing `SHA256SUMS`. A `.dmg` that differs has to be deleted
+first (`gh release delete-asset <tag> <name>`) or replaced by running again with `replace` ticked. The same rerun
+finishes a `replace` that stopped before the old file was deleted.
+
+A late attach runs in a concurrency group of its own, so it is never queued behind another run or dropped when
+another one is waiting (GitHub keeps only one waiting run per group). That also means it doesn't wait for a full run
+of the same tag: don't start one while the other is still going. If the release changes in between, the checks
+before and after the upload fail the job instead of leaving wrong files.
+
+The late attach never changes whether the release is a draft or published: on a draft, a full run does the publishing.
+Running it twice fails because the `.dmg` already exists, unless `replace` is ticked. A full run after a late attach
+(for example a re-run of the release) keeps the `.dmg` and its line when macOS isn't rebuilt.
+[`verify-downloads.md`](verify-downloads.md) tells users to download `SHA256SUMS` again when theirs has no `.dmg` line.
 
 ### First release
 
@@ -120,7 +214,7 @@ Hold the 0.1.0 release PR until the app captures and replays audio, because merg
 ### Version numbers
 
 Keep versions and tags plain `X.Y.Z` / `vX.Y.Z`, without a pre-release suffix like `0.2.0-rc.1`: the config check
-rejects any other `release-as`, and the build workflow rejects other tags.
+rejects any other `release-as`, and the release workflows reject other tags.
 
 ### Signing
 

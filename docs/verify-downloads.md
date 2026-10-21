@@ -5,6 +5,11 @@ Starting with v0.1, each release on the [Releases page](https://github.com/Robor
 with the line for the same file name in `SHA256SUMS`. The two must be identical. Letter case doesn't matter:
 `Get-FileHash` prints uppercase hex and `SHA256SUMS` is lowercase.
 
+The macOS `.dmg` can arrive on the release some time after the other files, because the macOS build is not allowed
+to hold up the release. When it does, `SHA256SUMS` is replaced by a copy with one extra line for the `.dmg`. The
+existing lines never change, so a check you made earlier against the old `SHA256SUMS` stays valid. If the `SHA256SUMS`
+you downloaded has no line for the `.dmg`, download it again.
+
 Windows (PowerShell):
 
 ```powershell

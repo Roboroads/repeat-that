@@ -118,7 +118,7 @@ def check(root, tag_exists=None):
         errors.append(f"manifest version {current!r} is not X.Y.Z")
 
     if package.get("include-component-in-tag", config.get("include-component-in-tag")) is not False:
-        errors.append('"include-component-in-tag" must be false: build-windows.yml expects tags like v0.1.0')
+        errors.append('"include-component-in-tag" must be false: publish-release.yml expects tags like v0.1.0')
 
     pinned = package.get("release-as", config.get("release-as"))
     if pinned is not None:
