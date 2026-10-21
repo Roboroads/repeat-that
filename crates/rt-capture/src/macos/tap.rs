@@ -42,8 +42,10 @@ const WATCH_EVERY: Duration = Duration::from_millis(500);
 const PERMISSION_EVERY: Duration = Duration::from_secs(2);
 /// A tap whose IOProc hasn't run for this long has stopped: its device is gone or asleep.
 const IO_STALLED: Duration = Duration::from_secs(3);
+/// How long a new tap's device may take to start.
+const START_TIMEOUT: Duration = Duration::from_secs(2);
 /// A duck whose IOProc hasn't moved for this long can't be heard: the app is muted or unmuted without a replay.
-const DUCK_STALLED: Duration = Duration::from_millis(300);
+const DUCK_STALLED: Duration = Duration::from_millis(500);
 /// The longest a duck may take before it gives up on the replay the same way. A full fade takes about 200 ms.
 const DUCK_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often a duck looks at the IOProc's progress.
@@ -55,7 +57,7 @@ const MAX_BUFFERS: usize = 32;
 
 /// A running tap. Dropping it stops the IOProc and removes the aggregate device and the tap, and with it any mute.
 pub(crate) struct Tap {
-    /// Only dropped: it removes the IOProc, the aggregate and the tap, before `shared` goes.
+    /// Only dropped: it removes the IOProc, the aggregate and the tap.
     _parts: Parts,
     shared: Arc<Shared>,
     watcher: Option<JoinHandle<()>>,
@@ -169,25 +171,31 @@ struct Parts {
     aggregate: Option<AudioObjectID>,
     io_proc: AudioDeviceIOProcID,
     started: bool,
-    /// The client data of the process list listener, while one is registered.
-    listener: Option<*const Shared>,
+    /// Whether the process list listener is registered.
+    listening: bool,
+    /// The client data of the IOProc and the listener, kept until both are gone: fields drop after `drop` ran.
+    shared: Option<Arc<Shared>>,
 }
 
-// SAFETY: object IDs are numbers, and the listener's pointer is only handed back to Core Audio to remove it.
-unsafe impl Send for Parts {}
-unsafe impl Sync for Parts {}
+impl Parts {
+    fn client(&self) -> *mut c_void {
+        self.shared
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |shared| Arc::as_ptr(shared).cast_mut().cast())
+    }
+}
 
 impl Drop for Parts {
     fn drop(&mut self) {
         // SAFETY: each part was made by the call that is undone here, and is undone once.
         unsafe {
-            if let Some(shared) = self.listener.take() {
+            if self.listening {
                 let address = process_list();
                 AudioObjectRemovePropertyListener(
                     sys::SYSTEM,
                     NonNull::from(&address),
                     Some(processes_changed),
-                    shared.cast_mut().cast(),
+                    self.client(),
                 );
             }
             if let Some(aggregate) = self.aggregate {
@@ -214,10 +222,13 @@ fn process_list() -> AudioObjectPropertyAddress {
 fn members(pid: u32) -> Result<Vec<AudioObjectID>> {
     let (ids, processes) = sys::process_objects()?;
     let groups = processes::group(&processes, std::process::id(), &sys::process_path, &sys::display_name);
-    Ok(processes::members_of(&groups, &processes, pid)
+    let mut members: Vec<AudioObjectID> = processes::members_of(&groups, &processes, pid)
         .into_iter()
         .map(|i| ids[i])
-        .collect())
+        .collect();
+    // In a fixed order, so the watcher only changes the tap when the processes change.
+    members.sort_unstable();
+    Ok(members)
 }
 
 impl Tap {
@@ -289,13 +300,14 @@ impl Tap {
             description: Mutex::new(description),
         });
 
-        let client: *const Shared = Arc::as_ptr(&shared);
-        // SAFETY: `shared` outlives the IOProc: `Tap` holds it, and drops `parts` (which destroys the IOProc) first.
+        // The IOProc and the listener get `shared` as their client data; `parts` keeps it until they are gone.
+        parts.shared = Some(Arc::clone(&shared));
+        // SAFETY: the client data outlives the IOProc, see above.
         let status = unsafe {
             AudioDeviceCreateIOProcID(
                 aggregate,
                 Some(io_proc),
-                client.cast_mut().cast(),
+                parts.client(),
                 NonNull::from(&mut parts.io_proc),
             )
         };
@@ -306,22 +318,28 @@ impl Tap {
             AudioDeviceStart(aggregate, parts.io_proc)
         })?;
         parts.started = true;
+        // Like the other backends, return once audio flows.
+        let started = Instant::now();
+        while shared.frames.load(Ordering::Acquire) == 0 {
+            if started.elapsed() > START_TIMEOUT {
+                return Err(CaptureError::Backend("the app's output device doesn't run".into()));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
 
         // New helper processes join the tap. A listener wakes the watcher when the list changes; it also looks every
         // `WATCH_EVERY` in case the listener can't be registered.
         let address = process_list();
-        // SAFETY: as for the IOProc, `shared` outlives the listener, which `parts` removes.
+        // SAFETY: as for the IOProc.
         let status = unsafe {
             AudioObjectAddPropertyListener(
                 sys::SYSTEM,
                 NonNull::from(&address),
                 Some(processes_changed),
-                client.cast_mut().cast(),
+                parts.client(),
             )
         };
-        if status == 0 {
-            parts.listener = Some(client);
-        }
+        parts.listening = status == 0;
         let watched = Arc::clone(&shared);
         let watcher = thread::Builder::new()
             .name(format!("tap watcher {pid}"))
@@ -405,7 +423,7 @@ impl Drop for Tap {
         if let Some(watcher) = self.watcher.take() {
             let _ = watcher.join();
         }
-        // `_parts` goes next, before `shared`.
+        // `_parts` goes next.
     }
 }
 
