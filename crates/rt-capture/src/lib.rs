@@ -5,12 +5,19 @@
 //! - Linux: PipeWire (planned)
 //! - macOS: Core Audio process taps (macOS 14.2+, planned)
 //!
+//! Every OS has a module that this file includes under the name `os` (see the `mod` lines below), and the module has
+//! the same items: `HAS_BACKEND`, `HAS_DUCK_GUARD`, `EXE_PATHS_IGNORE_CASE`, `source`, `icon` and `run_duck_guard`. An
+//! OS without a backend gets the `unsupported` module, which says so everywhere. [`platform_source_with`],
+//! [`HAS_PLATFORM_BACKEND`], [`app_icon`], [`same_exe_path`] and [`duck_guard::run_if_requested`] go through it, so a
+//! new backend only adds its `mod` and `use` lines. An OS module that is `pub` also exposes its own types, like
+//! `windows::WasapiSource`.
+//!
 //! [`MockSource`] plays audio from memory or a WAV file as if it were an app, so the rest of the app can be developed
 //! and tested on any OS. [`app_icon`] reads the icon of an app's executable for the app list.
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -22,13 +29,19 @@ mod icon;
 pub mod mock;
 mod process_tree;
 mod ramp;
+// One OS module per OS, used as `os`. A new backend adds its `mod`/`use` pair here and its OS to the `not(any(..))` of
+// `unsupported`, so exactly one of them is built. The module is `pub` if tests or tools need the backend's own types.
 #[cfg(windows)]
-mod windows;
+pub mod windows;
+#[cfg(windows)]
+use windows as os;
+#[cfg(not(any(windows)))]
+mod unsupported;
+#[cfg(not(any(windows)))]
+use unsupported as os;
 
 pub use icon::{IconImage, app_icon};
 pub use mock::MockSource;
-#[cfg(windows)]
-pub use windows::WasapiSource;
 
 /// An application that is currently (or was recently) producing audio.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +72,10 @@ pub enum CaptureError {
     AppNotFound(u32),
     /// The OS audio API returned an error.
     Backend(String),
+    /// The OS refuses to let this app capture audio. The message says how to allow it, as a sentence for the user.
+    /// Display names the kind in front of it, like the other variants do; a caller that shows only the sentence matches
+    /// on the variant.
+    PermissionDenied(String),
 }
 
 impl fmt::Display for CaptureError {
@@ -67,6 +84,7 @@ impl fmt::Display for CaptureError {
             Self::Unsupported(why) => write!(f, "audio capture is not supported here: {why}"),
             Self::AppNotFound(pid) => write!(f, "no audio-producing application with PID {pid}"),
             Self::Backend(msg) => write!(f, "audio backend error: {msg}"),
+            Self::PermissionDenied(how) => write!(f, "audio capture is not allowed: {how}"),
         }
     }
 }
@@ -108,19 +126,42 @@ pub trait AppAudioSource: Send + Sync {
 /// The lowest duck level. Ducking never mutes an app completely, because muted audio can't be captured.
 pub const MIN_DUCK_LEVEL: f32 = 0.05;
 
+/// Whether this OS has a capture backend. Without one, [`platform_source`] and [`platform_source_with`] say
+/// [`CaptureError::Unsupported`].
+pub const HAS_PLATFORM_BACKEND: bool = os::HAS_BACKEND;
+
+/// Whether the executables `a` and `b` are the same file by the rules of this OS's file names, e.g. Windows ignores the
+/// case. Compares the paths as they are, without asking the file system.
+pub fn same_exe_path(a: &Path, b: &Path) -> bool {
+    paths_match(os::EXE_PATHS_IGNORE_CASE, a, b)
+}
+
+fn paths_match(ignore_case: bool, a: &Path, b: &Path) -> bool {
+    if ignore_case {
+        a.as_os_str().to_string_lossy().to_lowercase() == b.as_os_str().to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
+/// What the OS backend is asked to do beyond capturing, see [`platform_source_with`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PlatformOptions {
+    /// Where the backend notes the volumes it lowered, so a later run can restore them after a crash. It holds volumes
+    /// and identifiers only, never audio. Each OS decides what it does with it, and what it needs to restore. On
+    /// Windows it also starts the [duck guard](duck_guard), so `main` must call [`duck_guard::run_if_requested`] first.
+    pub duck_journal: Option<PathBuf>,
+}
+
 /// The capture backend for this OS.
 pub fn platform_source() -> Result<Box<dyn AppAudioSource>> {
-    #[cfg(windows)]
-    {
-        Ok(Box::new(WasapiSource::new()))
-    }
-    #[cfg(not(windows))]
-    {
-        Err(CaptureError::Unsupported(format!(
-            "no capture backend for {} yet",
-            std::env::consts::OS
-        )))
-    }
+    platform_source_with(PlatformOptions::default())
+}
+
+/// The capture backend for this OS, set up with `options`. Setting it up can block, e.g. while apps ducked by an earlier
+/// run get their volume back, so don't call it on a UI thread.
+pub fn platform_source_with(options: PlatformOptions) -> Result<Box<dyn AppAudioSource>> {
+    os::source(options)
 }
 
 /// A capture running on its own thread, stopped through a shared flag.
@@ -243,6 +284,50 @@ mod tests {
 
     /// 1 ms in the backend's clock.
     const MS: u64 = 10_000;
+
+    #[test]
+    fn permission_denied_says_what_it_is_and_how_to_allow_it() {
+        let how = "Allow Repeat That to record audio in System Settings > Privacy & Security";
+        let shown = CaptureError::PermissionDenied(how.into()).to_string();
+        // Like the other variants, Display names the kind, so a log line tells what happened. The sentence for the user
+        // follows unchanged, and code that shows only that matches on the variant.
+        assert_eq!(shown, format!("audio capture is not allowed: {how}"));
+    }
+
+    #[test]
+    fn exe_paths_compare_by_the_rule_of_the_os() {
+        let (a, b) = (Path::new(r"C:\Apps\Discord.exe"), Path::new(r"c:\apps\discord.EXE"));
+        assert!(paths_match(true, a, b));
+        assert!(!paths_match(false, a, b));
+        assert!(paths_match(false, a, a));
+        assert!(!paths_match(true, a, Path::new(r"C:\Apps\Other.exe")));
+        assert_eq!(same_exe_path(a, b), os::EXE_PATHS_IGNORE_CASE);
+        assert!(same_exe_path(a, a));
+    }
+
+    #[test]
+    fn without_a_backend_the_platform_source_is_unsupported() {
+        if HAS_PLATFORM_BACKEND {
+            return;
+        }
+        let options = PlatformOptions {
+            duck_journal: Some(PathBuf::from("duck.journal")),
+        };
+        for source in [
+            platform_source(),
+            platform_source_with(PlatformOptions::default()),
+            platform_source_with(options),
+        ] {
+            assert!(matches!(source, Err(CaptureError::Unsupported(_))));
+        }
+    }
+
+    #[test]
+    fn without_a_backend_there_are_no_icons() {
+        if !HAS_PLATFORM_BACKEND {
+            assert_eq!(app_icon(Path::new("app"), 32), None);
+        }
+    }
 
     fn history(level: &DuckLevel) -> Vec<DuckChange> {
         let mut history = Vec::new();

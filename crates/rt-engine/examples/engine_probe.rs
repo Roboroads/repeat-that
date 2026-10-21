@@ -1,6 +1,6 @@
 //! Development tool: runs the audio engine on a real app, to try replays, ducking and catch-up by ear. No audio is
-//! written to disk; on Windows the duck journal (app volumes only) lives in the temp directory. Elsewhere there is no
-//! capture backend yet, so the rt-core speech fixture plays as a mock app.
+//! written to disk; the duck journal (app volumes only) lives in the temp directory. On an OS without a capture
+//! backend, the rt-core speech fixture plays as a mock app.
 //!
 //! ```sh
 //! cargo run -p rt-engine --example engine_probe -- list
@@ -16,7 +16,7 @@ use std::io::{self, BufRead};
 use std::sync::Arc;
 use std::thread;
 
-use rt_capture::{AppAudioSource, AudioApp};
+use rt_capture::{AppAudioSource, AudioApp, PlatformOptions};
 use rt_engine::{CpalOutput, Engine, EngineConfig, NullOutput, OutputBackend, Status, TargetApp};
 
 type Error = Box<dyn std::error::Error>;
@@ -38,22 +38,17 @@ fn main() -> Result<(), Error> {
     }
 }
 
-/// The capture backend, with a duck journal and guard like the app, so a probe killed mid-replay gives the app its
-/// volume back.
-#[cfg(windows)]
+/// The capture backend, with a duck journal like the app (and on Windows a guard), so a probe killed mid-replay gives
+/// the app its volume back. Where there is no backend, the speech fixture plays as a fake app.
 fn source() -> Result<Arc<dyn AppAudioSource>, Error> {
+    if !rt_capture::HAS_PLATFORM_BACKEND {
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../rt-core/tests/fixtures/speech_8s.wav");
+        return Ok(Arc::new(rt_capture::MockSource::from_wav(fixture)?));
+    }
     let journal = env::temp_dir().join("repeat-that-engine-probe-duck.journal");
-    Ok(Arc::new(
-        rt_capture::WasapiSource::new()
-            .with_duck_journal(journal)
-            .with_duck_guard(),
-    ))
-}
-
-#[cfg(not(windows))]
-fn source() -> Result<Arc<dyn AppAudioSource>, Error> {
-    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../rt-core/tests/fixtures/speech_8s.wav");
-    Ok(Arc::new(rt_capture::MockSource::from_wav(fixture)?))
+    Ok(Arc::from(rt_capture::platform_source_with(PlatformOptions {
+        duck_journal: Some(journal),
+    })?))
 }
 
 fn list(source: &dyn AppAudioSource) -> Result<(), Error> {

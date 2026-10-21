@@ -210,8 +210,8 @@ impl EngineControl for AppEngine {
 pub fn install<R: Runtime>(app: &AppHandle<R>) {
     start_publishing(app);
     let kind = source::from_env();
-    // Only the Windows backend lowers volumes, so only it needs somewhere to note them.
-    let journal = if kind == SourceKind::Wasapi {
+    // Only the OS backend lowers volumes, so only it needs somewhere to note them.
+    let journal = if kind == SourceKind::Platform {
         duck_journal(app)
     } else {
         None
@@ -242,7 +242,7 @@ pub fn install_with<R: Runtime>(app: &AppHandle<R>, source: Arc<dyn AppAudioSour
     }
 }
 
-/// Where the Windows capture backend notes the volumes it lowered: `duck.journal` in the app's local data directory.
+/// Where the OS capture backend notes the volumes it lowered: `duck.journal` in the app's local data directory.
 /// It holds volumes and audio session identifiers only, never audio.
 fn duck_journal<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     let dir = match app.path().app_local_data_dir() {

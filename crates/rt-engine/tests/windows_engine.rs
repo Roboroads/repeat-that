@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rt_capture::{AppAudioSource, WasapiSource};
+use rt_capture::AppAudioSource;
+use rt_capture::windows::WasapiSource;
 use rt_engine::{CaptureState, Engine, EngineConfig, EngineHandle, PlaybackState, Status, TargetApp, TestOutput};
 
 /// A child process that is killed when the test ends, also on a failed assertion.

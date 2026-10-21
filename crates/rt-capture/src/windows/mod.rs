@@ -1,6 +1,6 @@
 //! Windows backend: audio sessions for the app list and ducking, WASAPI process loopback for capture.
 
-pub(crate) mod icon;
+mod icon;
 mod loopback;
 mod sessions;
 
@@ -23,7 +23,29 @@ use crate::before_duck::BeforeDuck;
 use crate::duck_guard;
 use crate::duck_journal::{self, JournalEntry};
 use crate::ramp;
-use crate::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, FrameSink, Result, clamp_duck_level};
+use crate::{
+    AppAudioSource, AudioApp, CaptureError, CaptureHandle, DuckLevel, FrameSink, IconImage, PlatformOptions, Result,
+    clamp_duck_level,
+};
+
+pub(crate) const HAS_BACKEND: bool = true;
+pub(crate) const HAS_DUCK_GUARD: bool = true;
+/// Windows file names are case-insensitive.
+pub(crate) const EXE_PATHS_IGNORE_CASE: bool = true;
+
+/// The WASAPI source. A duck journal in `options` also gives it the duck guard, which reads the journal to know what to
+/// restore, so there is no guard without one.
+pub(crate) fn source(options: PlatformOptions) -> Result<Box<dyn AppAudioSource>> {
+    let source = WasapiSource::new();
+    Ok(Box::new(match options.duck_journal {
+        Some(journal) => source.with_duck_journal(journal).with_duck_guard(),
+        None => source,
+    }))
+}
+
+pub(crate) fn icon(exe: &Path, size_px: u32) -> Option<IconImage> {
+    icon::extract(exe, size_px)
+}
 
 /// Captures one app through WASAPI process loopback (Windows 10 2004+), including its child processes.
 ///
@@ -277,23 +299,24 @@ fn spawn_duck_guard(journal: &Path) -> std::io::Result<()> {
 }
 
 /// The duck guard itself: waits for `parent` to exit, then restores the sessions `journal` still lists. Sessions whose
-/// app isn't running stay in the journal for the next start.
-pub(crate) fn run_duck_guard(journal: &Path, parent: u32) {
+/// app isn't running stay in the journal for the next start. Always `true`: this OS has a guard.
+pub(crate) fn run_duck_guard(journal: &Path, parent: u32) -> bool {
     // If the parent can't be opened, it may well be alive: leave the journal to the next start rather than restoring
     // apps it still ducks.
     let Ok(process) = (unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, parent) }) else {
-        return;
+        return true;
     };
     let process = unsafe { Owned::new(process) };
     unsafe { WaitForSingleObject(*process, INFINITE) };
     let entries = duck_journal::read(journal);
     if entries.is_empty() {
-        return;
+        return true;
     }
     let Ok(_com) = Com::init() else {
-        return;
+        return true;
     };
     if let Ok(pending) = sessions::recover(entries) {
         let _ = duck_journal::write(journal, &duck_journal::serialize(&pending));
     }
+    true
 }
