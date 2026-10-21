@@ -2,7 +2,7 @@
 //! the app's own output device. Its IOProc hands the tapped audio to a capture, and plays the replay while the app is
 //! ducked (see `passthrough`). While the app is ducked, a second tap in an aggregate of its own mutes it (see
 //! `Description`). A watcher thread keeps the taps' process lists up to date, and ends the tap when the app quits, its
-//! device goes away, or the user takes back the permission.
+//! device goes away, or the user takes back the permission. Ending it unmutes the app.
 
 use std::ffi::{CStr, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -32,7 +32,7 @@ use objc2_core_audio_types::{
 use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFString, CFType};
 use objc2_foundation::{NSArray, NSNumber, NSString, NSUUID};
 
-use super::passthrough::{self, Buffer, BufferMut, Command, IoStatus, Player, Sequencer, Step};
+use super::passthrough::{self, Buffer, BufferMut, Command, IoStatus, Mute, Player, Sequencer, Step};
 use super::processes::{self, Follow};
 use super::{permission, sys};
 use crate::permission::PermissionStatus;
@@ -91,7 +91,8 @@ struct Shared {
     /// The capture's sink and the number it was attached with, see [`Capture`].
     sink: Mutex<Option<(u64, FrameSink)>>,
     sinks: AtomicU64,
-    /// The tap ended by itself: the app quit, its device went away, or capture isn't allowed any more.
+    /// The tap ended by itself (see [`Shared::end`]): the app quit, its device went away, or capture isn't allowed any
+    /// more. Its IOProc sets it too when it panics, and the watcher then ends the tap.
     ended: AtomicBool,
     stop: AtomicBool,
     /// Wakes the watcher when processes come or go, or when it should stop.
@@ -117,13 +118,13 @@ struct Description {
     uuid: String,
     processes: Vec<AudioObjectID>,
     /// The muting tap with its aggregate device, and its UUID, while the app is muted.
-    mute: Option<(Parts, String)>,
+    mute: Mute<(Parts, String)>,
 }
 
 impl Description {
-    /// A private stereo tap of the app's processes, with `uuid`.
-    fn build(&self, uuid: &str, muted: bool) -> Retained<CATapDescription> {
-        let numbers: Vec<Retained<NSNumber>> = self.processes.iter().map(|&id| NSNumber::new_u32(id)).collect();
+    /// A private stereo tap of `processes`, with `uuid`.
+    fn build(processes: &[AudioObjectID], uuid: &str, muted: bool) -> Retained<CATapDescription> {
+        let numbers: Vec<Retained<NSNumber>> = processes.iter().map(|&id| NSNumber::new_u32(id)).collect();
         let processes = NSArray::from_retained_slice(&numbers);
         // SAFETY: an array of numbers holding process object IDs, as the initializer wants; the setters take plain
         // values.
@@ -143,11 +144,11 @@ impl Description {
         }
     }
 
-    /// Makes a tap of the app's processes.
-    fn create(&self, uuid: &str, muted: bool) -> Result<AudioObjectID> {
+    /// Makes a tap of `processes`.
+    fn create(processes: &[AudioObjectID], uuid: &str, muted: bool) -> Result<AudioObjectID> {
         let mut tap = 0;
         let status = autoreleasepool(|_| {
-            let built = self.build(uuid, muted);
+            let built = Self::build(processes, uuid, muted);
             // SAFETY: a valid description and a place for the ID.
             unsafe { AudioHardwareCreateProcessTap(Some(&built), &mut tap) }
         });
@@ -159,33 +160,31 @@ impl Description {
     fn apply(&self, tap: AudioObjectID) -> Result<()> {
         let change = |tap: AudioObjectID, uuid: &str, muted: bool| {
             autoreleasepool(|_| {
-                let description = self.build(uuid, muted);
+                let description = Self::build(&self.processes, uuid, muted);
                 let pointer: *const CATapDescription = &*description;
                 // SAFETY: the property is a CATapDescription reference, which Core Audio retains as it needs.
                 unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
             })
         };
         let captured = change(tap, &self.uuid, false);
-        if let Some((Parts { tap: Some(mute), .. }, uuid)) = &self.mute {
+        if let Some((Parts { tap: Some(mute), .. }, uuid)) = self.mute.get() {
             change(*mute, uuid, true)?;
         }
         captured
     }
 
-    /// Mutes (`true`) or unmutes the app by making or removing the muting tap, reading it through an aggregate device
-    /// on `device`.
+    /// Mutes (`true`) or unmutes the app by making or removing the muting tap, see [`Mute`].
     fn set_muted(&mut self, muted: bool, device: AudioObjectID) -> Result<()> {
-        if !muted {
-            // Dropping the parts stops the aggregate and removes it and the tap.
-            self.mute = None;
-            return Ok(());
-        }
-        if self.mute.is_some() {
-            return Ok(());
-        }
+        let processes = &self.processes;
+        // Dropping the parts on unmute stops the aggregate and removes it and the tap.
+        self.mute.set(muted, || Self::muting_tap(processes, device))
+    }
+
+    /// A tap that mutes `processes`, read through an aggregate device on `device`, and its UUID.
+    fn muting_tap(processes: &[AudioObjectID], device: AudioObjectID) -> Result<(Parts, String)> {
         let uuid = new_uuid();
         let mut parts = Parts::default();
-        parts.tap = Some(self.create(&uuid, true)?);
+        parts.tap = Some(Self::create(processes, &uuid, true)?);
         let aggregate = create_aggregate(&uuid, &*sys::device_uid(device)?)?;
         parts.aggregate = Some(aggregate);
         // SAFETY: an IOProc that needs no client data.
@@ -204,8 +203,7 @@ impl Description {
             AudioDeviceStart(aggregate, parts.io_proc)
         })?;
         parts.started = true;
-        self.mute = Some((parts, uuid));
-        Ok(())
+        Ok((parts, uuid))
     }
 }
 
@@ -325,9 +323,9 @@ impl Tap {
         let description = Description {
             uuid: new_uuid(),
             processes,
-            mute: None,
+            mute: Mute::default(),
         };
-        let tap = description.create(&description.uuid, false)?;
+        let tap = Description::create(&description.processes, &description.uuid, false)?;
         parts.tap = Some(tap);
 
         // Replays play where the app plays.
@@ -676,6 +674,19 @@ unsafe fn buffers<'a>(list: NonNull<AudioBufferList>) -> &'a [AudioBuffer] {
 }
 
 impl Shared {
+    /// The tap ends by itself, because of `why`: a capture of it stops, and the app is unmuted and not replayed any
+    /// more, also while a capture or a duck still holds the tap, so a duck never outlives it.
+    fn end(&self, why: &str) {
+        if cfg!(debug_assertions) {
+            eprintln!("tap of PID {} ended: {why}", self.pid);
+        }
+        // Under the lock that muting takes, so no duck mutes the app after this.
+        let mut description = lock(&self.description);
+        self.ended.store(true, Ordering::Relaxed);
+        self.command.store(Command::SILENT.pack(), Ordering::Relaxed);
+        description.mute.end();
+    }
+
     /// One IO cycle.
     ///
     /// # Safety
@@ -760,12 +771,10 @@ fn watch(shared: &Shared) {
         if shared.stop.load(Ordering::Relaxed) {
             return;
         }
-        let ended = |why: &str| {
-            if cfg!(debug_assertions) {
-                eprintln!("tap of PID {} ended: {why}", shared.pid);
-            }
-            shared.ended.store(true, Ordering::Relaxed);
-        };
+        let ended = |why: &str| shared.end(why);
+        if shared.ended.load(Ordering::Relaxed) {
+            return ended("its IOProc failed");
+        }
         match members(&shared.follow) {
             Ok(processes) if processes.is_empty() => return ended("the app quit"),
             Ok(processes) => {

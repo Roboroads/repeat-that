@@ -126,12 +126,15 @@ mod os {
         fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()> {
             let level = if level.is_nan() { 1.0 } else { level.clamp(0.0, 1.0) };
             let mut ducked = self.ducked.lock().unwrap_or_else(|e| e.into_inner());
-            ducked.retain(|_, tap| !tap.ended());
+            // Taps of other apps that ended by themselves were unmuted then; this app's is restored below.
+            ducked.retain(|pid, tap| *pid == app.pid || !tap.ended());
             let tap = match ducked.get(&app.pid) {
-                Some(tap) => Arc::clone(tap),
+                // Restoring always goes to the tap that ducked the app, also one that ended by itself while a capture
+                // still holds it: that unmutes the app and stops the replay, if its end didn't already.
+                Some(tap) if level >= 1.0 || !tap.ended() => Arc::clone(tap),
                 // Nothing to restore on an app that isn't ducked.
                 None if level >= 1.0 => return Ok(()),
-                None => {
+                _ => {
                     super::permission::check()?;
                     self.tap(app)?
                 }

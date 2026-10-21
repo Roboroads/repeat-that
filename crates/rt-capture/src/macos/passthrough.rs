@@ -12,9 +12,12 @@
 //!
 //! [`Sequencer`] is the control side, which `set_app_volume` drives and which mutes and unmutes the tap. [`Player`] is
 //! the IOProc's side: the replay's gain, which follows the sequencer's latest [`Command`] one sample at a time, so our
-//! replay itself never jumps. [`interleave`] and [`play`] move the samples in and out of Core Audio's buffers.
+//! replay itself never jumps. [`Mute`] keeps the app's mute. [`interleave`] and [`play`] move the samples in and out of
+//! Core Audio's buffers.
 
 use std::time::Duration;
+
+use crate::{CaptureError, Result};
 
 /// How long our replay fades in when it takes over from the app, and out when it hands the app back, so it doesn't
 /// click.
@@ -209,6 +212,55 @@ impl Sequencer {
     /// Whether the latest mute or unmute is [`OVERLAP`] old.
     fn overlapped(&self, io: IoStatus) -> bool {
         self.mute_changed.is_none_or(|at| io.frames >= at + self.overlap)
+    }
+}
+
+/// The app's mute: `M` keeps the app muted while it exists (the muting tap, see `tap`). Once the tap ended by itself
+/// (the app quit, its device went away, or capture isn't allowed any more), the app is unmuted for good, also while a
+/// capture still holds the tap: nothing may be left to restore it.
+pub(crate) struct Mute<M> {
+    held: Option<M>,
+    ended: bool,
+}
+
+/// Why a tap that ended can't duck.
+pub(crate) const ENDED: &str = "the app's tap ended: the app quit, its device went away, or capture isn't allowed";
+
+impl<M> Default for Mute<M> {
+    fn default() -> Self {
+        Self {
+            held: None,
+            ended: false,
+        }
+    }
+}
+
+impl<M> Mute<M> {
+    /// Mutes the app (`true`), with a mute from `make` unless it is muted already, or unmutes it. A mute that can't be
+    /// made, or a tap that ended, leaves the app unmuted.
+    pub(crate) fn set(&mut self, muted: bool, make: impl FnOnce() -> Result<M>) -> Result<()> {
+        if !muted {
+            self.held = None;
+            return Ok(());
+        }
+        if self.ended {
+            return Err(CaptureError::Backend(ENDED.into()));
+        }
+        if self.held.is_none() {
+            self.held = Some(make()?);
+        }
+        Ok(())
+    }
+
+    /// The mute, while the app is muted.
+    pub(crate) fn get(&self) -> Option<&M> {
+        self.held.as_ref()
+    }
+
+    /// The tap ended by itself: unmutes the app for good.
+    pub(crate) fn end(&mut self) {
+        self.ended = true;
+        self.held = None;
     }
 }
 
@@ -633,6 +685,50 @@ mod tests {
         sim.duck(0.2);
         assert_eq!(sim.mutes.iter().map(|m| m.1).collect::<Vec<_>>(), [true]);
         assert_eq!(*sim.gains.last().unwrap(), 0.2);
+    }
+
+    #[test]
+    fn a_mute_is_made_once_and_goes_on_unmute() {
+        let made = std::cell::Cell::new(0);
+        let make = || {
+            made.set(made.get() + 1);
+            Ok(made.get())
+        };
+        let mut mute = Mute::default();
+        mute.set(true, make).unwrap();
+        mute.set(true, make).unwrap();
+        assert_eq!(made.get(), 1);
+        assert_eq!(mute.get(), Some(&1));
+        mute.set(false, || unreachable!()).unwrap();
+        assert_eq!(mute.get(), None);
+        mute.set(false, || unreachable!()).unwrap();
+    }
+
+    #[test]
+    fn a_mute_that_cant_be_made_leaves_the_app_unmuted() {
+        let mut mute: Mute<()> = Mute::default();
+        let failed = mute.set(true, || Err(CaptureError::Backend("no tap".into())));
+        assert!(matches!(failed, Err(CaptureError::Backend(why)) if why == "no tap"));
+        assert_eq!(mute.get(), None);
+    }
+
+    #[test]
+    fn a_tap_that_ended_unmutes_the_app_for_good() {
+        let mut mute = Mute::default();
+        mute.set(true, || Ok(())).unwrap();
+        mute.end();
+        assert_eq!(mute.get(), None, "unmuted when the tap ended");
+
+        // Ducking the ended tap fails without muting the app again; restoring it is fine.
+        let mut made = false;
+        let ducked = mute.set(true, || {
+            made = true;
+            Ok(())
+        });
+        assert!(matches!(ducked, Err(CaptureError::Backend(why)) if why == ENDED));
+        assert!(!made);
+        assert_eq!(mute.get(), None);
+        mute.set(false, || unreachable!()).unwrap();
     }
 
     #[test]
