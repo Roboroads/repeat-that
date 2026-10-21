@@ -3,6 +3,7 @@
 # anywhere else, because it changes the system's audio devices and permissions:
 #   * installs the BlackHole 2ch virtual device (GPL-3.0, on the runner only, never shipped) and makes it the
 #     output and the input, so what the test plays can be recorded back from its input;
+#   * runs the test binary's test without the permission, before anything was granted (so macOS is asked once);
 #   * tries to give the runner the audio capture (kTCCServiceAudioCapture) and microphone permissions by adding them to
 #     its TCC databases, for the process macOS asks about (the one responsible for the probe) and a few likely others.
 # Writes `tcc=granted` or `tcc=missing` to $GITHUB_OUTPUT, and what it found to the step summary.
@@ -47,6 +48,21 @@ before=$("$probe" permission 2>&1 || true)
 echo "$before"
 responsible=$(sed -n 's/^responsible: [0-9]* //p' <<<"$before")
 echo "::endgroup::"
+
+# Nothing was asked yet, so starting a capture has to fail with the "waiting" error after asking macOS to show its
+# question. This is the only place CI calls TCCAccessRequest; the grant below overwrites whatever tccd makes of it.
+before_test=""
+if [ -n "$test_binary" ]; then
+  echo "::group::Capture test before the grant"
+  if ! before_test=$("$test_binary" --ignored --exact without_permission_starting_says_so --nocapture \
+    --test-threads=1 2>&1); then
+    echo "$before_test"
+    echo "::error::Starting a capture without the permission didn't fail as it should"
+    exit 1
+  fi
+  echo "$before_test"
+  echo "::endgroup::"
+fi
 
 # The process macOS asks about is the one responsible for the probe; the others are where GitHub's runner images
 # grant their own permissions, in case the responsible one can't be found.
@@ -140,6 +156,7 @@ echo "tcc=$tcc" >>"${GITHUB_OUTPUT:-/dev/null}"
   echo "- Output and input: BlackHole 2ch"
   echo "- Responsible process: \`${responsible:-unknown}\`"
   echo "- Audio capture permission before: \`$(sed -n 's/^status: //p' <<<"$before")\`, after the grant: \`$status\`"
+  grep '^summary: ' <<<"$before_test" | sed 's/^summary: /- Before the grant: /' || true
   if [ "$tcc" = granted ]; then
     echo "- The grant worked: every capture test runs, with \`RT_REQUIRE_TCC=1\`."
   else

@@ -3,9 +3,9 @@ name: macOS capture
 # End-to-end test of the macOS capture backend (crates/rt-capture/tests/macos_audio.rs) on a GitHub macOS runner:
 # afplay plays a tone into the BlackHole virtual device, and the test captures, ducks and mutes it, and records what
 # the device plays from its input. .github/scripts/macos-ci-audio.sh installs BlackHole (on the runner only) and tries
-# to give the runner the audio capture permission. When that works, every test must pass; when it doesn't, only the
-# test without the permission runs and the summary says so. Not a required check: it first has to prove it runs
-# reliably.
+# to give the runner the audio capture permission, after running the test without the permission while nothing was
+# asked yet. When the grant works, every test must pass; when it doesn't, only the test without the permission runs
+# and the summary says so. Not a required check: it first has to prove it runs reliably.
 
 on:
   pull_request:
