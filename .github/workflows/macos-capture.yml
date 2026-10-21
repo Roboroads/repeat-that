@@ -42,6 +42,10 @@ jobs:
     name: macOS capture
     runs-on: macos-latest
     timeout-minutes: 45
+    # `shell: bash` adds pipefail, so a test that fails behind `| tee` fails the step.
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
