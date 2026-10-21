@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::tray::{self, SharedStatus};
+use crate::engine;
 use crate::window;
 
-/// Something the user asked for, from the tray menu now and from hotkeys and the settings window later.
+/// Something the user asked for, from the tray menu, a hotkey or the settings window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppAction {
     Replay,
@@ -46,8 +46,8 @@ impl AppAction {
     }
 }
 
-/// What the playback actions drive. Calls return at once; the audio engine implements this, and until it is connected
-/// [`NoEngine`] stands in.
+/// What the playback actions drive. Calls return at once. The audio engine implements this
+/// ([`AppEngine`](crate::engine::AppEngine)); tests use a fake.
 pub trait EngineControl: Send + Sync {
     fn replay(&self);
     fn stop(&self);
@@ -56,23 +56,6 @@ pub trait EngineControl: Send + Sync {
 
 /// The engine as managed app state.
 pub type SharedEngine = Arc<dyn EngineControl>;
-
-/// Stands in for the audio engine: logs and does nothing.
-pub struct NoEngine;
-
-impl EngineControl for NoEngine {
-    fn replay(&self) {
-        eprintln!("Replay: no audio engine connected yet");
-    }
-
-    fn stop(&self) {
-        eprintln!("Stop: no audio engine connected yet");
-    }
-
-    fn toggle_catch_up(&self) {
-        eprintln!("CatchUp: no audio engine connected yet");
-    }
-}
 
 /// What actions need from the app. The real implementation drives the windows and the tray; tests use a fake.
 pub trait ActionHost {
@@ -93,14 +76,7 @@ impl<R: Runtime> ActionHost for AppHandle<R> {
     }
 
     fn toggle_paused(&self) {
-        {
-            // One lock for the read and the write; `refresh` locks the status again, so this one is dropped first.
-            let shared = self.state::<SharedStatus>();
-            let mut status = tray::lock_status(&shared);
-            let paused = status.is_paused();
-            status.set_paused(!paused);
-        }
-        tray::refresh(self);
+        engine::change_paused(self, |paused| !paused);
     }
 
     fn engine(&self) -> SharedEngine {
@@ -221,14 +197,6 @@ mod tests {
             dispatch(action, &host);
         }
         assert!(host.engine.calls.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_placeholder_engine_ignores_every_call() {
-        let engine = NoEngine;
-        engine.replay();
-        engine.stop();
-        engine.toggle_catch_up();
     }
 
     #[test]

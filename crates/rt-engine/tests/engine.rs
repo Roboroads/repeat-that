@@ -702,6 +702,26 @@ fn catch_up_from_idle_plays_faster() {
 }
 
 #[test]
+fn a_catch_up_ends_once_it_has_caught_up() {
+    let output = TestOutput::new(RATE);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    // Someone has been talking for 1.6 s when the catch-up starts, and goes on for 4.4 s more.
+    source.play_live(&[tone(6.0), silence(2.0)].concat());
+    thread::sleep(secs(1.6));
+    let start = Instant::now();
+    handle.toggle_catch_up();
+    wait_for(&handle, secs(1.0), "catching up", |s| {
+        s.playback == PlaybackState::CatchingUp
+    });
+
+    // At 1.5x it reaches them after about 3.6 s. Then it ends, and they are heard live again, rather than followed.
+    wait_idle(&handle, secs(6.0));
+    let took = start.elapsed().as_secs_f32();
+    assert!(took > 3.0, "the catch-up ended {took} s in, before it caught up");
+    assert!(took < 4.4, "the catch-up ended {took} s in, after they stopped talking");
+}
+
+#[test]
 fn catch_up_applies_mid_replay() {
     let output = TestOutput::new(RATE).speed(2.0);
     let (source, _engine, handle) = capturing(&output, EngineConfig::default());
@@ -720,21 +740,113 @@ fn catch_up_applies_mid_replay() {
     // What was queued for the output still plays at 1.0x.
     let expected = switched + 0.08 + (total - switched - 0.08) / 1.5;
     assert_near(output_secs(&output), expected, 0.15, "output with catch-up from 1 s on");
+}
 
-    // Toggled twice: back to replay speed.
-    output.clear();
-    handle.replay();
-    wait_playing(&handle);
+/// Two utterances buffered, the last one replaying (at catch-up speed with `catch_up`) for a while. Returns the
+/// seconds buffered and the seconds output when the test presses its next hotkey.
+fn replaying_the_second_of_two(
+    output: &TestOutput,
+    handle: &EngineHandle,
+    source: &FakeSource,
+    catch_up: bool,
+) -> (f32, f32) {
+    source.play(&[sentence(1.5), sentence(1.5)].concat());
+    source.wait_played();
+    let buffered = wait_buffered(handle, 3.2);
+    if catch_up {
+        handle.toggle_catch_up();
+    } else {
+        handle.replay();
+    }
+    let state = if catch_up {
+        PlaybackState::CatchingUp
+    } else {
+        PlaybackState::Replaying
+    };
+    wait_for(handle, secs(1.0), "the replay", |s| s.playback == state);
+    wait_until(secs(2.0), "some of it played", || output_secs(output) >= 0.3);
+    (buffered, output_secs(output))
+}
+
+#[test]
+fn the_catch_up_hotkey_during_a_catch_up_steps_back_at_catch_up_speed() {
+    let output = TestOutput::new(RATE).speed(2.0);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    let (buffered, pressed) = replaying_the_second_of_two(&output, &handle, &source, true);
+
+    handle.toggle_catch_up();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(handle.status().playback, PlaybackState::CatchingUp);
+    wait_idle(&handle, secs(5.0));
+    // Both utterances, the first one again from its start, at 1.5x. What was queued for the output plays first.
+    let expected = pressed + 0.08 + (buffered + 2.0 * GAP) / 1.5;
+    assert_near(output_secs(&output), expected, 0.2, "output after stepping back");
+}
+
+#[test]
+fn the_replay_hotkey_during_a_catch_up_goes_on_at_replay_speed() {
+    let output = TestOutput::new(RATE).speed(2.0);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    source.play(&sentence(3.0));
+    source.wait_played();
+    let total = wait_buffered(&handle, 3.2) + GAP;
     handle.toggle_catch_up();
     wait_for(&handle, secs(1.0), "catching up", |s| {
         s.playback == PlaybackState::CatchingUp
     });
-    handle.toggle_catch_up();
+    wait_until(secs(2.0), "some of it played", || output_secs(&output) >= 0.5);
+
+    handle.replay();
+    let switched = output_secs(&output);
     wait_for(&handle, secs(1.0), "replaying", |s| {
         s.playback == PlaybackState::Replaying
     });
+    wait_idle(&handle, secs(6.0));
+    // From where it was: what played at 1.5x took in 1.5x as much speech, and the rest plays at 1.0x.
+    let expected = switched + 0.08 + (total - (switched + 0.08) * 1.5);
+    assert_near(
+        output_secs(&output),
+        expected,
+        0.15,
+        "output with replay speed from 0.5 s on",
+    );
+}
+
+#[test]
+fn the_replay_hotkey_during_a_replay_steps_back() {
+    let output = TestOutput::new(RATE).speed(2.0);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    let (buffered, pressed) = replaying_the_second_of_two(&output, &handle, &source, false);
+
+    handle.replay();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(handle.status().playback, PlaybackState::Replaying);
+    wait_idle(&handle, secs(6.0));
+    let expected = pressed + 0.08 + buffered + 2.0 * GAP;
+    assert_near(output_secs(&output), expected, 0.2, "output after stepping back");
+}
+
+#[test]
+fn stepping_back_from_the_oldest_utterance_starts_it_over() {
+    let output = TestOutput::new(RATE).speed(2.0);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    source.play(&sentence(2.0));
+    source.wait_played();
+    let total = wait_buffered(&handle, 2.2) + GAP;
+    handle.toggle_catch_up();
+    wait_until(secs(2.0), "some of it played", || output_secs(&output) >= 0.4);
+
+    handle.toggle_catch_up();
+    let pressed = output_secs(&output);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(handle.status().playback, PlaybackState::CatchingUp);
     wait_idle(&handle, secs(5.0));
-    assert!(output_secs(&output) > total - 0.3, "{} s", output_secs(&output));
+    assert_near(
+        output_secs(&output),
+        pressed + 0.08 + total / 1.5,
+        0.15,
+        "output after starting over",
+    );
 }
 
 #[test]

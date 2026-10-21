@@ -57,7 +57,7 @@ pub struct Rendered {
 /// replaying and the sentence still being spoken. When it catches up with someone still talking, it follows their
 /// sentence as it comes in, in silence while it waits for more. After a finished utterance it also waits while speech
 /// is pending ([`SpeechBuffer::speech_pending`]). Once there's nothing left to play, it stops and the listener is back
-/// to live audio.
+/// to live audio. A catch-up ([`Player::set_end_at_live`]) doesn't follow or wait: it stops as soon as it has caught up.
 ///
 /// Speed changes apply mid-utterance, within 15 ms.
 #[derive(Debug)]
@@ -69,6 +69,8 @@ pub struct Player {
     live_margin: usize,
     max_wait: usize,
     max_context_age: Duration,
+    /// Stop once caught up with live instead of following the speaker, see [`Player::set_end_at_live`].
+    end_at_live: bool,
     stretcher: Stretcher,
     playing: Option<Playback>,
 }
@@ -99,6 +101,8 @@ enum Phase {
     Gap(usize),
     /// On to the next utterance, in silence while speech is pending.
     Next,
+    /// Caught up with live while [`Player::set_end_at_live`] is on: what's left in the stretcher plays, then it stops.
+    Ending,
 }
 
 impl Playback {
@@ -147,6 +151,7 @@ impl Player {
             live_margin: duration_to_samples(config.live_margin, sample_rate),
             max_wait: duration_to_samples(config.max_wait, sample_rate),
             max_context_age: config.max_context_age,
+            end_at_live: false,
             stretcher: Stretcher::new(sample_rate, speed),
             playing: None,
         }
@@ -172,6 +177,12 @@ impl Player {
         if !self.playing.as_ref().is_some_and(|p| p.live) {
             self.stretcher.set_speed(self.speed);
         }
+    }
+
+    /// Whether playback stops as soon as it has caught up with live (a catch-up), rather than following someone still
+    /// talking and waiting for pending speech. Applies mid-replay too.
+    pub fn set_end_at_live(&mut self, end: bool) {
+        self.end_at_live = end;
     }
 
     /// The replay button. When idle, starts at the sentence in progress if it is at least `min_open_start` long,
@@ -239,6 +250,7 @@ impl Player {
             }
             Phase::Gap(left) => left,
             Phase::Next => 0,
+            Phase::Ending => self.stretcher.pending(),
         };
         let newer = (playback.id + 1).max(buffer.oldest_id().unwrap_or(0));
         for id in newer..=buffer.latest_id().unwrap_or(0) {
@@ -274,6 +286,13 @@ impl Player {
                         playback.waited = 0;
                         continue;
                     }
+                    if self.end_at_live {
+                        // A catch-up is over once it has caught up: their sentence so far plays out, and from there
+                        // they are heard live.
+                        self.stretcher.finish();
+                        playback.phase = Phase::Ending;
+                        continue;
+                    }
                     // Caught up with someone still talking: play all of their sentence so far, then wait for more.
                     playback.live = true;
                     self.stretcher.set_speed(1.0);
@@ -286,7 +305,8 @@ impl Player {
                 Phase::Waiting => {
                     playback.feed(buffer, &mut self.stretcher);
                     let available = self.stretcher.pending();
-                    if playback.complete || playback.continues || (available > 0 && available >= self.live_margin) {
+                    let enough = available > 0 && available >= self.live_margin;
+                    if playback.complete || playback.continues || enough || self.end_at_live {
                         playback.phase = Phase::Speech;
                     } else if playback.waited >= self.max_wait {
                         // Nothing new for far longer than a pause: the capture stopped without closing the sentence.
@@ -308,9 +328,15 @@ impl Player {
                     let next = playback.id + 1;
                     if buffer.latest_id().is_some_and(|latest| latest >= next) {
                         self.load(buffer, next);
-                    } else if buffer.speech_pending() && playback.waited < self.max_wait {
+                    } else if !self.end_at_live && buffer.speech_pending() && playback.waited < self.max_wait {
                         written += Self::wait(playback, self.max_wait, &mut out[written..]);
                     } else {
+                        self.stop();
+                    }
+                }
+                Phase::Ending => {
+                    written += self.stretcher.pull(&mut out[written..]);
+                    if written < out.len() {
                         self.stop();
                     }
                 }
@@ -687,6 +713,48 @@ mod tests {
         let rest = render_all(&mut player, &buf).len() as f32;
         // 2000 samples left take 2/3 as long, give or take a 30 ms frame.
         assert!((rest - 2000.0 / 1.5).abs() <= 30.0, "{rest}");
+    }
+
+    #[test]
+    fn a_catch_up_ends_at_the_sentence_in_progress() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        let mut player = Player::new(RATE, no_gap());
+        player.set_end_at_live(true);
+        assert!(player.replay(&buf));
+        // All of the sentence so far plays, then it ends while they are still talking.
+        let out = render_all(&mut player, &buf);
+        assert_eq!(non_silent(&out), vec![1.0; 100]);
+        assert!(!player.is_playing());
+    }
+
+    #[test]
+    fn switching_to_catch_up_while_following_the_speaker_ends_the_replay() {
+        let mut buf = SpeechBuffer::new(RATE, Duration::from_secs(60));
+        buf.open(vec![1.0; 100]);
+        let mut player = Player::new(RATE, no_gap());
+        player.replay(&buf);
+        render_playing(&mut player, &buf, 192);
+        buf.append(&[2.0; 10]);
+        player.set_end_at_live(true);
+        let out = render_all(&mut player, &buf);
+        assert_eq!(non_silent(&out), vec![2.0; 10], "what came in still plays");
+        // Switched back before it ends: it follows them again.
+        let mut player = Player::new(RATE, no_gap());
+        player.set_end_at_live(true);
+        player.set_end_at_live(false);
+        player.replay(&buf);
+        render_playing(&mut player, &buf, 192);
+    }
+
+    #[test]
+    fn a_catch_up_does_not_wait_for_pending_speech() {
+        let mut buf = buffer_with(&[1.0]);
+        buf.set_speech_pending(true);
+        let mut player = Player::new(RATE, no_gap());
+        player.set_end_at_live(true);
+        player.replay(&buf);
+        assert_eq!(render_all(&mut player, &buf), vec![1.0; 100]);
     }
 
     #[test]

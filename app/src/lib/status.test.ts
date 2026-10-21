@@ -12,6 +12,7 @@ function status(over: Partial<Status> = {}): Status {
     output: { deviceName: 'Speakers', fellBack: false, error: null },
     hotkeys: { replay: 'ok', stop: 'ok', catchUp: 'ok' },
     vadFallback: false,
+    settingsProblem: null,
     ...over,
   };
 }
@@ -116,5 +117,10 @@ describe('outputWarnings', () => {
     expect(outputWarnings(status({ vadFallback: true }))).toEqual([
       'The speech detection model did not load. A simpler detector is used, so some speech may be missed.',
     ]);
+  });
+
+  it('passes on why the settings cannot be saved', () => {
+    const problem = "The settings file couldn't be set up, so changes are lost when the app closes: read-only";
+    expect(outputWarnings(status({ settingsProblem: problem }))).toEqual([problem]);
   });
 });

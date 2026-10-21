@@ -129,7 +129,7 @@ describe('status bar', () => {
     expect(within(bar).getByRole('button', { name: 'Stop' })).toBeDisabled();
   });
 
-  it('shows what is captured with its icon and the speech buffered', async () => {
+  it('shows what is captured and the speech buffered, leaving the icon to the app selector', async () => {
     const icon = 'data:image/png;base64,AAAA';
     const { backend, bar } = await statusBar({ apps: [{ ...discord, icon }], settings: { target } });
 
@@ -137,7 +137,9 @@ describe('status bar', () => {
 
     expect(await within(bar).findByText('Capturing Discord')).toBeInTheDocument();
     expect(await within(bar).findByText('24 s of speech buffered')).toBeInTheDocument();
-    await waitFor(() => expect(bar.querySelector('img')).toHaveAttribute('src', icon));
+    const chosen = await screen.findByRole('button', { name: 'Discord, change app' });
+    await waitFor(() => expect(chosen.querySelector('img')).toHaveAttribute('src', icon));
+    expect(bar.querySelector('img, [data-testid="generic-icon"]')).toBeNull();
   });
 
   it('shows waiting for a target that is not running', async () => {
@@ -218,6 +220,15 @@ describe('status bar', () => {
 
     expect(await screen.findByText(/replays use the system default/)).toBeInTheDocument();
     expect(screen.getByText(/speech detection model did not load/)).toBeInTheDocument();
+    expect(screen.getByText(/changes are lost when the app closes/)).toBeInTheDocument();
+  });
+
+  it('warns when the settings cannot be saved', async () => {
+    const { backend } = await statusBar({ apps: [discord], settings: { target } });
+
+    const settingsProblem = 'The settings file is from a newer version of Repeat That, so changes are not saved.';
+    await emit('status', { ...backend.status(), settingsProblem } satisfies Status);
+    expect(await screen.findByText(settingsProblem)).toBeInTheDocument();
   });
 });
 

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import type { Settings } from '../api';
   import { appRows, type AppRow } from '../apps';
   import type { SettingsStore } from '../store.svelte';
@@ -13,9 +14,37 @@
   let { store, settings }: Props = $props();
 
   const rows = $derived(appRows(store.apps, settings.target));
+  const chosen = $derived(rows.find((row) => row.selected) ?? null);
+  // Collapsed into the chosen app once there is one; open while there is none.
+  let expanded = $state(false);
+  const open = $derived(chosen === null || expanded);
+
+  let list = $state<HTMLElement | null>(null);
+  let chosenButton = $state<HTMLButtonElement | null>(null);
+
+  const label = (row: AppRow) => (row.waiting ? `${row.name} · waiting` : row.name);
 
   function choose(row: AppRow) {
     if (row.app !== null && !row.selected) void store.selectApp(row.app);
+    void collapse();
+  }
+
+  /** Clicking the app that is already chosen changes nothing, and closes the list. */
+  function keep(row: AppRow) {
+    if (row.selected) void collapse();
+  }
+
+  async function collapse() {
+    const hadFocus = list?.contains(document.activeElement) ?? false;
+    expanded = false;
+    await tick();
+    if (hadFocus) chosenButton?.focus();
+  }
+
+  async function expand() {
+    expanded = true;
+    await tick();
+    list?.querySelector<HTMLInputElement>('input:checked')?.focus();
   }
 </script>
 
@@ -35,15 +64,29 @@
     {:else if !store.appsError}
       <p class="empty muted">Looking for apps that play audio…</p>
     {/if}
+  {:else if !open && chosen !== null}
+    <button
+      type="button"
+      class="row chosen"
+      aria-expanded="false"
+      aria-label="{label(chosen)}, change app"
+      bind:this={chosenButton}
+      onclick={expand}
+    >
+      <AppIcon src={chosen.icon} />
+      <span class="name">{chosen.name}{#if chosen.waiting}<span class="state">{' · waiting'}</span>{/if}</span>
+      <span class="change">Change</span>
+    </button>
   {:else}
-    <div class="list" role="radiogroup" aria-label="App to capture">
+    <div class="list" role="radiogroup" aria-label="App to capture" bind:this={list}>
       {#each rows as row (row.key)}
         <label class="row" class:selected={row.selected}>
           <input
             type="radio"
             name="target"
             checked={row.selected}
-            aria-label={row.waiting ? `${row.name} · waiting` : row.name}
+            aria-label={label(row)}
+            onclick={() => keep(row)}
             onchange={() => choose(row)}
           />
           <AppIcon src={row.icon} />
@@ -87,9 +130,30 @@
     background: var(--surface-2);
   }
 
-  .row.selected {
+  .row.selected,
+  .row.chosen {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  }
+
+  .row.chosen {
+    width: 100%;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+  }
+
+  .row.chosen:hover {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  }
+
+  .change {
+    color: var(--accent);
+    font-size: 0.9rem;
+  }
+
+  .change::after {
+    content: ' ▾';
   }
 
   input {

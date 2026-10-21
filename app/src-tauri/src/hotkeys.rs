@@ -83,11 +83,18 @@ impl PressTracker {
 }
 
 impl HotkeyStates {
-    const UNBOUND: HotkeyStates = HotkeyStates {
+    pub const UNBOUND: HotkeyStates = HotkeyStates {
         replay: HotkeyState::Unbound,
         stop: HotkeyState::Unbound,
         catch_up: HotkeyState::Unbound,
     };
+}
+
+/// Nothing registered.
+impl Default for HotkeyStates {
+    fn default() -> Self {
+        HotkeyStates::UNBOUND
+    }
 }
 
 /// One hotkey action's place in the manager.
@@ -163,19 +170,18 @@ impl HotkeyManager {
     }
 
     /// Unregisters every hotkey (`true`, while the window records a combination) or registers the wanted ones again
-    /// (`false`, which also retries the ones another app held).
-    pub fn set_suspended(&self, suspended: bool) {
+    /// (`false`, which also retries the ones another app held). Returns whether that changed anything.
+    pub fn set_suspended(&self, suspended: bool) -> bool {
         let mut inner = lock(&self.inner);
         if inner.suspended == suspended {
-            return;
+            return false;
         }
         inner.suspended = suspended;
         self.reconcile(&mut inner);
+        true
     }
 
     /// Where each hotkey stands.
-    // `Status.hotkeys` reads this once the audio engine fills in the rest of the status; tested until then.
-    #[allow(dead_code)]
     pub fn states(&self) -> HotkeyStates {
         let inner = lock(&self.inner);
         let mut states = HotkeyStates::UNBOUND;

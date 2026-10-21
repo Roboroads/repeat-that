@@ -1,0 +1,220 @@
+//! App icons for the app list: the icon of each app's executable as a PNG `data:` URL, made once per executable and
+//! kept for the session (an app's icon doesn't change while the app runs), up to a few hundred executables.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use rt_capture::{AudioApp, IconImage};
+
+use crate::ipc::AppEntry;
+use crate::locking::lock;
+
+/// The size icons are made at. The window shows them at up to 36 px, so this stays sharp on a screen at 175%.
+pub const ICON_PX: u32 = 64;
+
+/// The most executables the cache remembers, far more than ever play audio in one session. When it is full it starts
+/// over.
+const MAX_ICONS: usize = 256;
+
+/// Reads an executable's icon; [`rt_capture::app_icon`] in the app, a fake in tests.
+pub type IconReader = Box<dyn Fn(&Path) -> Option<IconImage> + Send + Sync>;
+
+/// The icon of one executable, made once; `None` inside when it has none.
+type IconCell = Arc<OnceLock<Option<String>>>;
+
+/// The icons made so far, by executable. An executable without an icon is remembered too, so it isn't read again.
+pub struct IconCache {
+    read: IconReader,
+    by_exe: Mutex<HashMap<PathBuf, IconCell>>,
+}
+
+/// The icon cache as managed app state.
+pub type SharedIcons = Arc<IconCache>;
+
+impl Default for IconCache {
+    fn default() -> Self {
+        IconCache::with_reader(Box::new(|exe| rt_capture::app_icon(exe, ICON_PX)))
+    }
+}
+
+impl IconCache {
+    pub fn with_reader(read: IconReader) -> Self {
+        IconCache {
+            read,
+            by_exe: Mutex::default(),
+        }
+    }
+
+    /// The icon of `exe` as a `data:` URL, or `None` if it has none. Reads the file the first time, so not on the UI
+    /// thread. Lists asking for the same new executable at once wait for one read.
+    pub fn data_url(&self, exe: &Path) -> Option<String> {
+        let cell = {
+            let mut by_exe = lock(&self.by_exe);
+            if by_exe.len() >= MAX_ICONS && !by_exe.contains_key(exe) {
+                by_exe.clear();
+            }
+            Arc::clone(by_exe.entry(exe.to_path_buf()).or_default())
+        };
+        // Not locked while reading: the icons of other executables stay available meanwhile.
+        cell.get_or_init(|| (self.read)(exe).and_then(|icon| png_data_url(&icon)))
+            .clone()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        lock(&self.by_exe).len()
+    }
+
+    /// `app` as the app list shows it, with its icon.
+    pub fn entry(&self, app: AudioApp) -> AppEntry {
+        let icon = app.exe_path.as_deref().and_then(|exe| self.data_url(exe));
+        AppEntry {
+            pid: app.pid,
+            name: app.name,
+            exe_path: app.exe_path.map(|path| path.to_string_lossy().into_owned()),
+            icon,
+        }
+    }
+}
+
+/// `icon` as a `data:image/png;base64,…` URL; `None` if its pixels don't add up to its size.
+pub fn png_data_url(icon: &IconImage) -> Option<String> {
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, icon.width, icon.height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().ok()?;
+        writer.write_image_data(&icon.rgba).ok()?;
+        writer.finish().ok()?;
+    }
+    Some(format!("data:image/png;base64,{}", BASE64.encode(&png)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    fn red_square(size: u32) -> IconImage {
+        IconImage {
+            width: size,
+            height: size,
+            rgba: [255, 0, 0, 255].repeat((size * size) as usize),
+        }
+    }
+
+    #[test]
+    fn an_icon_becomes_a_png_data_url_that_decodes_to_the_same_pixels() {
+        let icon = red_square(4);
+        let url = png_data_url(&icon).expect("encodes");
+        let encoded = url.strip_prefix("data:image/png;base64,").expect("a PNG data URL");
+        let png = BASE64.decode(encoded).expect("valid base64");
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!((info.width, info.height), (4, 4));
+        assert_eq!(&pixels[..info.buffer_size()], icon.rgba.as_slice());
+    }
+
+    #[test]
+    fn pixels_that_do_not_fit_the_size_make_no_icon() {
+        let mut icon = red_square(4);
+        icon.rgba.truncate(10);
+        assert_eq!(png_data_url(&icon), None);
+    }
+
+    fn counting_cache(icon: Option<IconImage>) -> (IconCache, Arc<AtomicUsize>) {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reads);
+        let cache = IconCache::with_reader(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            icon.clone()
+        }));
+        (cache, reads)
+    }
+
+    fn app(exe: Option<&str>) -> AudioApp {
+        AudioApp {
+            pid: 42,
+            name: "Discord".into(),
+            exe_path: exe.map(PathBuf::from),
+        }
+    }
+
+    #[test]
+    fn each_executable_is_read_once() {
+        let (cache, reads) = counting_cache(Some(red_square(2)));
+        let first = cache.entry(app(Some("C:\\Discord.exe")));
+        let second = cache.entry(app(Some("C:\\Discord.exe")));
+        assert!(first.icon.as_deref().unwrap().starts_with("data:image/png;base64,"));
+        assert_eq!(first, second);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        cache.entry(app(Some("C:\\Teams.exe")));
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn lists_at_the_same_time_read_a_new_executable_once() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reads);
+        let cache = Arc::new(IconCache::with_reader(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            Some(red_square(2))
+        })));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                std::thread::spawn(move || cache.data_url(Path::new("C:\\Discord.exe")))
+            })
+            .collect();
+        let urls: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(urls.iter().all(|url| url.is_some() && *url == urls[0]));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_cache_stays_bounded() {
+        let (cache, _) = counting_cache(None);
+        for i in 0..MAX_ICONS + 10 {
+            cache.data_url(Path::new(&format!("C:\\app-{i}.exe")));
+        }
+        assert!(cache.len() <= MAX_ICONS, "{} icons kept", cache.len());
+        // It still works after making room.
+        assert_eq!(cache.data_url(Path::new("C:\\app-0.exe")), None);
+    }
+
+    #[test]
+    fn an_executable_without_an_icon_is_remembered_too() {
+        let (cache, reads) = counting_cache(None);
+        assert_eq!(cache.entry(app(Some("C:\\NoIcon.exe"))).icon, None);
+        assert_eq!(cache.entry(app(Some("C:\\NoIcon.exe"))).icon, None);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_app_without_an_executable_gets_the_generic_icon() {
+        let (cache, reads) = counting_cache(Some(red_square(2)));
+        let entry = cache.entry(app(None));
+        assert_eq!(
+            entry,
+            AppEntry {
+                pid: 42,
+                name: "Discord".into(),
+                exe_path: None,
+                icon: None,
+            }
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_real_reader_has_no_icon_for_a_missing_file() {
+        assert_eq!(IconCache::default().data_url(Path::new("does/not/exist.exe")), None);
+    }
+}

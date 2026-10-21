@@ -1,10 +1,8 @@
 <script lang="ts">
   import type { Settings } from '../api';
-  import { targetIcon } from '../apps';
   import { formatAccel } from '../hotkey';
   import { describeStatus, outputWarnings } from '../status';
   import type { SettingsStore } from '../store.svelte';
-  import AppIcon from './AppIcon.svelte';
 
   interface Props {
     store: SettingsStore;
@@ -15,7 +13,6 @@
 
   const text = $derived(describeStatus(store.status, settings.target));
   const warnings = $derived(store.status ? outputWarnings(store.status) : []);
-  const icon = $derived(targetIcon(store.apps, settings.target));
   const state = $derived(store.status?.capture.state ?? 'noTarget');
   const nothingToCapture = $derived(state === 'noTarget' || state === 'unsupported');
   const playing = $derived((store.status?.playback ?? 'idle') !== 'idle');
@@ -27,13 +24,11 @@
 </script>
 
 <section class="status" aria-label="Status">
-  <div class="who">
-    <AppIcon src={icon} size={36} />
-    <div class="lines">
-      <p class="headline {text.tone}" aria-live="polite">{text.headline}</p>
-      {#if text.detail}<p class="muted">{text.detail}</p>{/if}
-      {#if text.playback}<p class="playback">{text.playback}</p>{/if}
-    </div>
+  <!-- The chosen app, with its icon, is in the app selector below. -->
+  <div class="lines">
+    <p class="headline {text.tone}" aria-live="polite">{text.headline}</p>
+    {#if text.detail}<p class="muted">{text.detail}</p>{/if}
+    {#if text.playback}<p class="playback">{text.playback}</p>{/if}
   </div>
 
   <div class="buttons">
@@ -73,12 +68,6 @@
     border-radius: var(--radius);
     padding: 0.85rem 1rem;
     box-shadow: 0 4px 10px -8px rgb(0 0 0 / 0.5);
-  }
-
-  .who {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
   }
 
   .lines p {

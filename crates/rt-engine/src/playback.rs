@@ -126,15 +126,12 @@ impl PlayerThread {
 
     fn handle(&mut self, command: PlayCmd) {
         match command {
-            PlayCmd::Replay => self.replay(),
+            PlayCmd::Replay => self.press(false),
             PlayCmd::Stop => self.stop(),
-            PlayCmd::ToggleCatchUp => self.toggle_catch_up(),
+            PlayCmd::ToggleCatchUp => self.press(true),
             PlayCmd::SetConfig(config) => {
                 self.config = config;
-                let speed = self.speed();
-                if let Some((player, _)) = &mut self.player {
-                    player.set_speed(speed);
-                }
+                self.apply_mode();
             }
             PlayCmd::Wipe => {
                 // The duck thread restores the volume on its own when the target changes or capture pauses.
@@ -152,6 +149,15 @@ impl PlayerThread {
             self.config.catch_up_speed
         } else {
             self.config.replay_speed
+        }
+    }
+
+    /// Gives the player the speed of a replay or a catch-up. A catch-up also ends once it has caught up with live.
+    fn apply_mode(&mut self) {
+        let (speed, catching_up) = (self.speed(), self.catching_up);
+        if let Some((player, _)) = &mut self.player {
+            player.set_speed(speed);
+            player.set_end_at_live(catching_up);
         }
     }
 
@@ -175,7 +181,7 @@ impl PlayerThread {
     }
 
     fn replay(&mut self) {
-        let speed = self.speed();
+        let (speed, catching_up) = (self.speed(), self.catching_up);
         let core = lock(&self.core);
         let had_player = self.player.as_ref().map(|(_, g)| *g);
         Self::sync_player(&mut self.player, &core);
@@ -189,6 +195,7 @@ impl PlayerThread {
             return;
         }
         player.set_speed(speed);
+        player.set_end_at_live(catching_up);
         if !player.replay(recorder.buffer()) {
             drop(core);
             return self.beep();
@@ -229,21 +236,23 @@ impl PlayerThread {
         }
     }
 
-    fn toggle_catch_up(&mut self) {
+    /// The replay hotkey (`catch_up` false) or the catch-up hotkey (true). While idle it starts a replay at that speed.
+    /// During a replay at that speed it steps one utterance back; during one at the other speed it switches to this
+    /// speed from where the replay is.
+    fn press(&mut self, catch_up: bool) {
         if !self.is_playing() {
-            self.catching_up = true;
+            self.catching_up = catch_up;
             self.replay();
             if !self.is_playing() {
                 self.catching_up = false;
             }
-            return;
+        } else if self.catching_up == catch_up {
+            self.replay();
+        } else {
+            self.catching_up = catch_up;
+            self.apply_mode();
+            self.report_behind(false);
         }
-        self.catching_up = !self.catching_up;
-        let speed = self.speed();
-        if let Some((player, _)) = &mut self.player {
-            player.set_speed(speed);
-        }
-        self.report_behind(false);
     }
 
     /// Stops the replay: the output fades out, and the volume comes back after the restore delay.

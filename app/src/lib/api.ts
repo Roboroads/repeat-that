@@ -41,6 +41,8 @@ export interface Status {
   output: { deviceName: string | null; fellBack: boolean; error: string | null };
   hotkeys: Record<HotkeyName, HotkeyState>;
   vadFallback: boolean;
+  /** Why the settings can't be saved, as a sentence for the user; `null` when they can. */
+  settingsProblem: string | null;
 }
 
 export interface AppEntry {

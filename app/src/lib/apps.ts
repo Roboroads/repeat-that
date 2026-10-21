@@ -44,8 +44,3 @@ export function appRows(apps: AppEntry[], target: Target): AppRow[] {
   }
   return rows;
 }
-
-/** The icon to show for the target, taken from the running apps; `null` while it is not running. */
-export function targetIcon(apps: AppEntry[], target: Target): string | null {
-  return apps.find((app) => matchesTarget(target, app))?.icon ?? null;
-}

@@ -10,6 +10,9 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::actions::{self, AppAction};
+use crate::ipc::{CaptureStateName, HotkeyBindings, HotkeyState, HotkeyStates, Playback, Status};
+use crate::settings::HOTKEY_ACTIONS;
+use crate::source::UNSUPPORTED;
 
 /// The window title and the start of the tooltip.
 const APP_NAME: &str = "Repeat That";
@@ -24,8 +27,6 @@ pub enum TrayIconKind {
 }
 
 /// What capture is doing, as far as the tray cares.
-// Until the audio engine feeds the tray only `NoTarget` and `Paused` happen; the other states are tested.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureView {
     NoTarget,
@@ -33,11 +34,12 @@ pub enum CaptureView {
     Waiting(String),
     Capturing(String),
     Paused,
+    /// Capture failed (and is tried again): what to tell the user.
     Error(String),
+    /// Capturing isn't possible here: why.
+    Unsupported(String),
 }
 
-// Constructed once the audio engine feeds the tray; tested until then.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlaybackView {
     #[default]
@@ -69,28 +71,49 @@ impl Default for TrayStatus {
 }
 
 impl TrayStatus {
+    /// What the tray shows for `status`: what the engine says, as the window shows it.
+    pub fn from_status(status: &Status) -> Self {
+        let name = || status.target_name.clone().unwrap_or_else(|| "the app".into());
+        let capture = match status.capture.state {
+            CaptureStateName::NoTarget => CaptureView::NoTarget,
+            CaptureStateName::Waiting => CaptureView::Waiting(name()),
+            CaptureStateName::Capturing => CaptureView::Capturing(name()),
+            CaptureStateName::Paused => CaptureView::Paused,
+            // The tooltip is short; the settings window has the details.
+            CaptureStateName::Error => CaptureView::Error(format!("Can't capture {}", name())),
+            CaptureStateName::Unsupported => {
+                CaptureView::Unsupported(status.capture.message.clone().unwrap_or_else(|| UNSUPPORTED.into()))
+            }
+        };
+        TrayStatus {
+            capture,
+            playback: match status.playback {
+                Playback::Idle => PlaybackView::Idle,
+                Playback::Replaying => PlaybackView::Replaying,
+                Playback::CatchingUp => PlaybackView::CatchingUp,
+            },
+            buffered: Duration::from_millis(status.buffered_ms),
+            behind: status.behind_ms.map(Duration::from_millis),
+        }
+    }
+
     pub fn is_paused(&self) -> bool {
         self.capture == CaptureView::Paused
     }
 
-    /// Pausing wipes the buffer and stops playback. There is no engine to resume to yet, so resuming goes back to "no
-    /// app selected".
-    pub fn set_paused(&mut self, paused: bool) {
-        if paused {
-            *self = TrayStatus {
-                capture: CaptureView::Paused,
-                ..TrayStatus::default()
-            };
-        } else if self.is_paused() {
-            self.capture = CaptureView::NoTarget;
-        }
+    /// Whether there is an app to pause, as for the window's Pause button. Pausing nothing would only pause the next
+    /// app picked, without anything showing it.
+    pub fn can_pause(&self) -> bool {
+        !matches!(self.capture, CaptureView::NoTarget | CaptureView::Unsupported(_))
     }
 
     pub fn icon(&self) -> TrayIconKind {
         match self.capture {
             CaptureView::Capturing(_) => TrayIconKind::Capturing,
             CaptureView::Paused => TrayIconKind::Paused,
-            CaptureView::NoTarget | CaptureView::Waiting(_) | CaptureView::Error(_) => TrayIconKind::Idle,
+            CaptureView::NoTarget | CaptureView::Waiting(_) | CaptureView::Error(_) | CaptureView::Unsupported(_) => {
+                TrayIconKind::Idle
+            }
         }
     }
 
@@ -112,7 +135,7 @@ impl TrayStatus {
             CaptureView::Waiting(name) => format!("Waiting for {name}"),
             CaptureView::Capturing(name) => format!("Capturing {name} · {} s of speech", whole_seconds(self.buffered)),
             CaptureView::Paused => "Paused".to_string(),
-            CaptureView::Error(message) => message.clone(),
+            CaptureView::Error(message) | CaptureView::Unsupported(message) => message.clone(),
         }
     }
 }
@@ -128,6 +151,34 @@ pub struct HotkeyLabels {
     pub replay: Option<String>,
     pub catch_up: Option<String>,
     pub stop: Option<String>,
+}
+
+impl HotkeyLabels {
+    /// The combinations from `bindings` that work: one another app holds, an invalid one or none shows no label, so
+    /// the menu never names a hotkey that does nothing.
+    pub fn from_states(bindings: &HotkeyBindings, states: &HotkeyStates) -> Self {
+        let mut labels = HotkeyLabels::default();
+        for (action, state) in HOTKEY_ACTIONS.into_iter().zip(states.slots()) {
+            let label = match state {
+                HotkeyState::Ok => bindings.accel(action).map(String::from),
+                HotkeyState::InUse | HotkeyState::Invalid | HotkeyState::Unbound => None,
+            };
+            match action {
+                AppAction::Replay => labels.replay = label,
+                AppAction::CatchUp => labels.catch_up = label,
+                AppAction::Stop => labels.stop = label,
+                AppAction::TogglePause | AppAction::OpenSettings | AppAction::Quit => {}
+            }
+        }
+        labels
+    }
+}
+
+/// Everything the tray shows: the status and the hotkeys.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrayState {
+    pub status: TrayStatus,
+    pub hotkeys: HotkeyLabels,
 }
 
 pub const STATUS_ID: &str = "status";
@@ -184,7 +235,7 @@ pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
         MenuEntry::Item(MenuItemModel {
             id: AppAction::TogglePause.id(),
             label: "Pause capture".into(),
-            enabled: true,
+            enabled: status.can_pause(),
             checked: Some(status.is_paused()),
         }),
         action(AppAction::OpenSettings, "Settings…", None),
@@ -313,11 +364,11 @@ impl<R: Runtime> TrayTarget for LiveTray<'_, R> {
     }
 }
 
-/// The shared status the tray shows. Locked briefly; never held across a call into the UI toolkit.
-pub type SharedStatus = Mutex<TrayStatus>;
+/// The shared state the tray shows. Locked briefly; never held across a call into the UI toolkit.
+pub type SharedStatus = Mutex<TrayState>;
 
-/// Locks the status, ignoring poisoning: a panic elsewhere must not take the tray down with it.
-pub fn lock_status(status: &SharedStatus) -> MutexGuard<'_, TrayStatus> {
+/// Locks the state, ignoring poisoning: a panic elsewhere must not take the tray down with it.
+pub fn lock_status(status: &SharedStatus) -> MutexGuard<'_, TrayState> {
     status.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -369,11 +420,11 @@ pub fn refresh<R: Runtime>(app: &AppHandle<R>) {
 
 /// The body of [`refresh`]; main thread only.
 fn apply_status<R: Runtime>(app: &AppHandle<R>) {
-    let next = current_model(app);
     // Before `setup` (and in tests without a tray) there is nothing to update.
     let (Some(view), Some(tray)) = (app.try_state::<TrayView<R>>(), app.tray_by_id(TRAY_ID)) else {
         return;
     };
+    let next = current_model(app);
     sync(
         &view.applied,
         &next,
@@ -385,9 +436,9 @@ fn apply_status<R: Runtime>(app: &AppHandle<R>) {
 }
 
 fn current_model<R: Runtime>(app: &AppHandle<R>) -> TrayModel {
-    let status = app.state::<SharedStatus>();
-    // Hotkey labels come from the settings once those exist.
-    build_model(&lock_status(&status), &HotkeyLabels::default())
+    let shared = app.state::<SharedStatus>();
+    let state = lock_status(&shared);
+    build_model(&state.status, &state.hotkeys)
 }
 
 fn build_menu<R: Runtime>(app: &AppHandle<R>, model: &TrayModel) -> tauri::Result<Menu<R>> {
@@ -420,6 +471,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, model: &TrayModel) -> tauri::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ipc::CaptureStatus;
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
@@ -429,6 +481,13 @@ mod tests {
         TrayStatus {
             capture: CaptureView::Capturing(name.into()),
             buffered: secs(buffered),
+            ..TrayStatus::default()
+        }
+    }
+
+    fn paused() -> TrayStatus {
+        TrayStatus {
+            capture: CaptureView::Paused,
             ..TrayStatus::default()
         }
     }
@@ -514,6 +573,7 @@ mod tests {
         assert_eq!(icon(NoTarget), TrayIconKind::Idle);
         assert_eq!(icon(Waiting("Discord".into())), TrayIconKind::Idle);
         assert_eq!(icon(Error("boom".into())), TrayIconKind::Idle);
+        assert_eq!(icon(Unsupported("no backend".into())), TrayIconKind::Idle);
         assert_eq!(icon(Capturing("Discord".into())), TrayIconKind::Capturing);
         assert_eq!(icon(Paused), TrayIconKind::Paused);
     }
@@ -580,10 +640,32 @@ mod tests {
 
     #[test]
     fn status_line_item_is_disabled_and_the_rest_are_enabled() {
-        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        let model = build_model(&capturing("Discord", 1), &HotkeyLabels::default());
         for i in items(&model) {
             assert_eq!(i.enabled, i.id != STATUS_ID, "{}", i.id);
         }
+    }
+
+    #[test]
+    fn pause_is_disabled_while_there_is_no_app_to_capture() {
+        // Like the window's Pause button: pausing nothing would only pause the next app picked, unseen.
+        let pause_enabled = |capture| {
+            let status = TrayStatus {
+                capture,
+                ..TrayStatus::default()
+            };
+            item(
+                &build_model(&status, &HotkeyLabels::default()),
+                AppAction::TogglePause.id(),
+            )
+            .enabled
+        };
+        assert!(!pause_enabled(CaptureView::NoTarget));
+        assert!(!pause_enabled(CaptureView::Unsupported(UNSUPPORTED.into())));
+        assert!(pause_enabled(CaptureView::Waiting("Discord".into())));
+        assert!(pause_enabled(CaptureView::Capturing("Discord".into())));
+        assert!(pause_enabled(CaptureView::Paused), "resuming stays possible");
+        assert!(pause_enabled(CaptureView::Error("Can't capture Discord".into())));
     }
 
     #[test]
@@ -591,9 +673,7 @@ mod tests {
         let hotkeys = HotkeyLabels::default();
         let running = build_model(&capturing("Discord", 1), &hotkeys);
         assert_eq!(item(&running, AppAction::TogglePause.id()).checked, Some(false));
-        let mut paused = capturing("Discord", 1);
-        paused.set_paused(true);
-        let model = build_model(&paused, &hotkeys);
+        let model = build_model(&paused(), &hotkeys);
         assert_eq!(item(&model, AppAction::TogglePause.id()).checked, Some(true));
         assert_eq!(model.icon, TrayIconKind::Paused);
         assert_eq!(item(&model, STATUS_ID).label, "Paused");
@@ -626,32 +706,136 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pausing_wipes_the_status_and_resuming_goes_back_to_no_target() {
-        let mut status = TrayStatus {
-            playback: PlaybackView::Replaying,
-            behind: Some(secs(2)),
-            ..capturing("Discord", 30)
-        };
-        status.set_paused(true);
-        assert!(status.is_paused());
-        assert_eq!(
-            status,
-            TrayStatus {
-                capture: CaptureView::Paused,
-                ..TrayStatus::default()
-            }
-        );
-        status.set_paused(false);
-        assert!(!status.is_paused());
-        assert_eq!(status, TrayStatus::default());
+    fn wire(state: CaptureStateName, message: Option<&str>, target: Option<&str>) -> Status {
+        Status {
+            capture: CaptureStatus {
+                state,
+                message: message.map(String::from),
+            },
+            target_name: target.map(String::from),
+            ..Status::default()
+        }
+    }
+
+    fn view(status: &Status) -> CaptureView {
+        TrayStatus::from_status(status).capture
     }
 
     #[test]
-    fn resuming_when_not_paused_changes_nothing() {
-        let mut status = capturing("Discord", 30);
-        status.set_paused(false);
-        assert_eq!(status, capturing("Discord", 30));
+    fn the_capture_state_comes_from_the_status() {
+        use CaptureStateName as S;
+        let discord = Some("Discord");
+        assert_eq!(view(&wire(S::NoTarget, None, None)), CaptureView::NoTarget);
+        assert_eq!(
+            view(&wire(S::Waiting, None, discord)),
+            CaptureView::Waiting("Discord".into())
+        );
+        assert_eq!(
+            view(&wire(S::Capturing, None, discord)),
+            CaptureView::Capturing("Discord".into())
+        );
+        assert_eq!(view(&wire(S::Paused, None, discord)), CaptureView::Paused);
+    }
+
+    #[test]
+    fn a_failing_capture_names_the_app_and_leaves_the_details_to_the_window() {
+        let status = wire(
+            CaptureStateName::Error,
+            Some("audio backend error: 0x88890004"),
+            Some("Discord"),
+        );
+        assert_eq!(view(&status), CaptureView::Error("Can't capture Discord".into()));
+    }
+
+    #[test]
+    fn an_unsupported_system_says_why() {
+        let status = wire(CaptureStateName::Unsupported, Some("No capture on this OS"), None);
+        assert_eq!(view(&status), CaptureView::Unsupported("No capture on this OS".into()));
+        assert_eq!(TrayStatus::from_status(&status).status_line(), "No capture on this OS");
+        let status = wire(CaptureStateName::Unsupported, None, None);
+        assert_eq!(view(&status), CaptureView::Unsupported(UNSUPPORTED.into()));
+    }
+
+    #[test]
+    fn a_target_without_a_name_is_the_app() {
+        assert_eq!(
+            view(&wire(CaptureStateName::Waiting, None, None)),
+            CaptureView::Waiting("the app".into())
+        );
+    }
+
+    #[test]
+    fn playback_buffer_and_distance_to_live_come_from_the_status() {
+        let status = Status {
+            playback: Playback::Replaying,
+            behind_ms: Some(2600),
+            buffered_ms: 24_400,
+            ..wire(CaptureStateName::Capturing, None, Some("Discord"))
+        };
+        let tray = TrayStatus::from_status(&status);
+        assert_eq!(
+            tray,
+            TrayStatus {
+                capture: CaptureView::Capturing("Discord".into()),
+                playback: PlaybackView::Replaying,
+                buffered: Duration::from_millis(24_400),
+                behind: Some(Duration::from_millis(2600)),
+            }
+        );
+        let model = build_model(&tray, &HotkeyLabels::default());
+        assert_eq!(model.tooltip, "Repeat That - Replaying · 3 s behind live");
+        let catching_up = Status {
+            playback: Playback::CatchingUp,
+            ..status
+        };
+        assert_eq!(
+            TrayStatus::from_status(&catching_up).status_line(),
+            "Catching up · 3 s behind live"
+        );
+    }
+
+    #[test]
+    fn hotkey_labels_show_only_the_combinations_that_work() {
+        let bindings = HotkeyBindings {
+            replay: Some("Ctrl+Alt+Space".into()),
+            stop: Some("Ctrl+Shift+Escape".into()),
+            catch_up: Some("Ctrl+Alt+Frobnicate".into()),
+        };
+        let states = HotkeyStates {
+            replay: HotkeyState::Ok,
+            stop: HotkeyState::InUse,
+            catch_up: HotkeyState::Invalid,
+        };
+        assert_eq!(
+            HotkeyLabels::from_states(&bindings, &states),
+            HotkeyLabels {
+                replay: Some("Ctrl+Alt+Space".into()),
+                catch_up: None,
+                stop: None,
+            }
+        );
+    }
+
+    #[test]
+    fn hotkey_labels_for_the_defaults() {
+        let ok = HotkeyStates {
+            replay: HotkeyState::Ok,
+            stop: HotkeyState::Ok,
+            catch_up: HotkeyState::Ok,
+        };
+        assert_eq!(
+            HotkeyLabels::from_states(&HotkeyBindings::default(), &ok),
+            bound_hotkeys()
+        );
+        let unbound = HotkeyBindings {
+            replay: None,
+            stop: None,
+            catch_up: None,
+        };
+        assert_eq!(
+            HotkeyLabels::from_states(&unbound, &HotkeyStates::UNBOUND),
+            HotkeyLabels::default()
+        );
     }
 
     #[test]
@@ -718,10 +902,8 @@ mod tests {
 
     #[test]
     fn pausing_touches_the_icon_the_status_line_and_the_checkbox() {
-        let mut paused = capturing("Discord", 30);
-        paused.set_paused(true);
         assert_eq!(
-            changes(&capturing("Discord", 30), &paused),
+            changes(&capturing("Discord", 30), &paused()),
             ["icon Paused", "tooltip", "item status", "item toggle_pause"]
         );
     }
@@ -740,10 +922,8 @@ mod tests {
 
     #[test]
     fn a_failed_change_is_tried_again_and_the_rest_is_not() {
-        let mut paused = capturing("Discord", 30);
-        paused.set_paused(true);
         let applied = Mutex::new(model(&capturing("Discord", 30)));
-        let next = model(&paused);
+        let next = model(&paused());
 
         let mut broken = FakeTray {
             fail: Some("icon Paused"),
