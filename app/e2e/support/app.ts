@@ -52,17 +52,23 @@ export async function waitForBufferedSpeech(timeout = 12_000): Promise<void> {
   });
 }
 
-/** The backend's own view, for what the page does not show: the status as `get_status` answers it. */
+/** Calls a command of the backend the way the page does, and returns what it answers. */
+export async function invoke<T = void>(command: string): Promise<T> {
+  return browser.execute((name: string) => {
+    const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } })
+      .__TAURI_INTERNALS__;
+    return internals.invoke(name);
+  }, command) as Promise<T>;
+}
+
+/** The backend's own view of the engine, for what the page does not show. */
 export interface BackendStatus {
   capture: { state: string };
   playback: string;
   bufferedMs: number;
 }
 
-export async function backendStatus(): Promise<BackendStatus> {
-  return browser.execute(() => {
-    const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } })
-      .__TAURI_INTERNALS__;
-    return internals.invoke('get_status') as Promise<BackendStatus>;
-  });
-}
+export const backendStatus = () => invoke<BackendStatus>('get_status');
+
+/** The settings as the backend has them, which is what a reload shows. */
+export const backendSettings = () => invoke<{ bufferSeconds: number }>('get_settings');

@@ -1,5 +1,5 @@
 import { $, browser, expect } from '@wdio/globals';
-import { waitForPage } from '../support/app.js';
+import { backendSettings, waitForPage } from '../support/app.js';
 
 describe('settings', () => {
   before(waitForPage);
@@ -13,6 +13,10 @@ describe('settings', () => {
     expect(chosen).not.toBe('30');
     await expect($('output[for="buffer"]')).toHaveText(`${chosen} s`);
 
+    // The page sends the change on its way; a reload before the backend has it would show the old value.
+    await browser.waitUntil(async () => String((await backendSettings()).bufferSeconds) === chosen, {
+      timeoutMsg: `the backend never got a buffer length of ${chosen} s`,
+    });
     await browser.refresh();
     await waitForPage();
     await expect($('#buffer')).toHaveValue(chosen);
