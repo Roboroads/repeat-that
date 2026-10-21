@@ -326,6 +326,50 @@ describe('hotkeys the desktop assigns (the portal)', () => {
     expect(where).toHaveTextContent('Settings → Keyboard → View and Customize Shortcuts → Apps');
   });
 
+  it('offers to set the shortcuts up when no action has a key, which is how a closed dialog is asked for again', async () => {
+    const { backend } = await renderApp(
+      portal({ hotkeyTriggers: { replay: null, stop: null, catchUp: null } }),
+    );
+
+    expect(screen.queryByRole('button', { name: 'Change in system settings' })).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Set up shortcuts' }));
+
+    await waitFor(() => expect(argsOf(backend, 'configure_shortcuts')).toHaveLength(1));
+    expect(screen.queryByText(/waiting for you/)).not.toBeInTheDocument();
+  });
+
+  it('goes back to the system settings once any action has a key', async () => {
+    const view = await renderApp(portal({ hotkeyTriggers: { replay: null, stop: null, catchUp: null } }));
+    expect(screen.getByRole('button', { name: 'Set up shortcuts' })).toBeInTheDocument();
+
+    await emit('status', {
+      ...view.backend.status(),
+      hotkeyTriggers: { replay: 'Meta+R', stop: null, catchUp: null },
+    });
+
+    expect(await screen.findByRole('button', { name: 'Change in system settings' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set up shortcuts' })).not.toBeInTheDocument();
+  });
+
+  it('says the desktop is waiting for its dialog to be answered when it is', async () => {
+    await renderApp({ ...portal(), configureOutcome: 'busy' });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    expect(await screen.findByText(/waiting for you to answer its shortcuts dialog/)).toBeInTheDocument();
+  });
+
+  it('forgets that note when asking again works', async () => {
+    const { backend } = await renderApp({ ...portal(), configureOutcome: 'busy' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+    await screen.findByText(/waiting for you to answer/);
+
+    backend.configureOutcome = 'opened';
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    await waitFor(() => expect(screen.queryByText(/waiting for you to answer/)).not.toBeInTheDocument());
+  });
+
   it('says what went wrong when asking fails', async () => {
     const { backend } = await renderApp(portal());
     backend.overrides.configure_shortcuts = () => {

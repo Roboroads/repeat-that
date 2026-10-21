@@ -121,14 +121,22 @@
   // Where the desktop owns the keys (the portal).
   /** The desktop can't be asked to show its settings, so the window says where they are. */
   let settingsElsewhere = $state(false);
+  /** The desktop has its shortcuts dialog open and is waiting for the answer to it. */
+  let dialogOpen = $state(false);
   /** Why asking failed. */
   let configureError = $state<string | null>(null);
 
+  /** Whether the desktop gave any action a key. Until it does, the way on is its dialog, not its settings. */
+  const anyKey = $derived(FIELDS.some(({ name }) => store.status?.hotkeyTriggers[name] != null));
+
   async function openSystemSettings() {
     settingsElsewhere = false;
+    dialogOpen = false;
     configureError = null;
     try {
-      settingsElsewhere = (await configureShortcuts()) === 'unsupported';
+      const outcome = await configureShortcuts();
+      settingsElsewhere = outcome === 'unsupported';
+      dialogOpen = outcome === 'busy';
     } catch (raw) {
       configureError = toApiError(raw).message;
     }
@@ -184,8 +192,13 @@
       </div>
     {/each}
     <div class="system">
-      <button type="button" onclick={openSystemSettings}>Change in system settings</button>
+      <button type="button" onclick={openSystemSettings}>
+        {anyKey ? 'Change in system settings' : 'Set up shortcuts'}
+      </button>
     </div>
+    {#if dialogOpen}
+      <p class="note">Your desktop is waiting for you to answer its shortcuts dialog.</p>
+    {/if}
     {#if settingsElsewhere}
       <p class="note">
         This desktop can't open them from here. In KDE, look under System Settings → Shortcuts → Repeat That. In GNOME,
@@ -196,7 +209,7 @@
       <p class="note problem" role="alert">{configureError}</p>
     {/if}
   {:else if backend === 'none'}
-    <p class="warning">Global hotkeys aren't available on this desktop.</p>
+    <p class="callout">Global hotkeys aren't available on this desktop.</p>
     <p class="note">
       Bind each command below as a custom keyboard shortcut in your desktop's settings (in GNOME: Settings → Keyboard →
       View and Customize Shortcuts → Custom Shortcuts). Each one acts on the running app.
@@ -316,14 +329,6 @@
   .system {
     display: flex;
     justify-content: flex-start;
-  }
-
-  .warning {
-    padding: 0.45rem 0.7rem;
-    border-radius: 8px;
-    background: var(--warn-bg);
-    color: var(--warn);
-    font-size: 0.9rem;
   }
 
   .command {

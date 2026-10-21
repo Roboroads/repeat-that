@@ -48,7 +48,7 @@
   </p>
   {#if !hasTray}
     <!-- The tray menu is where Quit lives; without a tray, this is the way out. -->
-    <p class="notice">
+    <p class="callout">
       No tray on this desktop. Open Repeat That from your app menu. On GNOME, install the AppIndicator and
       KStatusNotifierItem Support extension for a tray icon.
     </p>
@@ -60,14 +60,6 @@
 
 <style>
   .privacy {
-    font-size: 0.9rem;
-  }
-
-  .notice {
-    padding: 0.45rem 0.7rem;
-    border-radius: 8px;
-    background: var(--warn-bg);
-    color: var(--warn);
     font-size: 0.9rem;
   }
 </style>

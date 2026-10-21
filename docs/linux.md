@@ -15,7 +15,10 @@ How the hotkeys work depends on the session you are logged in to.
   you ended up with, or "Not assigned" for an action that has none, and has no recorder. To change a key, press
   **Change in system settings**. Depending on the version of the portal that opens the desktop's own shortcut page, or
   tells you where to look: in KDE it is System Settings → Shortcuts → Repeat That, in GNOME it is Settings → Keyboard →
-  View and Customize Shortcuts → Apps. Other Wayland desktops that provide the portal work the same way.
+  View and Customize Shortcuts → Apps. If you closed the first dialog without choosing, no action has a key and the
+  button reads **Set up shortcuts**: it opens the dialog again. Other Wayland desktops that provide the portal work the
+  same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets the
+  shortcuts up as soon as it is there.
 - **Wayland without the portal.** GNOME 46 (Ubuntu 24.04), Sway, Hyprland and others have no GlobalShortcuts portal, so
   Repeat That can't have global hotkeys there. The Hotkeys section says so and lists the three commands below, each with
   a Copy button. Bind them as custom shortcuts in your desktop, and they do the same job.
@@ -37,7 +40,9 @@ followed by `--replay`, and for a `.deb` or `.rpm` it is `repeat-that --replay`.
 Each command counts as one press of the matching hotkey. A second `--replay` while a replay plays steps back one
 utterance, `--catch-up` speeds up from where the replay is and stops when it reaches live, and `--stop` ends the replay.
 The commands never open the settings window. If Repeat That isn't running, the command starts it without a window and
-runs the action once it is up. Nothing is buffered yet at that point, so a replay plays the short beep. Flags that
+runs the action once it is up. Nothing is buffered yet at that point, so a replay plays the short beep. The one
+exception is the very first time you run Repeat That: it opens the window then, whatever started it, so that you can
+pick the app to catch up on. Flags that
 Repeat That doesn't know are ignored, and `--hidden` can be combined with an action.
 
 ### Binding the commands

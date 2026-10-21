@@ -58,8 +58,11 @@ export interface Status {
   trayAvailable: boolean;
 }
 
-/** What `configure_shortcuts` did: the desktop shows its shortcut settings, or it can't be asked to. */
-export type ConfigureOutcome = 'opened' | 'unsupported';
+/**
+ * What `configure_shortcuts` did: the desktop shows its shortcut settings (or its dialog to pick the keys), it can't be
+ * asked to, or it is waiting for the answer to a dialog it has open and was not asked again.
+ */
+export type ConfigureOutcome = 'opened' | 'unsupported' | 'busy';
 
 export interface AppEntry {
   pid: number;
