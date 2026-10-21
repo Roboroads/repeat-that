@@ -3185,7 +3185,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "repeat-that"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "embed-resource",
@@ -3253,7 +3253,7 @@ dependencies = [
 
 [[package]]
 name = "rt-capture"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "hound",
  "rt-core",
@@ -3263,7 +3263,7 @@ dependencies = [
 
 [[package]]
 name = "rt-core"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "hound",
  "ort",
@@ -3271,7 +3271,7 @@ dependencies = [
 
 [[package]]
 name = "rt-engine"
-version = "0.0.1"
+version = "0.1.0"
 dependencies = [
  "cpal",
  "hound",
