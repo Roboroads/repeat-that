@@ -4,7 +4,7 @@ Thanks for wanting to help! Bug reports, feature ideas, testing on different har
 
 ## Getting started
 
-1. Install [Rust](https://rustup.rs) (stable), Node.js 22 LTS or later, and the
+1. Install [Rust](https://rustup.rs) (stable), Node.js 22.19 or later, and the
    [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Debian/Ubuntu:
    `sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev`
 2. Run the Rust tests: `cargo test --workspace`
@@ -26,7 +26,8 @@ to be buffered, replays, pauses, changes a setting and records a hotkey. It runs
 build is the one that needs no capture backend: it plays the speech fixture as an app called `speech_8s`, and
 `REPEAT_THAT_NULL_OUTPUT=1` (set by the test) plays replays into nothing, so no audio device is needed either.
 
-One-time setup on Debian/Ubuntu:
+It needs Node.js 22.19 or later, which is what WebdriverIO asks for (`engines` in `app/package.json`). One-time setup on
+Debian/Ubuntu:
 
 ```sh
 sudo apt install xvfb webkit2gtk-driver dbus-daemon   # plus the packages from step 1 above
@@ -40,10 +41,10 @@ xvfb-run -a npm run test:e2e    # on a desktop session, `npm run test:e2e` is en
 ```
 
 `npm run test:e2e` builds the debug app first (`tauri build --debug --no-bundle`), so the first run takes a few
-minutes. The specs themselves take about half a minute. Each spec file starts its own app with a fresh settings folder
-and its own D-Bus session, so the specs don't depend on each other and never touch your real settings or a copy of
-Repeat That that is already running. Specs are in `app/e2e/specs/*.e2e.ts`, the browser setup is in
-`app/e2e/wdio.conf.ts`.
+minutes. The specs themselves take about half a minute. Each spec file starts its own app, its own tauri-driver (on a
+free port) and its own D-Bus session, with the app's home, temp and settings folders in one scratch folder. The specs
+don't depend on each other, and they never touch your real settings or a copy of Repeat That that is already running.
+Specs are in `app/e2e/specs/*.e2e.ts`, the setup is in `app/e2e/wdio.conf.ts`.
 
 CI runs the same thing as the required check `E2E (Linux)`. Like every other test, it must not write captured audio to
 disk, and the `privacy` spec checks that.

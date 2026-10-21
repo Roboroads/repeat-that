@@ -89,7 +89,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: needs.changes.outputs.code != 'false'
         with:
-          node-version: 22 # the oldest Node the docs ask for (README, CONTRIBUTING)
+          node-version: '22.19' # the oldest Node the docs ask for (README, CONTRIBUTING); WebdriverIO needs 22.19
           cache: npm
           cache-dependency-path: app/package-lock.json
       - name: Install frontend dependencies
@@ -150,7 +150,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: needs.changes.outputs.code != 'false'
         with:
-          node-version: 22 # the oldest Node the docs ask for (README, CONTRIBUTING)
+          node-version: '22.19' # the oldest Node the docs ask for (README, CONTRIBUTING); WebdriverIO needs 22.19
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
@@ -162,7 +162,8 @@ jobs:
 
   # Drives the real desktop app (WebdriverIO and tauri-driver, on a virtual display) the way a person would: it picks the
   # fake app that debug builds play on Linux, replays, pauses and changes settings. See app/e2e/wdio.conf.ts. Like the
-  # other jobs it runs unless the run is cancelled, and a docs-only change skips every step, not the job.
+  # other jobs it runs unless the run is cancelled, and a docs-only change skips every step, not the job. WebdriverIO
+  # needs Node.js 22.19 or later (`engines` in app/package.json), hence the Node version below.
   e2e:
     name: E2E (Linux)
     needs: changes
@@ -187,7 +188,7 @@ jobs:
       - uses: actions/setup-node@v7
         if: needs.changes.outputs.code != 'false'
         with:
-          node-version: 22 # the oldest Node the docs ask for (README, CONTRIBUTING)
+          node-version: '22.19' # the oldest Node the docs ask for (README, CONTRIBUTING); WebdriverIO needs 22.19
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci

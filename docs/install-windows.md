@@ -45,7 +45,7 @@ audio.
 The installer comes from CI, but you can build your own:
 
 ```powershell
-# needs Rust (https://rustup.rs), Node.js 22 LTS or later and the Visual Studio C++ build tools
+# needs Rust (https://rustup.rs), Node.js 22.19 or later and the Visual Studio C++ build tools
 git clone https://github.com/Roboroads/repeat-that
 cd repeat-that\app
 npm ci

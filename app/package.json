@@ -4,6 +4,9 @@
   "version": "0.0.1",
   "description": "Settings UI of Repeat That",
   "license": "GPL-3.0-or-later",
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
