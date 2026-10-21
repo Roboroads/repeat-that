@@ -29,5 +29,13 @@ tauri-plugin-opener = "2.7"
 tauri-plugin-single-instance = "2.5"
 tauri-plugin-store = "2.5"
 
+# The Wayland hotkey backend and the session checks talk to the XDG desktop portals and the session bus. Both crates are
+# MIT. `zbus` is in the tree already (single-instance, opener) and runs on async-io; ashpd follows it instead of
+# starting a second async runtime.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
+futures-util = "0.3"
+zbus = "5"
+
 [dev-dependencies]
 tauri = { version = "2.12", features = ["test"] }

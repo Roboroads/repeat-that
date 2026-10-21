@@ -4,13 +4,20 @@ mod actions;
 mod autostart;
 mod commands;
 mod engine;
+#[cfg(all(test, target_os = "linux"))]
+mod fake_portal;
 mod hotkeys;
 mod icons;
 mod ipc;
 mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
+#[cfg(target_os = "linux")]
+mod portal;
+#[cfg(all(test, target_os = "linux"))]
+mod private_bus;
 mod service;
+mod session;
 mod settings;
 mod source;
 mod store;
@@ -44,13 +51,18 @@ pub fn run() {
     }
     // Hotkeys, the tray and the window drive the engine; it runs from `setup` on.
     let engine: SharedAppEngine = Arc::new(AppEngine::default());
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         // Start order: single instance first, so a second launch exits before it sets anything up, then the plugins the
         // rest of the app uses, then the settings with the hotkeys, the tray and the audio engine (all in `setup`).
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             window::on_second_launch(app, &args)
-        }))
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        }));
+    // The plugin's hotkeys need an X server (or Windows, or macOS). On Wayland the portal takes their place, and without
+    // a display the plugin could only fail.
+    if session::wants_shortcut_plugin(&session::ProcessEnv) {
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    }
+    let app = builder
         .plugin(tauri_plugin_store::Builder::new().build())
         // Starting with the OS is off until the user turns it on; the entry starts the app hidden in the tray.
         .plugin(tauri_plugin_autostart::init(
@@ -71,6 +83,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let handle = app.handle();
+            // What the desktop is like decides how the hotkeys work and whether the window opens at every launch.
+            session::install(handle);
             // The settings decide whether this is the first run and which hotkeys to register, so they come first.
             service::install(handle);
             tray::setup(handle)?;
@@ -78,6 +92,9 @@ pub fn run() {
             engine::install(handle);
             let args: Vec<String> = std::env::args().collect();
             window::apply_startup_visibility(handle, &args);
+            // A launch that asks for an action (`repeat-that --replay`) does it now that the app is up. A second launch
+            // never gets here: the running app does the action, see `window::on_second_launch`.
+            actions::run_launch_action(&args, handle);
             Ok(())
         })
         .build(tauri::generate_context!())

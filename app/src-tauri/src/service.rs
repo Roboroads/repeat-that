@@ -10,9 +10,10 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime};
 use crate::actions;
 use crate::autostart::{Autostart, OsAutostart, reconcile};
 use crate::engine;
-use crate::hotkeys::{HotkeyManager, PluginBackend, ShortcutBackend};
-use crate::ipc::{CommandError, HotkeyStates, Settings, SettingsPatch};
+use crate::hotkeys::{HotkeyManager, HotkeyReport, NoBackend, PluginBackend, ShortcutBackend};
+use crate::ipc::{CommandError, ConfigureOutcome, HotkeyBackendKind, HotkeyStates, Settings, SettingsPatch};
 use crate::locking::lock;
+use crate::session::{Session, SharedSession, choose_backend};
 use crate::settings::{apply_patch, sanitize};
 use crate::store::{InMemoryPersistence, StorePersistence, settings_file};
 
@@ -153,6 +154,19 @@ impl SettingsService {
     pub fn hotkey_states(&self) -> HotkeyStates {
         self.hotkeys.states()
     }
+
+    /// How the hotkeys work on this desktop and the keys it assigned, for the status.
+    pub fn hotkey_report(&self) -> HotkeyReport {
+        self.hotkeys.report()
+    }
+
+    /// Asks the desktop to show where the user changes the hotkeys. Waits for the desktop's answer: call it from a
+    /// thread that may block.
+    pub fn configure_shortcuts(&self) -> Result<ConfigureOutcome, CommandError> {
+        self.hotkeys
+            .configure()
+            .map_err(|err| CommandError::backend(format!("Could not open the shortcut settings: {err}")))
+    }
 }
 
 /// Creates the settings service on the real plugins and manages it. Needs the store, autostart and global-shortcut
@@ -172,8 +186,37 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
         app,
         persistence,
         Arc::new(OsAutostart(app.clone())),
-        Box::new(PluginBackend(app.clone())),
+        shortcut_backend(app),
     );
+}
+
+/// The way the hotkeys work on this desktop: the plugin where it works, the portal on a Wayland desktop that has one, and
+/// nothing otherwise. Needs the [`SharedSession`](crate::session::SharedSession) in the managed state; without it (tests)
+/// the plugin.
+fn shortcut_backend<R: Runtime>(app: &AppHandle<R>) -> Box<dyn ShortcutBackend> {
+    let Some(session) = app.try_state::<SharedSession>() else {
+        return Box::new(PluginBackend(app.clone()));
+    };
+    match choose_backend(session.session()) {
+        HotkeyBackendKind::Plugin => Box::new(PluginBackend(app.clone())),
+        HotkeyBackendKind::None => Box::new(NoBackend),
+        HotkeyBackendKind::Portal => portal_backend(app, session.session()),
+    }
+}
+
+/// The portal, which tells the window whenever the keys it assigned change.
+#[cfg(target_os = "linux")]
+fn portal_backend<R: Runtime>(app: &AppHandle<R>, session: &Session) -> Box<dyn ShortcutBackend> {
+    let handle = app.clone();
+    Box::new(crate::portal::start(session.portal_version.unwrap_or(1), move || {
+        engine::publish_status(&handle)
+    }))
+}
+
+/// Only Linux has the portal, and [`choose_backend`] never picks it anywhere else.
+#[cfg(not(target_os = "linux"))]
+fn portal_backend<R: Runtime>(_app: &AppHandle<R>, _session: &Session) -> Box<dyn ShortcutBackend> {
+    Box::new(NoBackend)
 }
 
 /// [`install`] on the given storage, autostart entry and shortcut backend.
@@ -377,6 +420,34 @@ mod tests {
             ),
             (ok, ok, ok)
         );
+    }
+
+    #[test]
+    fn the_hotkey_report_is_the_backends() {
+        let s = setup();
+        assert_eq!(s.service.hotkey_report().backend, crate::ipc::HotkeyBackendKind::Plugin);
+        s.backend.set_kind(crate::ipc::HotkeyBackendKind::Portal);
+        s.backend.set_triggers(Some("Ctrl+Alt+Space"), None, None);
+        let report = s.service.hotkey_report();
+        assert_eq!(report.backend, crate::ipc::HotkeyBackendKind::Portal);
+        assert_eq!(report.triggers.replay.as_deref(), Some("Ctrl+Alt+Space"));
+    }
+
+    #[test]
+    fn configure_shortcuts_is_unsupported_unless_the_backend_can() {
+        let s = setup();
+        assert_eq!(s.service.configure_shortcuts(), Ok(ConfigureOutcome::Unsupported));
+        *s.backend.configure_answer.lock().unwrap() = Some(Ok(ConfigureOutcome::Opened));
+        assert_eq!(s.service.configure_shortcuts(), Ok(ConfigureOutcome::Opened));
+    }
+
+    #[test]
+    fn a_configure_failure_is_a_backend_error_in_words() {
+        let s = setup();
+        *s.backend.configure_answer.lock().unwrap() = Some(Err("the portal went away".into()));
+        let err = s.service.configure_shortcuts().unwrap_err();
+        assert_eq!(err.kind, CommandErrorKind::Backend);
+        assert!(err.message.contains("the portal went away"), "{err}");
     }
 
     #[test]
