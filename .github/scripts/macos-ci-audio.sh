@@ -103,16 +103,21 @@ for db in "$user_db" "$system_db"; do
   sudo sqlite3 "$db" "SELECT service, client, auth_value, auth_reason, length(csreq) FROM access
     WHERE service IN ('kTCCServiceAudioCapture', 'kTCCServiceMicrophone');" || true
 done
-# tccd reads the databases again when it starts; launchd restarts it.
+# tccd reads the databases again when it starts; launchd restarts it. Right after that it can answer with an error for
+# a few seconds (CI saw "Checking for Service Override", which reads as denied), so it gets some time to settle.
 sudo killall tccd || true
 killall tccd || true
-sleep 2
 echo "::endgroup::"
 
 echo "::group::Permissions after"
-after=$("$probe" permission 2>&1 || true)
+for attempt in $(seq 1 30); do
+  sleep 1
+  after=$("$probe" permission 2>&1 || true)
+  status=$(sed -n 's/^status: //p' <<<"$after")
+  [ "$status" = "Allowed" ] && break
+done
 echo "$after"
-status=$(sed -n 's/^status: //p' <<<"$after")
+echo "after $attempt s"
 echo "::endgroup::"
 
 if [ "$status" != "Allowed" ]; then
