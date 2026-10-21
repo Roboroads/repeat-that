@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager, Runtime, Window, WindowEvent};
 
 use crate::actions::{ActionHost, cli_action, run_launch_action};
 use crate::service::{self, SettingsService};
-use crate::session::SharedSession;
+use crate::session::tray_available;
 
 /// Label of the one window, as in `tauri.conf.json`.
 pub const SETTINGS_LABEL: &str = "settings";
@@ -16,11 +16,12 @@ fn is_hidden_launch<S: AsRef<str>>(args: &[S]) -> bool {
     args.iter().any(|arg| arg.as_ref() == HIDDEN_ARG)
 }
 
-/// Whether the settings window opens at startup: on the first launch, and on every launch while there is no tray to
-/// open it from. Never with `--hidden` (the autostart entry, which must not pop a window up at every login) and never
-/// when the launch is a command-line action, which asks for something to happen, not for the window.
+/// Whether the settings window opens at startup: on the first run, and on every launch while there is no tray to open it
+/// from. Never with `--hidden` (the autostart entry, which must not pop a window up at every login). A command-line
+/// action asks for something to happen, not for the window, so it only opens it on the first run: the first-ever launch
+/// may well be a key bound to `repeat-that --replay`, and the person has not picked an app to replay yet.
 pub fn should_show_at_startup<S: AsRef<str>>(args: &[S], first_run_done: bool, tray_available: bool) -> bool {
-    !is_hidden_launch(args) && cli_action(args).is_none() && (!first_run_done || !tray_available)
+    !is_hidden_launch(args) && (!first_run_done || (!tray_available && cli_action(args).is_none()))
 }
 
 /// Whether a second launch of the app opens the settings window of the running one: always, except with `--hidden` and
@@ -72,12 +73,6 @@ pub fn apply_startup_visibility<R: Runtime>(app: &AppHandle<R>, args: &[String])
         }
         show_settings(app);
     }
-}
-
-/// Whether a tray host is there to show the tray icon. Where the app doesn't look (tests) it is.
-fn tray_available<R: Runtime>(app: &AppHandle<R>) -> bool {
-    app.try_state::<SharedSession>()
-        .is_none_or(|session| session.tray_available())
 }
 
 /// Whether `event` means the window can no longer be recording a hotkey: it lost focus or is closing. The page asks to
@@ -169,14 +164,39 @@ mod tests {
     }
 
     #[test]
-    fn an_action_launch_never_opens_the_window_at_startup() {
+    fn an_action_launch_after_the_first_run_never_opens_the_window_at_startup() {
         for flag in ["--replay", "--stop", "--catch-up"] {
-            for (first_run_done, tray) in [(false, true), (true, true), (false, false), (true, false)] {
+            for tray in [true, false] {
                 assert!(
-                    !should_show_at_startup(&args(&["repeat-that", flag]), first_run_done, tray),
-                    "{flag} first_run_done={first_run_done} tray={tray}"
+                    !should_show_at_startup(&args(&["repeat-that", flag]), true, tray),
+                    "{flag} tray={tray}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn an_action_launch_on_the_first_run_opens_the_window() {
+        // A first-ever launch can be a key bound to `repeat-that --replay`. That person has not met the app yet, and
+        // the first-run window is where they pick the app to catch up on; without it nothing would ever replay.
+        for flag in ["--replay", "--stop", "--catch-up"] {
+            for tray in [true, false] {
+                assert!(
+                    should_show_at_startup(&args(&["repeat-that", flag]), false, tray),
+                    "{flag} tray={tray}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_still_wins_over_the_first_run_for_an_action_launch() {
+        for tray in [true, false] {
+            assert!(!should_show_at_startup(
+                &args(&["repeat-that", "--hidden", "--replay"]),
+                false,
+                tray
+            ));
         }
     }
 
