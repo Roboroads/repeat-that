@@ -57,19 +57,7 @@ impl TestApp {
 
     fn build(with_engine: bool, stored: Option<Value>) -> Self {
         let app = mock_builder()
-            .invoke_handler(tauri::generate_handler![
-                commands::get_settings,
-                commands::update_settings,
-                commands::suspend_hotkeys,
-                commands::get_status,
-                commands::list_apps,
-                commands::list_output_devices,
-                commands::select_app,
-                commands::set_paused,
-                commands::replay,
-                commands::stop,
-                commands::catch_up,
-            ])
+            .invoke_handler(commands::handler())
             .manage::<SharedStatus>(Mutex::default())
             .manage::<SharedIcons>(Arc::new(IconCache::default()))
             .build(mock_context(noop_assets()))

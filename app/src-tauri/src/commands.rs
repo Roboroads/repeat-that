@@ -10,6 +10,7 @@ use std::sync::Arc;
 use rt_capture::CaptureError;
 use rt_engine::EngineHandle;
 use serde_json::{Value, json};
+use tauri::ipc::Invoke;
 use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::actions::{self, AppAction};
@@ -17,6 +18,23 @@ use crate::engine::{self, SharedAppEngine};
 use crate::icons::SharedIcons;
 use crate::ipc::{AppEntry, CommandError, OutputDevice, Settings, Status};
 use crate::service::{self, SettingsService};
+
+/// Every command, for the app and its tests alike.
+pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        get_settings,
+        update_settings,
+        suspend_hotkeys,
+        get_status,
+        list_apps,
+        list_output_devices,
+        select_app,
+        set_paused,
+        replay,
+        stop,
+        catch_up,
+    ]
+}
 
 #[tauri::command]
 pub fn get_settings(settings: State<'_, SettingsService>) -> Settings {
@@ -145,6 +163,36 @@ mod tests {
 
     fn invoke(h: &TestApp, cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
         h.invoke(cmd, args)
+    }
+
+    /// The commands `api.ts` calls, as `call<…>('name'`.
+    fn commands_the_window_calls() -> Vec<String> {
+        let api = std::fs::read_to_string("../src/lib/api.ts").expect("the window's API");
+        api.split("call")
+            .skip(1)
+            .filter_map(|rest| {
+                let rest = rest
+                    .strip_prefix('<')
+                    .map_or(rest, |typed| typed.split_once('>').map_or("", |(_, r)| r));
+                let name = rest.strip_prefix("('")?.split_once('\'')?.0;
+                Some(name.to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_command_the_window_calls_is_there() {
+        let h = harness();
+        let unknown = invoke(&h, "no_such_command", json!({})).unwrap_err();
+        assert!(unknown.to_string().contains("not found"), "{unknown}");
+        let commands = commands_the_window_calls();
+        assert!(commands.len() >= 11, "{commands:?}");
+        for cmd in commands {
+            // Answered or refused for a reason of its own, never refused as unknown.
+            if let Err(error) = invoke(&h, &cmd, json!({ "patch": {}, "paused": false, "suspended": false })) {
+                assert!(!error.to_string().contains("not found"), "{cmd}: {error}");
+            }
+        }
     }
 
     #[test]

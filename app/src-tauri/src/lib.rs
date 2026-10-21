@@ -63,19 +63,7 @@ pub fn run() {
         .manage::<SharedEngine>(engine.clone())
         .manage::<SharedAppEngine>(engine)
         .manage::<SharedIcons>(Arc::new(IconCache::default()))
-        .invoke_handler(tauri::generate_handler![
-            commands::get_settings,
-            commands::update_settings,
-            commands::suspend_hotkeys,
-            commands::get_status,
-            commands::list_apps,
-            commands::list_output_devices,
-            commands::select_app,
-            commands::set_paused,
-            commands::replay,
-            commands::stop,
-            commands::catch_up,
-        ])
+        .invoke_handler(commands::handler())
         .on_window_event(window::on_window_event)
         .setup(|app| {
             // A tray app: no Dock icon and no app menu bar on macOS. The tray menu and `RunEvent::Reopen` (the app
