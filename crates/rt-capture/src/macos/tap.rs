@@ -33,7 +33,8 @@ use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFString, CFType};
 use objc2_foundation::{NSArray, NSNumber, NSString, NSUUID};
 
 use super::passthrough::{self, Buffer, BufferMut, Command, IoStatus, Player, Sequencer, Step};
-use super::{permission, processes, sys};
+use super::processes::{self, Follow};
+use super::{permission, sys};
 use crate::permission::PermissionStatus;
 use crate::{CaptureError, CaptureFormat, CaptureHandle, FrameSink, Result};
 
@@ -68,8 +69,10 @@ pub(crate) struct Tap {
 
 /// What the IOProc, the watcher and the control side share.
 struct Shared {
-    /// The app's PID, whose processes the tap holds.
+    /// The app's PID, as it was listed.
     pid: u32,
+    /// How the watcher finds the app's processes as they come and go.
+    follow: Follow,
     tap: AudioObjectID,
     /// The app's output device, the aggregate's main subdevice.
     device: AudioObjectID,
@@ -291,24 +294,30 @@ fn process_list() -> AudioObjectPropertyAddress {
     sys::global(kAudioHardwarePropertyProcessObjectList)
 }
 
-/// The audio objects of the processes of the app with PID `pid`.
-fn members(pid: u32) -> Result<Vec<AudioObjectID>> {
+/// The audio objects of the processes `follow` stands for, see [`members_of`].
+fn members(follow: &Follow) -> Result<Vec<AudioObjectID>> {
     let (ids, processes) = sys::process_objects()?;
-    // The watcher calls this twice a second: the apps' names and paths aren't needed to tell their processes apart.
-    let groups = processes::group(&processes, std::process::id(), &|_| None, &|_| String::new());
-    let mut members: Vec<AudioObjectID> = processes::members_of(&groups, &processes, pid)
+    Ok(members_of(&ids, &processes, follow))
+}
+
+/// The audio objects (`ids`, one per process) of the processes `follow` stands for, without asking for the apps' names
+/// or paths: the watcher calls this twice a second.
+fn members_of(ids: &[AudioObjectID], processes: &[processes::AudioProcess], follow: &Follow) -> Vec<AudioObjectID> {
+    let mut members: Vec<AudioObjectID> = processes::members(processes, std::process::id(), follow)
         .into_iter()
         .map(|i| ids[i])
         .collect();
     // In a fixed order, so the watcher only changes the tap when the processes change.
     members.sort_unstable();
-    Ok(members)
+    members
 }
 
 impl Tap {
     /// Taps the app with PID `pid`, unmuted, and starts its IOProc.
     pub(crate) fn start(pid: u32) -> Result<Self> {
-        let processes = members(pid)?;
+        let (ids, all) = sys::process_objects()?;
+        let follow = processes::follow(&all, std::process::id(), pid).ok_or(CaptureError::AppNotFound(pid))?;
+        let processes = members_of(&ids, &all, &follow);
         if processes.is_empty() {
             return Err(CaptureError::AppNotFound(pid));
         }
@@ -350,6 +359,7 @@ impl Tap {
         };
         let shared = Arc::new(Shared {
             pid,
+            follow,
             tap,
             device,
             format,
@@ -742,7 +752,7 @@ fn watch(shared: &Shared) {
             }
             shared.ended.store(true, Ordering::Relaxed);
         };
-        match members(shared.pid) {
+        match members(&shared.follow) {
             Ok(processes) if processes.is_empty() => return ended("the app quit"),
             Ok(processes) => {
                 let mut description = lock(&shared.description);

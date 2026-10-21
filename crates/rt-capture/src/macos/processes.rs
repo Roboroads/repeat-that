@@ -42,9 +42,21 @@ impl Group {
 
 /// How processes are told apart into apps.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum Key {
+pub(crate) enum Key {
+    /// The process responsible for them, or a process on its own.
     Pid(u32),
+    /// The outermost bundle they are in, when macOS doesn't say who is responsible for them.
     Bundle(PathBuf),
+}
+
+/// How a tap finds the processes of its app again as they come and go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Follow {
+    /// The processes of a group, by what they group under. An app grouped by its bundle goes by the PID of one of its
+    /// processes, which may quit while the others go on, so it is followed by its bundle.
+    Group(Key),
+    /// One process, given by its PID, that groups under another app.
+    Process(u32),
 }
 
 /// Groups `processes` into apps, sorted by name. `own_pid` (this process) is left out, and so is any app it is
@@ -57,6 +69,39 @@ pub(crate) fn group(
     path_of: &dyn Fn(u32) -> Option<PathBuf>,
     name_of: &dyn Fn(&Path) -> String,
 ) -> Vec<Group> {
+    let mut groups: Vec<Group> = keyed(processes, own_pid)
+        .into_iter()
+        .map(|(key, members)| {
+            let member = |pid: u32| members.iter().map(|&i| &processes[i]).find(|p| p.pid == pid);
+            let pid = app_pid(&key, &members, processes);
+            let exe_path = match key {
+                Key::Pid(pid) => {
+                    let exe = member(pid).and_then(|p| p.path.clone()).or_else(|| path_of(pid));
+                    exe.map(|exe| outermost_app(&exe).map_or(exe.clone(), Path::to_path_buf))
+                }
+                Key::Bundle(bundle) => Some(bundle),
+            };
+            let name = exe_path
+                .as_deref()
+                .map(name_of)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| format!("PID {pid}"));
+            let playing = members.iter().any(|&i| processes[i].playing);
+            Group {
+                app: AudioApp { pid, name, exe_path },
+                members,
+                playing,
+            }
+        })
+        .collect();
+    groups.sort_by_cached_key(|group| (group.app.name.to_lowercase(), group.app.pid));
+    groups
+}
+
+/// The processes in groups by what they group under, in the order of their first process. `own_pid` and what it is
+/// responsible for are left out, and duplicate PIDs count once. Needs no names or paths beyond the processes' own, so
+/// a tap's watcher can call it twice a second.
+fn keyed(processes: &[AudioProcess], own_pid: u32) -> Vec<(Key, Vec<usize>)> {
     let mut groups: Vec<(Key, Vec<usize>)> = Vec::new();
     let mut by_key: HashMap<Key, usize> = HashMap::new();
     let mut seen = Vec::new();
@@ -77,50 +122,50 @@ pub(crate) fn group(
             }
         }
     }
-
-    let mut groups: Vec<Group> = groups
-        .into_iter()
-        .map(|(key, members)| {
-            let member = |pid: u32| members.iter().map(|&i| &processes[i]).find(|p| p.pid == pid);
-            let (pid, exe_path) = match key {
-                Key::Pid(pid) => {
-                    let exe = member(pid).and_then(|p| p.path.clone()).or_else(|| path_of(pid));
-                    (
-                        pid,
-                        exe.map(|exe| outermost_app(&exe).map_or(exe.clone(), Path::to_path_buf)),
-                    )
-                }
-                Key::Bundle(bundle) => (bundle_pid(&bundle, &members, processes), Some(bundle)),
-            };
-            let name = exe_path
-                .as_deref()
-                .map(name_of)
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| format!("PID {pid}"));
-            let playing = members.iter().any(|&i| processes[i].playing);
-            Group {
-                app: AudioApp { pid, name, exe_path },
-                members,
-                playing,
-            }
-        })
-        .collect();
-    groups.sort_by_cached_key(|group| (group.app.name.to_lowercase(), group.app.pid));
     groups
 }
 
-/// The processes of the app with PID `pid`, from [`group`]. An app made by hand from a PID that groups under another
-/// one (a helper, or a tool started from Terminal) is just that process. Empty if none of them uses Core Audio.
-pub(crate) fn members_of(groups: &[Group], processes: &[AudioProcess], pid: u32) -> Vec<usize> {
-    if let Some(group) = groups.iter().find(|group| group.app.pid == pid) {
-        return group.members.clone();
+/// How to follow the app with PID `pid`, as [`group`] lists it. An app made by hand from a PID that groups under
+/// another one (a helper, or a tool started from Terminal) is just that process. `None` if none of its processes uses
+/// Core Audio.
+pub(crate) fn follow(processes: &[AudioProcess], own_pid: u32, pid: u32) -> Option<Follow> {
+    let groups = keyed(processes, own_pid);
+    if let Some((key, _)) = groups
+        .iter()
+        .find(|(key, members)| app_pid(key, members, processes) == pid)
+    {
+        return Some(Follow::Group(key.clone()));
     }
     groups
         .iter()
-        .flat_map(|group| &group.members)
-        .copied()
-        .filter(|&i| processes[i].pid == pid)
-        .collect()
+        .flat_map(|(_, members)| members)
+        .any(|&i| processes[i].pid == pid)
+        .then_some(Follow::Process(pid))
+}
+
+/// The processes `follow` stands for. Empty once none of them is left: the app quit.
+pub(crate) fn members(processes: &[AudioProcess], own_pid: u32, follow: &Follow) -> Vec<usize> {
+    let groups = keyed(processes, own_pid);
+    match follow {
+        Follow::Group(key) => groups
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, members)| members)
+            .unwrap_or_default(),
+        Follow::Process(pid) => groups
+            .into_iter()
+            .flat_map(|(_, members)| members)
+            .filter(|&i| processes[i].pid == *pid)
+            .collect(),
+    }
+}
+
+/// The PID of the app whose processes group under `key`.
+fn app_pid(key: &Key, members: &[usize], processes: &[AudioProcess]) -> u32 {
+    match key {
+        Key::Pid(pid) => *pid,
+        Key::Bundle(bundle) => bundle_pid(bundle, members, processes),
+    }
 }
 
 /// What `process` groups under: the process responsible for it, else the outermost bundle it lives in, else itself.
@@ -346,12 +391,46 @@ mod tests {
             process(400, "/usr/bin/afplay", Some(50)),
             process(401, "/usr/bin/afplay", Some(50)),
         ];
-        let groups = group(&processes, OWN, &no_paths, &name_of);
-        assert_eq!(members_of(&groups, &processes, 100), [0, 1]);
-        assert_eq!(members_of(&groups, &processes, 50), [2, 3]);
+        let members_of = |pid| follow(&processes, OWN, pid).map(|follow| members(&processes, OWN, &follow));
+        assert_eq!(members_of(100), Some(vec![0, 1]));
+        assert_eq!(members_of(50), Some(vec![2, 3]));
         // A PID given by hand that groups under another one: just that process.
-        assert_eq!(members_of(&groups, &processes, 401), [3]);
-        assert!(members_of(&groups, &processes, 12345).is_empty());
+        assert_eq!(follow(&processes, OWN, 401), Some(Follow::Process(401)));
+        assert_eq!(members_of(401), Some(vec![3]));
+        assert_eq!(members_of(12345), None);
+        assert_eq!(members_of(OWN), None);
+    }
+
+    #[test]
+    fn an_app_known_by_its_bundle_lasts_as_long_as_any_of_its_processes() {
+        // Without the responsibility function, Discord without its main process goes by its oldest helper's PID.
+        let before = [process(102, DISCORD_HELPER, None), process(105, DISCORD_HELPER, None)];
+        let discord = follow(&before, OWN, 102).unwrap();
+        assert_eq!(members(&before, OWN, &discord), [0, 1]);
+
+        // That helper quits and another one starts: still Discord.
+        let after = [
+            process(110, DISCORD_HELPER, None),
+            process(105, DISCORD_HELPER, None),
+            process(400, "/usr/bin/afplay", None),
+        ];
+        assert_eq!(members(&after, OWN, &discord), [0, 1]);
+
+        // Only once none of them is left has it quit.
+        assert!(members(&after[2..], OWN, &discord).is_empty());
+    }
+
+    #[test]
+    fn an_app_known_by_its_responsible_process_lasts_as_long_as_any_process_it_is_responsible_for() {
+        let before = [process(300, WEBKIT_GPU, Some(200))];
+        let safari = follow(&before, OWN, 200).unwrap();
+        assert_eq!(safari, Follow::Group(Key::Pid(200)));
+        let after = [
+            process(400, "/usr/bin/afplay", None),
+            process(301, WEBKIT_GPU, Some(200)),
+        ];
+        assert_eq!(members(&after, OWN, &safari), [1]);
+        assert!(members(&after[..1], OWN, &safari).is_empty());
     }
 
     #[test]
