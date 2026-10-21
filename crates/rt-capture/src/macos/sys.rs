@@ -12,11 +12,12 @@ use objc2::rc::autoreleasepool;
 use objc2_core_audio::{
     AudioObjectGetPropertyData, AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
     AudioObjectPropertyScope, AudioObjectPropertySelector, AudioObjectSetPropertyData,
-    kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID, kAudioDevicePropertyNominalSampleRate,
-    kAudioDevicePropertyStreams, kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyProcessObjectList,
+    kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyDeviceUID, kAudioDevicePropertyLatency,
+    kAudioDevicePropertyNominalSampleRate, kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreams,
+    kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyProcessObjectList,
     kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
     kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject, kAudioProcessPropertyDevices,
-    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID,
+    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioStreamPropertyLatency,
 };
 use objc2_core_foundation::{CFRetained, CFString};
 use objc2_foundation::{NSFileManager, NSProcessInfo, NSString};
@@ -285,6 +286,29 @@ pub(crate) fn sample_rate(device: AudioObjectID) -> Option<f64> {
     unsafe { get::<f64>(device, global(kAudioDevicePropertyNominalSampleRate)) }
         .ok()
         .filter(|rate| *rate > 0.0)
+}
+
+/// How much later than the device's clock audio comes in (`input`) or goes out, in frames: the device's latency, its
+/// safety offset and its stream's latency.
+pub(crate) fn latency(device: AudioObjectID, input: bool) -> u64 {
+    let scope = if input {
+        kAudioObjectPropertyScopeInput
+    } else {
+        kAudioObjectPropertyScopeOutput
+    };
+    // SAFETY: UInt32 frame counts, and an array of stream IDs.
+    unsafe {
+        let device_latency = get::<u32>(device, address(kAudioDevicePropertyLatency, scope)).unwrap_or(0);
+        let safety = get::<u32>(device, address(kAudioDevicePropertySafetyOffset, scope)).unwrap_or(0);
+        let streams =
+            get_list::<AudioObjectID>(device, address(kAudioDevicePropertyStreams, scope)).unwrap_or_default();
+        // The tap is the last input; the device's output is the first.
+        let stream = if input { streams.last() } else { streams.first() };
+        let stream_latency = stream.map_or(0, |&stream| {
+            get::<u32>(stream, global(kAudioStreamPropertyLatency)).unwrap_or(0)
+        });
+        u64::from(device_latency) + u64::from(safety) + u64::from(stream_latency)
+    }
 }
 
 /// How many input streams `device` has.

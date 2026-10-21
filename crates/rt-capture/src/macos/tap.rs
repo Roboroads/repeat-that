@@ -25,8 +25,8 @@ use objc2_core_audio::{
     kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, kAudioTapPropertyDescription, kAudioTapPropertyFormat,
 };
 use objc2_core_audio_types::{
-    AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatFlagIsFloat,
-    kAudioFormatLinearPCM,
+    AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, AudioTimeStampFlags,
+    kAudioFormatFlagIsFloat, kAudioFormatLinearPCM,
 };
 use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFString, CFType};
 use objc2_foundation::{NSArray, NSNumber, NSString, NSUUID};
@@ -78,6 +78,10 @@ struct Shared {
     /// Frames the IOProc has played, and the replay's gain after them, for [`IoStatus`].
     frames: AtomicU64,
     gain: AtomicU32,
+    /// How far ahead of the tap's input the IOProc writes its output, in frames, from the latest cycle's timestamps.
+    ahead: AtomicU64,
+    /// The aggregate device's own latencies on the way in and out, in frames.
+    device_latency: u64,
     /// Only the IOProc locks this, except while the tap is set up.
     io: Mutex<Io>,
     /// The capture's sink and the number it was attached with, see [`Capture`].
@@ -280,6 +284,9 @@ impl Tap {
             sample_rate: rate.round() as u32,
             channels: tap_format.mChannelsPerFrame as u16,
         };
+        // Our replay is heard later than the app's own audio by what it takes to come in through the tap and go out
+        // again (the output's share is counted too, which only makes the takeover a little longer than needed).
+        let device_latency = sys::latency(aggregate, true) + sys::latency(aggregate, false);
         let shared = Arc::new(Shared {
             pid,
             tap,
@@ -288,6 +295,8 @@ impl Tap {
             command: AtomicU64::new(Command::SILENT.pack()),
             frames: AtomicU64::new(0),
             gain: AtomicU32::new(0f32.to_bits()),
+            ahead: AtomicU64::new(0),
+            device_latency,
             io: Mutex::new(Io {
                 player: Player::new(format.sample_rate),
                 tapped: Vec::with_capacity(MAX_CYCLE * usize::from(format.channels)),
@@ -326,6 +335,16 @@ impl Tap {
             }
             thread::sleep(Duration::from_millis(5));
         }
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "tap of PID {pid}: {} Hz, {} channels, device {device}, latency {} + {} frames, input streams {}",
+                format.sample_rate,
+                format.channels,
+                device_latency,
+                shared.ahead.load(Ordering::Relaxed),
+                sys::input_streams(aggregate)
+            );
+        }
 
         // New helper processes join the tap. A listener wakes the watcher when the list changes; it also looks every
         // `WATCH_EVERY` in case the listener can't be registered.
@@ -363,6 +382,7 @@ impl Tap {
         IoStatus {
             frames,
             gain: f32::from_bits(self.shared.gain.load(Ordering::Relaxed)),
+            latency: self.shared.ahead.load(Ordering::Relaxed) + self.shared.device_latency,
         }
     }
 
@@ -519,13 +539,20 @@ unsafe extern "C-unwind" fn io_proc(
     _device: AudioObjectID,
     _now: NonNull<AudioTimeStamp>,
     input: NonNull<AudioBufferList>,
-    _input_time: NonNull<AudioTimeStamp>,
+    input_time: NonNull<AudioTimeStamp>,
     output: NonNull<AudioBufferList>,
-    _output_time: NonNull<AudioTimeStamp>,
+    output_time: NonNull<AudioTimeStamp>,
     client: *mut c_void,
 ) -> i32 {
     // SAFETY: the client data is the tap's `Shared`, which outlives the IOProc.
     let shared = unsafe { &*client.cast::<Shared>() };
+    // SAFETY: Core Audio's timestamps for this cycle.
+    let (input_time, output_time) = unsafe { (input_time.as_ref(), output_time.as_ref()) };
+    let valid = |time: &AudioTimeStamp| time.mFlags.contains(AudioTimeStampFlags::SampleTimeValid);
+    if valid(input_time) && valid(output_time) {
+        let ahead = (output_time.mSampleTime - input_time.mSampleTime).max(0.0);
+        shared.ahead.store(ahead.round() as u64, Ordering::Relaxed);
+    }
     // A panic must not unwind into Core Audio.
     let result = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: Core Audio's buffer lists for this cycle.

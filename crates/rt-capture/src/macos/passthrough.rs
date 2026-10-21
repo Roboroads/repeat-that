@@ -4,9 +4,10 @@
 //!
 //! Handing the app's audio over to our replay can't be timed to the sample: the mute lands some milliseconds after we
 //! ask for it, and our replay reaches the speaker through a path of its own. The order makes sure the app is never
-//! silent instead (a gap): our replay fades in to full level and plays [`OVERLAP`] before the app is muted, and stays at
-//! full level for [`OVERLAP`] after it is unmuted before it fades out. While both play, the app is up to twice as loud
-//! (+6 dB) for a moment. Only then does the replay fade to the duck level, over [`FADE`]. At level 0 nothing is replayed:
+//! silent instead (a gap): our replay fades in to full level and is heard for [`OVERLAP`] before the app is muted, and
+//! for [`OVERLAP`] after it is unmuted before it fades out. It is heard later than the app's own audio (see
+//! [`IoStatus::latency`]), which the overlap allows for. While both play, the app is up to twice as loud (+6 dB) for a
+//! moment. Only then does the replay fade to the duck level, over [`FADE`]. At level 0 nothing is replayed:
 //! ducking only mutes, and restoring only unmutes.
 //!
 //! [`Sequencer`] is the control side, which `set_app_volume` drives and which mutes and unmutes the tap. [`Player`] is
@@ -55,6 +56,9 @@ pub(crate) struct IoStatus {
     pub frames: u64,
     /// The replay's gain at the end of the latest IO cycle.
     pub gain: f32,
+    /// How much later than the app's own audio the replay is heard, in frames: it goes through the tap, our IOProc and
+    /// the device's output buffers.
+    pub latency: u64,
 }
 
 /// What the control side does next to bring the app to its duck level.
@@ -135,8 +139,10 @@ impl Sequencer {
             return Step::Mute(false);
         }
         if io.gain > 0.0 {
-            // Full level until an unmute that lands late has landed, then out.
-            if !self.overlapped(io) {
+            // Full level until an unmute that lands late has landed, then out. The replay is heard `latency` after it
+            // plays, so that much of the overlap is there anyway.
+            let hold = self.overlap.saturating_sub(io.latency);
+            if self.mute_changed.is_some_and(|at| io.frames < at + hold) {
                 return Step::Wait(fade_up);
             }
             return Step::Wait(Command::SILENT);
@@ -164,13 +170,13 @@ impl Sequencer {
         let full = Command { gain: 1.0, quick: true };
         if !self.muted {
             // Take over: the replay at full level for a while before the app is muted, so a mute that lands early
-            // leaves no gap.
+            // leaves no gap. The replay is heard `latency` after it plays, so it plays that much longer.
             if io.gain < 1.0 {
                 self.full_since = None;
                 return Step::Wait(full);
             }
             let since = *self.full_since.get_or_insert(io.frames);
-            if io.frames < since + self.overlap {
+            if io.frames < since + self.overlap + io.latency {
                 return Step::Wait(full);
             }
             return Step::Mute(true);
@@ -361,6 +367,8 @@ mod tests {
         player: Player,
         command: Command,
         frames: u64,
+        /// How much later than the app's own audio the replay is heard, in frames.
+        latency: u64,
         /// The replay's gain of each frame played.
         gains: Vec<f32>,
         /// The frame at which the app was muted (`true`) or unmuted, as asked.
@@ -374,8 +382,17 @@ mod tests {
                 player: Player::new(RATE),
                 command: Command::SILENT,
                 frames: 0,
+                latency: 0,
                 gains: Vec::new(),
                 mutes: Vec::new(),
+            }
+        }
+
+        /// A replay that is heard `latency_ms` after the app's own audio.
+        fn with_latency(latency_ms: u64) -> Self {
+            Self {
+                latency: latency_ms * u64::from(RATE) / 1000,
+                ..Self::new()
             }
         }
 
@@ -383,6 +400,7 @@ mod tests {
             IoStatus {
                 frames: self.frames,
                 gain: self.player.gain(),
+                latency: self.latency,
             }
         }
 
@@ -590,18 +608,23 @@ mod tests {
     struct Heard {
         /// The app's own path: 1 or 0.
         app: Vec<f32>,
-        /// The sum of both, as a gain on the app's audio (both paths carry the same audio, in step).
+        /// Both together, as a gain on the app's audio: the replay carries the same audio, `latency` frames later.
         sum: Vec<f32>,
     }
 
     /// The level heard over `gains` (from frame `start` of the simulation) when the mute or unmute asked at
-    /// `asked_at` lands `offset_ms` later (earlier if negative), with the app `muted_before` it.
-    fn heard(gains: &[f32], start: u64, asked_at: u64, offset_ms: i64, muted_before: bool) -> Heard {
+    /// `asked_at` lands `offset_ms` later (earlier if negative), with the app `muted_before` it, and the replay heard
+    /// `latency` frames after it was played (silent until then, or at the duck level if the app was muted before).
+    fn heard(gains: &[f32], start: u64, asked_at: u64, offset_ms: i64, muted_before: bool, latency: u64) -> Heard {
         let lands = asked_at as i64 - start as i64 + offset_ms * i64::from(RATE) / 1000;
         let app: Vec<f32> = (0..gains.len() as i64)
             .map(|n| if (n < lands) != muted_before { 1.0 } else { 0.0 })
             .collect();
-        let sum = app.iter().zip(gains).map(|(a, g)| a + g).collect();
+        let latency = latency as usize;
+        // Before the window the replay was silent, or at the duck level.
+        let before = if muted_before { 0.2 } else { 0.0 };
+        let replay = |n: usize| if n >= latency { gains[n - latency] } else { before };
+        let sum = app.iter().enumerate().map(|(n, a)| a + replay(n)).collect();
         Heard { app, sum }
     }
 
@@ -615,12 +638,13 @@ mod tests {
         0.5 * 2.0 * std::f32::consts::PI * 1000.0 / RATE as f32 + 0.5 / to_frames(HANDOVER_FADE) as f32 + 1e-4
     }
 
-    /// The click check: the replay itself never jumps, and the sum jumps only where the OS mutes or unmutes the app.
-    fn assert_no_clicks(gains: &[f32], heard: &Heard, what: &str) {
+    /// The click check: the replay itself never jumps, and the sum jumps only where the OS mutes or unmutes the app. The
+    /// sum is only checked for a replay in step with the app: a later one is a copy of the tone out of phase.
+    fn assert_no_clicks(gains: &[f32], heard: &Heard, what: &str, in_step: bool) {
         let replay: Vec<f32> = gains.iter().enumerate().map(|(n, g)| tone(n) * g).collect();
         let worst = replay.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max);
         assert!(worst <= max_tone_step(), "{what}: the replay jumps by {worst}");
-        for n in 1..gains.len() {
+        for n in (1..gains.len()).filter(|_| in_step) {
             if heard.app[n] != heard.app[n - 1] {
                 continue;
             }
@@ -648,55 +672,83 @@ mod tests {
     /// than the app does, late when the mute takes its time.
     const OFFSETS: [i64; 9] = [-20, -15, -10, -5, 0, 5, 10, 15, 20];
 
+    /// How much later than the app's own audio the replay may be heard, in ms: Core Audio's buffers, and the aggregate
+    /// device's resampling of the tap.
+    const LATENCIES: [u64; 3] = [0, 30, 60];
+
     #[test]
     fn taking_over_leaves_no_gap_and_no_click_wherever_the_mute_lands() {
-        let mut sim = Sim::new();
-        sim.duck(0.2);
-        sim.settle(4);
-        let gains = &sim.gains;
-        let (asked_at, _) = sim.mutes[0];
-        let fade_at = gains.iter().rposition(|&g| g == 1.0).unwrap() + 1;
-        for offset in OFFSETS {
-            let what = format!("mute {offset:+} ms");
-            let heard = heard(gains, 0, asked_at, offset, false);
-            // Never quieter than the app was until the fade starts, and never below the level.
-            for (n, &level) in heard.sum.iter().enumerate() {
-                let least = if n < fade_at { 1.0 } else { 0.2 };
-                assert!(level >= least - 1e-6, "{what}: a gap at {} ms ({level})", ms(n as u64));
+        for latency in LATENCIES {
+            let mut sim = Sim::with_latency(latency);
+            sim.duck(0.2);
+            sim.settle(4 + 2 * latency / ms(CYCLE) as u64);
+            let gains = &sim.gains;
+            let (asked_at, _) = sim.mutes[0];
+            // The replay as heard starts fading here.
+            let fade_at = gains.iter().rposition(|&g| g == 1.0).unwrap() + 1 + sim.latency as usize;
+            for offset in OFFSETS {
+                let what = format!("replay {latency} ms late, mute {offset:+} ms");
+                let heard = heard(gains, 0, asked_at, offset, false, sim.latency);
+                // Never quieter than the app was until the fade starts, and never below the level.
+                for (n, &level) in heard.sum.iter().enumerate() {
+                    let least = if n < fade_at { 1.0 } else { 0.2 };
+                    assert!(level >= least - 1e-6, "{what}: a gap at {} ms ({level})", ms(n as u64));
+                }
+                let (length, peak) = bump(&heard);
+                assert!(peak <= 6.03, "{what}: a bump of {peak:.2} dB");
+                let most = 5.0 + 20.0 + 2.0 * ms(CYCLE) + offset.max(0) as f64;
+                assert!(length <= most, "{what}: a bump of {length:.1} ms, more than {most:.1}");
+                assert_no_clicks(gains, &heard, &what, latency == 0);
             }
-            let (length, peak) = bump(&heard);
-            assert!(peak <= 6.03, "{what}: a bump of {peak:.2} dB");
-            let most = 5.0 + 20.0 + 2.0 * ms(CYCLE) + offset.max(0) as f64;
-            assert!(length <= most, "{what}: a bump of {length:.1} ms, more than {most:.1}");
-            assert_no_clicks(gains, &heard, &what);
         }
     }
 
     #[test]
     fn handing_back_leaves_no_gap_and_no_click_wherever_the_unmute_lands() {
-        let mut sim = Sim::new();
-        sim.duck(0.2);
-        sim.settle(10);
-        let start = sim.duck(1.0);
-        sim.settle(4);
-        let gains = &sim.gains[start as usize..];
-        let (asked_at, _) = *sim.mutes.last().unwrap();
-        let full_at = gains.iter().position(|&g| g == 1.0).unwrap();
-        for offset in OFFSETS {
-            let what = format!("unmute {offset:+} ms");
-            let heard = heard(gains, start, asked_at, offset, true);
-            // Never below the level, and never quieter than full level once the replay is back there.
-            for (n, &level) in heard.sum.iter().enumerate() {
-                let least = if n >= full_at { 1.0 } else { 0.2 };
-                assert!(level >= least - 1e-6, "{what}: a gap at {} ms ({level})", ms(n as u64));
+        for latency in LATENCIES {
+            let mut sim = Sim::with_latency(latency);
+            sim.duck(0.2);
+            sim.settle(10);
+            let start = sim.duck(1.0);
+            sim.settle(4 + 2 * latency / ms(CYCLE) as u64);
+            let gains = &sim.gains[start as usize..];
+            let (asked_at, _) = *sim.mutes.last().unwrap();
+            let full_at = gains.iter().position(|&g| g == 1.0).unwrap() + sim.latency as usize;
+            for offset in OFFSETS {
+                let what = format!("replay {latency} ms late, unmute {offset:+} ms");
+                let heard = heard(gains, start, asked_at, offset, true, sim.latency);
+                // Never below the level, and never quieter than full level once the replay is back there.
+                for (n, &level) in heard.sum.iter().enumerate() {
+                    let least = if n >= full_at { 1.0 } else { 0.2 };
+                    assert!(level >= least - 1e-6, "{what}: a gap at {} ms ({level})", ms(n as u64));
+                }
+                assert_eq!(*heard.sum.last().unwrap(), 1.0, "{what}: the app alone at the end");
+                let (length, peak) = bump(&heard);
+                assert!(peak <= 6.03, "{what}: a bump of {peak:.2} dB");
+                let most = 5.0 + 20f64.max(latency as f64) + 2.0 * ms(CYCLE) + (-offset).max(0) as f64;
+                assert!(length <= most, "{what}: a bump of {length:.1} ms, more than {most:.1}");
+                assert_no_clicks(gains, &heard, &what, latency == 0);
             }
-            assert_eq!(*heard.sum.last().unwrap(), 1.0, "{what}: the app alone at the end");
-            let (length, peak) = bump(&heard);
-            assert!(peak <= 6.03, "{what}: a bump of {peak:.2} dB");
-            let most = 5.0 + 20.0 + 2.0 * ms(CYCLE) + (-offset).max(0) as f64;
-            assert!(length <= most, "{what}: a bump of {length:.1} ms, more than {most:.1}");
-            assert_no_clicks(gains, &heard, &what);
         }
+    }
+
+    #[test]
+    fn a_late_replay_is_heard_before_the_app_is_muted() {
+        let mut sim = Sim::with_latency(60);
+        sim.duck(0.2);
+        let full_at = sim.gains.iter().position(|&g| g == 1.0).unwrap() as u64;
+        let (muted_at, _) = sim.mutes[0];
+        assert!(muted_at >= full_at + to_frames(OVERLAP) + sim.latency);
+        // Handing back, the replay is heard that much longer anyway, so it stops sooner.
+        sim.settle(10);
+        let start = sim.duck(1.0) as usize;
+        let (unmuted_at, _) = *sim.mutes.last().unwrap();
+        let out_at = start as u64 + sim.gains[start..].iter().rposition(|&g| g == 1.0).unwrap() as u64 + 1;
+        assert!(
+            out_at - unmuted_at < to_frames(OVERLAP),
+            "{} ms",
+            ms(out_at - unmuted_at)
+        );
     }
 
     #[test]
