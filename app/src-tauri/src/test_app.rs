@@ -95,6 +95,7 @@ impl TestApp {
             Arc::new(FakeAutostart::default()),
             Box::new(Arc::clone(&backend)),
         );
+        engine::start_publishing(app.handle());
         let output = TestOutput::new(48_000);
         if with_engine {
             let source = MockSource::from_wav(FIXTURE).expect("the fixture plays");
@@ -193,7 +194,7 @@ impl TestApp {
 }
 
 impl Drop for TestApp {
-    /// The status forwarder keeps the app alive, so the engine is stopped here, as the app does when it ends.
+    /// The status threads keep the app alive, so the engine and the publisher are stopped here, as when the app ends.
     fn drop(&mut self) {
         engine::shutdown(self.app.handle());
     }

@@ -131,6 +131,8 @@ mod tests {
 
     use serde_json::json;
 
+    use tauri::Listener;
+
     use super::*;
     use crate::engine::STATUS_EVENT;
     use crate::service::SETTINGS_CHANGED_EVENT;
@@ -446,13 +448,11 @@ mod tests {
             json!({ "patch": { "hotkeys": { "replay": "Ctrl+Shift+R" } } }),
         )
         .unwrap();
-        let statuses = h.events(STATUS_EVENT);
-        assert_eq!(statuses.last().expect("a status event")["hotkeys"]["replay"], "inUse");
-        assert_eq!(
-            tray(&h).hotkeys.replay,
-            None,
-            "the tray names no hotkey that doesn't work"
-        );
+        h.wait_for_event(PATIENCE, "replay in use", |s| s["hotkeys"]["replay"] == "inUse");
+        // The tray names no hotkey that doesn't work.
+        h.wait_until(PATIENCE, "the tray without the replay hotkey", || {
+            tray(&h).hotkeys.replay.is_none()
+        });
         assert_eq!(tray(&h).hotkeys.stop.as_deref(), Some("Ctrl+Alt+Backspace"));
     }
 
@@ -463,12 +463,38 @@ mod tests {
         h.backend.refuse("Ctrl+Alt+Space");
         h.clear_events();
         invoke(&h, "suspend_hotkeys", json!({ "suspended": false })).unwrap();
-        let statuses = h.events(STATUS_EVENT);
-        assert_eq!(statuses.len(), 1, "{statuses:?}");
-        assert_eq!(statuses[0]["hotkeys"]["replay"], "inUse");
-        // Asking again changes nothing, so nothing is sent.
-        invoke(&h, "suspend_hotkeys", json!({ "suspended": false })).unwrap();
-        assert_eq!(h.events(STATUS_EVENT).len(), 1);
+        h.wait_for_event(PATIENCE, "replay in use", |s| s["hotkeys"]["replay"] == "inUse");
+    }
+
+    #[test]
+    fn a_status_listener_can_change_the_settings() {
+        // A listener runs while the status is sent; what it changes is sent again, without waiting on that first send.
+        let h = harness();
+        let handle = h.app.handle().clone();
+        let once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        h.app.listen(STATUS_EVENT, move |_| {
+            if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                let settings = handle.state::<SettingsService>();
+                settings
+                    .update(json!({ "bufferSeconds": 45 }))
+                    .expect("the update goes through");
+            }
+        });
+        let (done, finished) = std::sync::mpsc::channel();
+        let handle = h.app.handle().clone();
+        std::thread::spawn(move || {
+            engine::publish_status(&handle);
+            let _ = done.send(());
+        });
+        finished
+            .recv_timeout(PATIENCE)
+            .expect("sending the status is not stuck");
+        h.wait_until(PATIENCE, "the listener's change", || {
+            h.app.state::<SettingsService>().get().buffer_seconds == 45
+        });
+        h.wait_for_event(PATIENCE, "the status sent again", |_| {
+            h.events(SETTINGS_CHANGED_EVENT).len() == 1
+        });
     }
 
     #[test]

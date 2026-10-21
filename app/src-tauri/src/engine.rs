@@ -2,7 +2,7 @@
 //! and the source of the status the settings window and the tray show.
 
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -88,8 +88,6 @@ fn millis(duration: Duration) -> u64 {
 #[derive(Default)]
 pub struct AppEngine {
     inner: Mutex<Inner>,
-    /// Held while a status is put together and sent, so two senders can't send theirs out of order.
-    publishing: Mutex<()>,
 }
 
 #[derive(Default)]
@@ -210,6 +208,7 @@ impl EngineControl for AppEngine {
 /// Starts the engine on this OS's capture source and output, see [`source`]. Needs the [`SettingsService`],
 /// [`SharedAppEngine`] and [`SharedStatus`] in the managed state.
 pub fn install<R: Runtime>(app: &AppHandle<R>) {
+    start_publishing(app);
     let kind = source::from_env();
     // Only the Windows backend lowers volumes, so only it needs somewhere to note them.
     let journal = if kind == SourceKind::Wasapi {
@@ -220,7 +219,8 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
     install_with(app, source::build(kind, journal), source::output_from_env());
 }
 
-/// [`install`] on the given source and output. The status goes out on every change of the engine's.
+/// [`install`] on the given source and output, without starting the [`StatusPublisher`]. The status goes out on every
+/// change of the engine's.
 pub fn install_with<R: Runtime>(app: &AppHandle<R>, source: Arc<dyn AppAudioSource>, output: Box<dyn OutputBackend>) {
     let engine = Arc::clone(&app.state::<SharedAppEngine>());
     engine.run(source, output, &app.state::<SettingsService>().get());
@@ -288,33 +288,76 @@ pub fn current_status<R: Runtime>(app: &AppHandle<R>) -> Status {
     wire_status(&engine, hotkeys, problem)
 }
 
-/// Sends the current status to the window and shows it in the tray.
+/// Sends the status to the window and the tray, always from a thread of its own. So statuses go out in order, nothing
+/// is locked while the window's listeners run (they may change the settings or pause, which sends the status again),
+/// and asking for a send never waits.
+pub struct StatusPublisher {
+    wake: Sender<Wake>,
+}
+
+enum Wake {
+    Publish,
+    Stop,
+}
+
+/// Starts the [`StatusPublisher`] and sends the first status. Until it runs, asking for a send does nothing.
+pub fn start_publishing<R: Runtime>(app: &AppHandle<R>) {
+    let (wake, wakes) = mpsc::channel();
+    let publisher = app.clone();
+    let publish = move || {
+        while let Ok(Wake::Publish) = wakes.recv() {
+            // A send has the status as it is now, so the requests queued meanwhile are covered by it.
+            let mut stop = false;
+            while let Ok(wake) = wakes.try_recv() {
+                stop |= matches!(wake, Wake::Stop);
+            }
+            if stop {
+                break;
+            }
+            send_status(&publisher);
+        }
+    };
+    if let Err(err) = std::thread::Builder::new().name("rt-publish".into()).spawn(publish) {
+        eprintln!("could not start sending the status: {err}");
+        return;
+    }
+    app.manage(StatusPublisher { wake });
+    publish_status(app);
+}
+
+/// Has the current status sent to the window and shown in the tray. Returns at once.
 pub fn publish_status<R: Runtime>(app: &AppHandle<R>) {
-    let engine = app.try_state::<SharedAppEngine>();
-    {
-        let _publishing = engine.as_ref().map(|engine| lock(&engine.publishing));
-        let status = current_status(app);
-        if let Err(err) = app.emit(STATUS_EVENT, &status) {
-            eprintln!("could not send the status: {err}");
-        }
-        let hotkeys = app
-            .try_state::<SettingsService>()
-            .map(|settings| HotkeyLabels::from_states(&settings.get().hotkeys, &status.hotkeys))
-            .unwrap_or_default();
-        if let Some(shared) = app.try_state::<SharedStatus>() {
-            *tray::lock_status(&shared) = TrayState {
-                status: TrayStatus::from_status(&status),
-                hotkeys,
-            };
-        }
+    if let Some(publisher) = app.try_state::<StatusPublisher>() {
+        let _ = publisher.wake.send(Wake::Publish);
+    }
+}
+
+/// The body of [`publish_status`], on the publisher's thread.
+fn send_status<R: Runtime>(app: &AppHandle<R>) {
+    let status = current_status(app);
+    if let Err(err) = app.emit(STATUS_EVENT, &status) {
+        eprintln!("could not send the status: {err}");
+    }
+    let hotkeys = app
+        .try_state::<SettingsService>()
+        .map(|settings| HotkeyLabels::from_states(&settings.get().hotkeys, &status.hotkeys))
+        .unwrap_or_default();
+    if let Some(shared) = app.try_state::<SharedStatus>() {
+        *tray::lock_status(&shared) = TrayState {
+            status: TrayStatus::from_status(&status),
+            hotkeys,
+        };
     }
     tray::refresh(app);
 }
 
-/// Stops the engine when the app ends, see [`AppEngine::shutdown`].
+/// Stops the engine when the app ends, see [`AppEngine::shutdown`], and then the [`StatusPublisher`].
 pub fn shutdown<R: Runtime>(app: &AppHandle<R>) {
     if let Some(engine) = app.try_state::<SharedAppEngine>() {
         engine.shutdown();
+    }
+    if let Some(publisher) = app.try_state::<StatusPublisher>() {
+        let _ = publisher.wake.send(Wake::Stop);
     }
 }
 
