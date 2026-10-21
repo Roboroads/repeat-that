@@ -18,7 +18,7 @@ use crate::ipc::{
 };
 use crate::locking::lock;
 use crate::service::SettingsService;
-use crate::session::{self, Env, ProcessEnv, SharedSession};
+use crate::session::{self, Env, ProcessEnv};
 use crate::source::{self, SourceKind};
 use crate::tray::{self, HotkeyLabels, SharedStatus, TrayState, TrayStatus};
 
@@ -311,15 +311,11 @@ pub fn current_status<R: Runtime>(app: &AppHandle<R>) -> Status {
             )
         })
         .unwrap_or_default();
-    // Where the app doesn't look at the desktop (tests), there is a tray.
-    let tray_available = app
-        .try_state::<SharedSession>()
-        .is_none_or(|session| session.tray_available());
     wire_status(
         &engine,
         hotkeys,
         problem,
-        desktop_status(report, tray_available, &ProcessEnv),
+        desktop_status(report, session::tray_available(app), &ProcessEnv),
     )
 }
 

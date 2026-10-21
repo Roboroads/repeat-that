@@ -154,6 +154,10 @@ pub enum ConfigureOutcome {
     Opened,
     /// This desktop can't be asked to; the window says where in the system settings to look.
     Unsupported,
+    /// The desktop is waiting for an answer to its shortcuts dialog, so it isn't asked again until that is answered.
+    /// Only the portal has such a dialog, which is Linux's.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Busy,
 }
 
 /// The shell command that runs each action in the running app, `Status.hotkeyCommands`.

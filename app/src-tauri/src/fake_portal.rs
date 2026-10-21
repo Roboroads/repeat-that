@@ -29,6 +29,8 @@ pub enum BindAnswer {
     Dismiss,
     /// The method call fails.
     Fail,
+    /// The dialog stays open until the test calls [`FakePortal::release_held`], which accepts it.
+    Hold,
 }
 
 /// One shortcut of a `BindShortcuts` call.
@@ -46,6 +48,8 @@ pub struct State {
     pub configures: AtomicUsize,
     pub answer: Mutex<BindAnswer>,
     session: Mutex<Option<String>>,
+    /// The answer of a held bind, waiting to be sent.
+    held: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 pub struct FakePortal {
@@ -190,18 +194,18 @@ impl Shortcuts {
             sender_in_path(&header),
             token(&options, "handle_token")
         );
+        let accepted = Bound {
+            shortcuts: asked
+                .iter()
+                .map(|shortcut| shortcut_out(&shortcut.id, shortcut.preferred_trigger.as_deref().unwrap_or("")))
+                .collect(),
+        };
         match answer {
-            BindAnswer::Accept => respond(
-                connection.clone(),
-                request.clone(),
-                0,
-                Bound {
-                    shortcuts: asked
-                        .iter()
-                        .map(|shortcut| shortcut_out(&shortcut.id, shortcut.preferred_trigger.as_deref().unwrap_or("")))
-                        .collect(),
-                },
-            ),
+            BindAnswer::Accept => respond(connection.clone(), request.clone(), 0, accepted),
+            BindAnswer::Hold => {
+                let (connection, request) = (connection.clone(), request.clone());
+                *self.state.held.lock().unwrap() = Some(Box::new(move || respond(connection, request, 0, accepted)));
+            }
             // The response of a dialog that was closed: code 1 and nothing else.
             _ => respond(
                 connection.clone(),
@@ -223,28 +227,58 @@ impl Shortcuts {
     }
 }
 
+/// A portal that has an interface, but not the shortcuts one: what a desktop whose portal has no backend for shortcuts
+/// looks like.
+struct Settings;
+
+#[zbus::interface(name = "org.freedesktop.portal.Settings")]
+impl Settings {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        2
+    }
+}
+
 impl FakePortal {
     /// A portal with the shortcuts interface in `version`, on `bus`.
     pub fn start(bus: &PrivateBus, version: u32) -> Self {
-        let state = Arc::new(State::default());
+        let portal = Self::start_without_shortcuts(bus);
+        portal.add_shortcuts(version);
+        portal
+    }
+
+    /// A portal that answers for another interface only, until [`add_shortcuts`](Self::add_shortcuts).
+    pub fn start_without_shortcuts(bus: &PrivateBus) -> Self {
         let connection = zbus::block_on(async {
             zbus::connection::Builder::address(bus.address.as_str())
                 .unwrap()
                 .name("org.freedesktop.portal.Desktop")
                 .unwrap()
-                .serve_at(
-                    PORTAL_PATH,
-                    Shortcuts {
-                        version,
-                        state: Arc::clone(&state),
-                    },
-                )
+                .serve_at(PORTAL_PATH, Settings)
                 .unwrap()
                 .build()
                 .await
                 .unwrap()
         });
-        FakePortal { connection, state }
+        FakePortal {
+            connection,
+            state: Arc::new(State::default()),
+        }
+    }
+
+    /// The portal gets its shortcuts interface, in `version`: its backend came up.
+    pub fn add_shortcuts(&self, version: u32) {
+        let shortcuts = Shortcuts {
+            version,
+            state: Arc::clone(&self.state),
+        };
+        zbus::block_on(self.connection.object_server().at(PORTAL_PATH, shortcuts)).expect("the interface is served");
+    }
+
+    /// Answers the bind that [`BindAnswer::Hold`] kept open, as if the user accepted the dialog.
+    pub fn release_held(&self) {
+        let held = self.state.held.lock().unwrap().take().expect("a held bind");
+        held();
     }
 
     pub fn answer_binds_with(&self, answer: BindAnswer) {

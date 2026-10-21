@@ -1,6 +1,7 @@
-//! The desktop the app runs on: which window system, whether the desktop's shortcut portal answers, whether a tray host
-//! is there, and the command that starts this install of the app. Only Linux has more than one answer to these; on
-//! Windows and macOS the hotkeys always go through the plugin and the tray is always there.
+//! The desktop the app runs on: which window system, whether a tray host is there, and the command that starts this
+//! install of the app. Only Linux has more than one answer to these; on Windows and macOS the hotkeys always go through
+//! the plugin and the tray is always there. (Whether a Wayland desktop has a shortcuts portal is not asked here: the
+//! portal backend looks for it itself, and keeps looking, see `portal.rs`.)
 //!
 //! Everything that asks the system sits behind [`Env`] and [`DesktopBus`], so the rules can be tested without a
 //! session bus.
@@ -63,8 +64,6 @@ pub type TrayHostListener = Box<dyn Fn(bool) + Send>;
 
 /// The session bus, as far as the app asks it questions. The real one is [`system_bus`]; tests use a fake.
 pub trait DesktopBus: Send + Sync {
-    /// The version of the GlobalShortcuts portal, if the portal answers.
-    fn global_shortcuts_version(&self) -> Option<u32>;
     /// Whether something owns `org.kde.StatusNotifierWatcher`, which a tray icon needs.
     fn tray_host_present(&self) -> bool;
     /// Calls `on_change` with the new answer of [`tray_host_present`](Self::tray_host_present) whenever the watcher
@@ -72,40 +71,13 @@ pub trait DesktopBus: Send + Sync {
     fn watch_tray_host(&self, on_change: TrayHostListener);
 }
 
-/// What the session offers the app for hotkeys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Session {
-    pub display: DisplayServer,
-    /// The version of the GlobalShortcuts portal; `None` when the portal isn't there (or isn't asked, see [`detect`]).
-    pub portal_version: Option<u32>,
-}
-
-/// Looks at the session. The portal is only asked on Wayland: that is the only place it is used, and asking costs a
-/// round trip that may have to start the portal service.
-pub fn detect(env: &dyn Env, bus: &dyn DesktopBus) -> Session {
-    detect_for(os_display(env), bus)
-}
-
-/// [`detect`] for a session that is known to run on `display`.
-fn detect_for(display: DisplayServer, bus: &dyn DesktopBus) -> Session {
-    let portal_version = if display == DisplayServer::Wayland {
-        bus.global_shortcuts_version()
-    } else {
-        None
-    };
-    Session {
-        display,
-        portal_version,
-    }
-}
-
-/// How the hotkeys work in `session`: the plugin where it works (Windows, macOS, X11), the portal on a Wayland desktop
-/// that has one, and nothing otherwise.
-pub fn choose_backend(session: &Session) -> HotkeyBackendKind {
-    match (session.display, session.portal_version) {
-        (DisplayServer::Native | DisplayServer::X11, _) => HotkeyBackendKind::Plugin,
-        (DisplayServer::Wayland, Some(_)) => HotkeyBackendKind::Portal,
-        (DisplayServer::Wayland, None) | (DisplayServer::NoDisplay, _) => HotkeyBackendKind::None,
+/// How the hotkeys work on a desktop with `display`: the plugin where it works (Windows, macOS, X11), the portal on a
+/// Wayland desktop (which may turn out not to have one, see `portal.rs`), and nothing without a display.
+pub fn choose_backend(display: DisplayServer) -> HotkeyBackendKind {
+    match display {
+        DisplayServer::Native | DisplayServer::X11 => HotkeyBackendKind::Plugin,
+        DisplayServer::Wayland => HotkeyBackendKind::Portal,
+        DisplayServer::NoDisplay => HotkeyBackendKind::None,
     }
 }
 
@@ -117,20 +89,20 @@ pub fn wants_shortcut_plugin(env: &dyn Env) -> bool {
 
 /// What the app found out about the desktop, kept for the whole run (the tray host can come and go).
 pub struct SessionState {
-    session: Session,
+    display: DisplayServer,
     tray_available: AtomicBool,
 }
 
 impl SessionState {
-    pub fn new(session: Session, tray_available: bool) -> Self {
+    pub fn new(display: DisplayServer, tray_available: bool) -> Self {
         SessionState {
-            session,
+            display,
             tray_available: AtomicBool::new(tray_available),
         }
     }
 
-    pub fn session(&self) -> &Session {
-        &self.session
+    pub fn display(&self) -> DisplayServer {
+        self.display
     }
 
     pub fn tray_available(&self) -> bool {
@@ -146,7 +118,7 @@ impl SessionState {
 /// Looks at the desktop, and has `on_tray_change` called whenever the tray host shows up or goes away later (enabling
 /// the AppIndicator extension on GNOME, say), so the tray starts working without a restart.
 pub fn start(env: &dyn Env, bus: &dyn DesktopBus, on_tray_change: impl Fn() + Send + 'static) -> Arc<SessionState> {
-    let state = Arc::new(SessionState::new(detect(env, bus), bus.tray_host_present()));
+    let state = Arc::new(SessionState::new(os_display(env), bus.tray_host_present()));
     let watched = Arc::clone(&state);
     bus.watch_tray_host(Box::new(move |present| {
         if watched.set_tray_available(present) {
@@ -209,7 +181,7 @@ pub fn system_bus() -> Arc<dyn DesktopBus> {
     Arc::new(linux::SessionBus::default())
 }
 
-/// Not Linux: no portal and a tray that is always there.
+/// Not Linux: a tray that is always there.
 #[cfg(not(target_os = "linux"))]
 pub fn system_bus() -> Arc<dyn DesktopBus> {
     Arc::new(NativeBus)
@@ -220,10 +192,6 @@ struct NativeBus;
 
 #[cfg(not(target_os = "linux"))]
 impl DesktopBus for NativeBus {
-    fn global_shortcuts_version(&self) -> Option<u32> {
-        None
-    }
-
     fn tray_host_present(&self) -> bool {
         true
     }
@@ -233,6 +201,12 @@ impl DesktopBus for NativeBus {
 
 /// The session state of the running app, managed by Tauri.
 pub type SharedSession = Arc<SessionState>;
+
+/// Whether a tray host is there to show the tray icon. Where the app doesn't look at the desktop (tests) there is one.
+/// The one place that answers it, for the window's startup and the status alike.
+pub fn tray_available<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    tauri::Manager::try_state::<SharedSession>(app).is_none_or(|session| session.tray_available())
+}
 
 /// Looks at the desktop and manages the result as [`SharedSession`]; the tray host turning up or going away is
 /// published to the window and the tray. Needs nothing else from the app, and everything that chooses how the hotkeys
@@ -247,30 +221,13 @@ pub fn install<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use std::sync::mpsc;
-    use std::time::Duration;
-
-    use zbus::blocking::{
-        Connection,
-        connection::Builder,
-        fdo::{DBusProxy, PropertiesProxy},
-    };
-    use zbus::names::InterfaceName;
+    use zbus::blocking::{Connection, connection::Builder, fdo::DBusProxy};
 
     use super::{DesktopBus, TrayHostListener};
-
-    /// Where the portals live, and the interface the hotkeys use.
-    const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
-    const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
-    const SHORTCUTS_INTERFACE: &str = "org.freedesktop.portal.GlobalShortcuts";
 
     /// What owns the tray: whoever holds this name can show a tray icon (KDE's, GNOME's AppIndicator extension, and
     /// the other desktops' hosts all answer to it).
     const TRAY_WATCHER: &str = "org.kde.StatusNotifierWatcher";
-
-    /// How long to wait for the portal to answer. It is started by the first call and normally answers within a
-    /// fraction of a second; a portal that doesn't is treated as not there, which shows the warning with the commands.
-    const PORTAL_TIMEOUT: Duration = Duration::from_secs(3);
 
     /// The user's session bus, or any bus at `address`, which is for tests.
     #[derive(Default)]
@@ -294,21 +251,6 @@ mod linux {
             }
         }
 
-        /// The `version` the portal's GlobalShortcuts interface reports. Asked of the interface itself: a portal that is
-        /// there but has no backend for shortcuts (GNOME before 48) answers for its other interfaces and fails for this
-        /// one, and a library's idea of "the portal is there" would wrongly take it for one that has shortcuts.
-        fn read_portal_version(&self) -> Result<u32, String> {
-            let connection = self.connect().map_err(|err| err.to_string())?;
-            let properties = PropertiesProxy::builder(&connection)
-                .destination(PORTAL_NAME)
-                .and_then(|builder| builder.path(PORTAL_PATH))
-                .and_then(|builder| builder.build())
-                .map_err(|err| err.to_string())?;
-            let interface = InterfaceName::try_from(SHORTCUTS_INTERFACE).map_err(|err| err.to_string())?;
-            let version = properties.get(interface, "version").map_err(|err| err.to_string())?;
-            u32::try_from(version).map_err(|err| err.to_string())
-        }
-
         fn watcher_has_owner(dbus: &DBusProxy<'_>) -> bool {
             match zbus::names::BusName::try_from(TRAY_WATCHER) {
                 Ok(name) => dbus.name_has_owner(name).unwrap_or(false),
@@ -318,33 +260,6 @@ mod linux {
     }
 
     impl DesktopBus for SessionBus {
-        fn global_shortcuts_version(&self) -> Option<u32> {
-            let bus = SessionBus {
-                address: self.address.clone(),
-            };
-            let (answer, asked) = mpsc::channel();
-            // A thread of its own, so a portal that hangs can't hold the start of the app: the wait below ends.
-            let spawned = std::thread::Builder::new()
-                .name("rt-portal-probe".into())
-                .spawn(move || {
-                    let _ = answer.send(bus.read_portal_version());
-                });
-            if spawned.is_err() {
-                return None;
-            }
-            match asked.recv_timeout(PORTAL_TIMEOUT) {
-                Ok(Ok(version)) => Some(version),
-                Ok(Err(err)) => {
-                    eprintln!("no shortcuts portal: {err}");
-                    None
-                }
-                Err(_) => {
-                    eprintln!("the shortcuts portal did not answer within {PORTAL_TIMEOUT:?}");
-                    None
-                }
-            }
-        }
-
         fn tray_host_present(&self) -> bool {
             let Ok(connection) = self.connect() else { return false };
             let Ok(dbus) = DBusProxy::new(&connection) else {
@@ -410,21 +325,11 @@ mod tests {
 
     #[derive(Default)]
     struct FakeBus {
-        portal: Option<u32>,
         tray: bool,
-        portal_asked: AtomicUsize,
         watcher: Mutex<Option<TrayHostListener>>,
     }
 
     impl FakeBus {
-        fn with_portal(version: u32) -> Self {
-            FakeBus {
-                portal: Some(version),
-                tray: true,
-                ..FakeBus::default()
-            }
-        }
-
         /// The tray host appears (`true`) or goes away (`false`).
         fn tray_host_changes(&self, present: bool) {
             (self.watcher.lock().unwrap().as_ref().expect("a watcher"))(present);
@@ -432,11 +337,6 @@ mod tests {
     }
 
     impl DesktopBus for FakeBus {
-        fn global_shortcuts_version(&self) -> Option<u32> {
-            self.portal_asked.fetch_add(1, Ordering::SeqCst);
-            self.portal
-        }
-
         fn tray_host_present(&self) -> bool {
             self.tray
         }
@@ -514,102 +414,34 @@ mod tests {
         );
     }
 
-    // Session
-
-    #[test]
-    fn wayland_asks_the_bus_for_the_portal_and_keeps_its_version() {
-        let bus = FakeBus::with_portal(2);
-        let session = detect_for(display_server(&FakeEnv::with(WAYLAND)), &bus);
-        assert_eq!(session.portal_version, Some(2));
-        assert_eq!(bus.portal_asked.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn wayland_without_a_portal_has_no_version() {
-        let session = detect_for(display_server(&FakeEnv::with(WAYLAND)), &FakeBus::default());
-        assert_eq!(session.display, DisplayServer::Wayland);
-        assert_eq!(session.portal_version, None);
-    }
-
-    #[test]
-    fn x11_and_a_missing_display_never_ask_for_the_portal() {
-        for vars in [&[("DISPLAY", ":0")][..], &[][..]] {
-            let bus = FakeBus::with_portal(2);
-            let session = detect_for(display_server(&FakeEnv::with(vars)), &bus);
-            assert_eq!(session.portal_version, None, "{vars:?}");
-            assert_eq!(bus.portal_asked.load(Ordering::SeqCst), 0, "{vars:?}");
-        }
-    }
-
-    #[test]
-    fn this_os_decides_whether_there_is_a_session_to_look_at() {
-        // Wayland variables on a Mac or a Windows machine mean nothing: no portal is asked, the plugin is used.
-        let bus = FakeBus::with_portal(2);
-        let session = detect(&FakeEnv::with(WAYLAND), &bus);
-        if cfg!(target_os = "linux") {
-            assert_eq!(session.display, DisplayServer::Wayland);
-        } else {
-            assert_eq!(session.display, DisplayServer::Native);
-            assert_eq!(session.portal_version, None);
-            assert_eq!(bus.portal_asked.load(Ordering::SeqCst), 0);
-            assert_eq!(choose_backend(&session), HotkeyBackendKind::Plugin);
-        }
-    }
-
     // Backend choice
 
-    fn session(display: DisplayServer, portal_version: Option<u32>) -> Session {
-        Session {
-            display,
-            portal_version,
-        }
+    #[test]
+    fn x11_windows_and_macos_use_the_plugin() {
+        assert_eq!(choose_backend(DisplayServer::X11), HotkeyBackendKind::Plugin);
+        assert_eq!(choose_backend(DisplayServer::Native), HotkeyBackendKind::Plugin);
     }
 
     #[test]
-    fn x11_uses_the_plugin_whether_or_not_a_portal_is_there() {
-        assert_eq!(
-            choose_backend(&session(DisplayServer::X11, None)),
-            HotkeyBackendKind::Plugin
-        );
-        assert_eq!(
-            choose_backend(&session(DisplayServer::X11, Some(2))),
-            HotkeyBackendKind::Plugin
-        );
-    }
-
-    #[test]
-    fn windows_and_macos_use_the_plugin() {
-        assert_eq!(
-            choose_backend(&session(DisplayServer::Native, None)),
-            HotkeyBackendKind::Plugin
-        );
-    }
-
-    #[test]
-    fn wayland_with_the_portal_uses_it_in_either_version() {
-        for version in [1, 2] {
-            assert_eq!(
-                choose_backend(&session(DisplayServer::Wayland, Some(version))),
-                HotkeyBackendKind::Portal,
-                "v{version}"
-            );
-        }
-    }
-
-    #[test]
-    fn wayland_without_the_portal_has_no_hotkeys() {
-        assert_eq!(
-            choose_backend(&session(DisplayServer::Wayland, None)),
-            HotkeyBackendKind::None
-        );
+    fn wayland_uses_the_portal_which_finds_out_for_itself_whether_it_is_there() {
+        assert_eq!(choose_backend(DisplayServer::Wayland), HotkeyBackendKind::Portal);
     }
 
     #[test]
     fn no_display_has_no_hotkeys() {
-        assert_eq!(
-            choose_backend(&session(DisplayServer::NoDisplay, None)),
-            HotkeyBackendKind::None
-        );
+        assert_eq!(choose_backend(DisplayServer::NoDisplay), HotkeyBackendKind::None);
+    }
+
+    #[test]
+    fn this_os_decides_whether_there_is_a_session_to_look_at() {
+        // Wayland variables on a Mac or a Windows machine mean nothing: the plugin is used.
+        let display = os_display(&FakeEnv::with(WAYLAND));
+        if cfg!(target_os = "linux") {
+            assert_eq!(display, DisplayServer::Wayland);
+        } else {
+            assert_eq!(display, DisplayServer::Native);
+            assert_eq!(choose_backend(display), HotkeyBackendKind::Plugin);
+        }
     }
 
     #[test]
@@ -624,7 +456,7 @@ mod tests {
         // Whatever starts the plugin and whatever picks the backend must agree.
         for vars in [&[("DISPLAY", ":0")][..], WAYLAND, &[][..]] {
             let env = FakeEnv::with(vars);
-            let chosen = choose_backend(&detect(&env, &FakeBus::with_portal(2)));
+            let chosen = choose_backend(os_display(&env));
             assert_eq!(
                 wants_shortcut_plugin(&env),
                 chosen == HotkeyBackendKind::Plugin,
@@ -744,39 +576,6 @@ mod tests {
 
         const SOON: Duration = Duration::from_secs(10);
 
-        /// A portal that has the shortcuts interface in version `0`.
-        struct Shortcuts(u32);
-
-        #[zbus::interface(name = "org.freedesktop.portal.GlobalShortcuts")]
-        impl Shortcuts {
-            #[zbus(property, name = "version")]
-            fn version(&self) -> u32 {
-                self.0
-            }
-        }
-
-        /// A portal that has something else.
-        struct Settings;
-
-        #[zbus::interface(name = "org.freedesktop.portal.Settings")]
-        impl Settings {
-            #[zbus(property, name = "version")]
-            fn version(&self) -> u32 {
-                2
-            }
-        }
-
-        fn portal_with(bus: &PrivateBus, interface: impl zbus::object_server::Interface) -> Connection {
-            Builder::address(bus.address.as_str())
-                .unwrap()
-                .name("org.freedesktop.portal.Desktop")
-                .unwrap()
-                .serve_at("/org/freedesktop/portal/desktop", interface)
-                .unwrap()
-                .build()
-                .unwrap()
-        }
-
         fn tray_host_on(bus: &PrivateBus) -> Connection {
             Builder::address(bus.address.as_str())
                 .unwrap()
@@ -787,11 +586,9 @@ mod tests {
         }
 
         #[test]
-        fn an_empty_bus_has_no_tray_host_and_no_portal() {
+        fn an_empty_bus_has_no_tray_host() {
             let Some(bus) = PrivateBus::start() else { return };
-            let session = SessionBus::at(&bus.address);
-            assert!(!session.tray_host_present());
-            assert_eq!(session.global_shortcuts_version(), None);
+            assert!(!SessionBus::at(&bus.address).tray_host_present());
         }
 
         #[test]
@@ -823,26 +620,6 @@ mod tests {
             let (heard, changes) = mpsc::channel();
             SessionBus::at(&bus.address).watch_tray_host(Box::new(move |present| heard.send(present).unwrap()));
             assert_eq!(changes.recv_timeout(SOON), Ok(true));
-        }
-
-        #[test]
-        fn a_portal_without_shortcuts_is_not_a_shortcuts_portal() {
-            let Some(bus) = PrivateBus::start() else { return };
-            let _portal = portal_with(&bus, Settings);
-            assert_eq!(SessionBus::at(&bus.address).global_shortcuts_version(), None);
-        }
-
-        #[test]
-        fn a_shortcuts_portal_reports_its_version() {
-            for version in [1, 2] {
-                let Some(bus) = PrivateBus::start() else { return };
-                let _portal = portal_with(&bus, Shortcuts(version));
-                assert_eq!(
-                    SessionBus::at(&bus.address).global_shortcuts_version(),
-                    Some(version),
-                    "v{version}"
-                );
-            }
         }
     }
 }

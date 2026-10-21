@@ -13,7 +13,7 @@ use crate::engine;
 use crate::hotkeys::{HotkeyManager, HotkeyReport, NoBackend, PluginBackend, ShortcutBackend};
 use crate::ipc::{CommandError, ConfigureOutcome, HotkeyBackendKind, HotkeyStates, Settings, SettingsPatch};
 use crate::locking::lock;
-use crate::session::{Session, SharedSession, choose_backend};
+use crate::session::{SharedSession, choose_backend};
 use crate::settings::{apply_patch, sanitize};
 use crate::store::{InMemoryPersistence, StorePersistence, settings_file};
 
@@ -190,32 +190,30 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
     );
 }
 
-/// The way the hotkeys work on this desktop: the plugin where it works, the portal on a Wayland desktop that has one, and
-/// nothing otherwise. Needs the [`SharedSession`](crate::session::SharedSession) in the managed state; without it (tests)
+/// The way the hotkeys work on this desktop: the plugin where it works, the portal on a Wayland desktop (which looks for
+/// it itself, and says so when there is none), and nothing otherwise. Needs the [`SharedSession`](crate::session::SharedSession) in the managed state; without it (tests)
 /// the plugin.
 fn shortcut_backend<R: Runtime>(app: &AppHandle<R>) -> Box<dyn ShortcutBackend> {
     let Some(session) = app.try_state::<SharedSession>() else {
         return Box::new(PluginBackend(app.clone()));
     };
-    match choose_backend(session.session()) {
+    match choose_backend(session.display()) {
         HotkeyBackendKind::Plugin => Box::new(PluginBackend(app.clone())),
         HotkeyBackendKind::None => Box::new(NoBackend),
-        HotkeyBackendKind::Portal => portal_backend(app, session.session()),
+        HotkeyBackendKind::Portal => portal_backend(app),
     }
 }
 
 /// The portal, which tells the window whenever the keys it assigned change.
 #[cfg(target_os = "linux")]
-fn portal_backend<R: Runtime>(app: &AppHandle<R>, session: &Session) -> Box<dyn ShortcutBackend> {
+fn portal_backend<R: Runtime>(app: &AppHandle<R>) -> Box<dyn ShortcutBackend> {
     let handle = app.clone();
-    Box::new(crate::portal::start(session.portal_version.unwrap_or(1), move || {
-        engine::publish_status(&handle)
-    }))
+    Box::new(crate::portal::start(move || engine::publish_status(&handle)))
 }
 
 /// Only Linux has the portal, and [`choose_backend`] never picks it anywhere else.
 #[cfg(not(target_os = "linux"))]
-fn portal_backend<R: Runtime>(_app: &AppHandle<R>, _session: &Session) -> Box<dyn ShortcutBackend> {
+fn portal_backend<R: Runtime>(_app: &AppHandle<R>) -> Box<dyn ShortcutBackend> {
     Box::new(NoBackend)
 }
 

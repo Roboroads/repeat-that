@@ -25,6 +25,10 @@ pub type EdgeHandler = Box<dyn Fn(KeyEdge) + Send + Sync>;
 /// Registers key combinations with the OS. The real ones are the global-shortcut plugin and the desktop's shortcut
 /// portal; tests use a fake.
 pub trait ShortcutBackend: Send + Sync {
+    /// Hands the backend the handler of every hotkey action, once, before anything is registered. A backend where the
+    /// OS lists the actions itself (the portal binds all three, with or without a key of ours) keeps them; the others
+    /// register their own.
+    fn attach(&self, _handlers: Vec<(AppAction, EdgeHandler)>) {}
     /// Registers `accel` for `action` and calls `on_edge` for every press and release. An error means the OS refused,
     /// usually because another app holds the combination.
     fn register(&self, action: AppAction, accel: &str, on_edge: EdgeHandler) -> Result<(), String>;
@@ -187,10 +191,17 @@ pub struct HotkeyManager {
 impl HotkeyManager {
     /// Registers nothing yet; call [`apply`](Self::apply).
     pub fn new(backend: Box<dyn ShortcutBackend>, dispatch: Arc<dyn Fn(AppAction) + Send + Sync>) -> Self {
+        let tracker: Arc<Mutex<PressTracker>> = Arc::default();
+        backend.attach(
+            HOTKEY_ACTIONS
+                .iter()
+                .map(|&action| (action, edge_handler(&tracker, &dispatch, action)))
+                .collect(),
+        );
         HotkeyManager {
             backend,
             dispatch,
-            tracker: Arc::default(),
+            tracker,
             inner: Mutex::new(Inner {
                 desired: HotkeyBindings {
                     replay: None,
@@ -229,8 +240,8 @@ impl HotkeyManager {
         true
     }
 
-    /// Where each hotkey stands. Where the OS decides the keys (the portal) a registered action is `Ok` once the OS
-    /// has given it a key and `Unbound` until then, and with no hotkeys at all every action is `Unbound`.
+    /// Where each hotkey stands. Where the OS decides the keys (the portal) an action is `Ok` once the OS has given it
+    /// a key and `Unbound` until then, whatever is stored, and with no hotkeys at all every action is `Unbound`.
     pub fn states(&self) -> HotkeyStates {
         let inner = lock(&self.inner);
         let kind = self.backend.kind();
@@ -241,7 +252,7 @@ impl HotkeyManager {
         let assigned = self.backend.triggers();
         for ((state, slot), assigned) in states.slots_mut().into_iter().zip(&inner.slots).zip(assigned.slots()) {
             *state = match kind {
-                HotkeyBackendKind::Portal if slot.live.is_some() => {
+                HotkeyBackendKind::Portal => {
                     if assigned.is_some() {
                         HotkeyState::Ok
                     } else {
@@ -318,7 +329,10 @@ impl HotkeyManager {
                 }
                 Wanted::Bound(shortcut, accel) => {
                     slot.tried = Some(*shortcut);
-                    match self.backend.register(action, accel, self.edge_handler(action)) {
+                    match self
+                        .backend
+                        .register(action, accel, edge_handler(&self.tracker, &self.dispatch, action))
+                    {
                         Ok(()) => {
                             slot.live = Some((*shortcut, accel.clone()));
                             slot.state = HotkeyState::Ok;
@@ -333,18 +347,23 @@ impl HotkeyManager {
         }
         self.backend.commit();
     }
+}
 
-    fn edge_handler(&self, action: AppAction) -> EdgeHandler {
-        let tracker = Arc::clone(&self.tracker);
-        let dispatch = Arc::clone(&self.dispatch);
-        Box::new(move |edge| {
-            // The lock is released before the action runs: it may do anything, including touching the hotkeys.
-            let run = lock(&tracker).on_edge(action, edge);
-            if run {
-                dispatch(action);
-            }
-        })
-    }
+/// The handler for `action`'s hotkey: a press runs the action unless the key is already held.
+fn edge_handler(
+    tracker: &Arc<Mutex<PressTracker>>,
+    dispatch: &Arc<dyn Fn(AppAction) + Send + Sync>,
+    action: AppAction,
+) -> EdgeHandler {
+    let tracker = Arc::clone(tracker);
+    let dispatch = Arc::clone(dispatch);
+    Box::new(move |edge| {
+        // The lock is released before the action runs: it may do anything, including touching the hotkeys.
+        let run = lock(&tracker).on_edge(action, edge);
+        if run {
+            dispatch(action);
+        }
+    })
 }
 
 /// A backend that registers into memory, for tests here and of the settings service.
@@ -362,6 +381,9 @@ pub mod fake {
         pub refused: Mutex<HashSet<String>>,
         /// The actions the manager registered, in order, whatever their combination.
         pub actions: Mutex<Vec<AppAction>>,
+        /// The actions whose handlers the manager attached, and the handlers.
+        pub attached: Mutex<Vec<AppAction>>,
+        pub attached_handlers: Mutex<Vec<EdgeHandler>>,
         /// How many rounds of registrations were over (`commit` calls).
         pub commits: AtomicUsize,
         /// What the backend says it is; `Plugin` unless a test changes it.
@@ -444,6 +466,13 @@ pub mod fake {
         fn unregister(&self, _action: AppAction, accel: &str) {
             self.log.lock().unwrap().push(format!("unregister {accel}"));
             self.handlers.lock().unwrap().retain(|(a, _)| a != accel);
+        }
+
+        fn attach(&self, handlers: Vec<(AppAction, EdgeHandler)>) {
+            for (action, handler) in handlers {
+                self.attached.lock().unwrap().push(action);
+                self.attached_handlers.lock().unwrap().push(handler);
+            }
         }
 
         fn commit(&self) {
@@ -980,15 +1009,40 @@ mod tests {
     }
 
     #[test]
-    fn invalid_and_unbound_settings_keep_their_state_under_the_portal() {
+    fn under_the_portal_what_is_stored_does_not_decide_the_state() {
+        // The stored combinations are only what was asked for; an action with an empty or unreadable one is still the
+        // portal's, and is fine once the OS has given it a key.
         let s = setup();
         s.backend.set_kind(HotkeyBackendKind::Portal);
         s.manager.apply(&bindings(Some("Ctrl+Frobnicate"), None, Some(ENTER)));
-        s.backend.set_triggers(None, None, Some("Ctrl+Alt+Enter"));
+        s.backend.set_triggers(Some("Meta+R"), Some("Meta+S"), None);
         assert_eq!(
             s.manager.states(),
-            states(HotkeyState::Invalid, HotkeyState::Unbound, HotkeyState::Ok)
+            states(HotkeyState::Ok, HotkeyState::Ok, HotkeyState::Unbound)
         );
+    }
+
+    #[test]
+    fn the_backend_gets_the_handler_of_every_action_before_anything_is_registered() {
+        let s = setup();
+        assert_eq!(
+            *s.backend.attached.lock().unwrap(),
+            [AppAction::Replay, AppAction::Stop, AppAction::CatchUp]
+        );
+        assert!(s.backend.log().is_empty());
+    }
+
+    #[test]
+    fn the_attached_handlers_share_the_press_tracking_of_the_registered_ones() {
+        let s = setup();
+        let handlers = s.backend.attached_handlers.lock().unwrap();
+        let replay = &handlers[0];
+        replay(KeyEdge::Pressed);
+        replay(KeyEdge::Pressed);
+        assert_eq!(*s.fired.lock().unwrap(), [AppAction::Replay]);
+        replay(KeyEdge::Released);
+        replay(KeyEdge::Pressed);
+        assert_eq!(*s.fired.lock().unwrap(), [AppAction::Replay, AppAction::Replay]);
     }
 
     #[test]
