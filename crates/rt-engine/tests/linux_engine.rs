@@ -11,6 +11,9 @@
 
 #![cfg(target_os = "linux")]
 
+#[path = "../../rt-capture/tests/pw_tools/mod.rs"]
+mod pw_tools;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -18,10 +21,10 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use pw_tools::{pw_cat_raw_input, pw_dump};
 use rt_capture::AppAudioSource;
 use rt_capture::linux::PipeWireSource;
 use rt_engine::{CaptureState, Engine, EngineConfig, EngineHandle, PlaybackState, Status, TargetApp, TestOutput};
-use serde_json::Value;
 
 /// What the player is called, with a media role of its own: WirePlumber remembers volumes by role.
 const NAME: &str = "RT Engine Speech";
@@ -44,16 +47,8 @@ impl Player {
             .flat_map(f32::to_le_bytes)
             .collect();
         let mut child = Command::new("pw-cat")
-            .args([
-                "--playback",
-                "--raw",
-                "--format",
-                "f32",
-                "--channels",
-                "1",
-                "--latency",
-                "1024",
-            ])
+            .args(["--playback", "--format", "f32", "--channels", "1", "--latency", "1024"])
+            .args(pw_cat_raw_input())
             .args(["--rate", &spec.sample_rate.to_string()])
             .args(["--media-role", &format!("RtTestEngine{}", std::process::id())])
             .arg("-P")
@@ -177,9 +172,8 @@ fn wait_for_value<T>(timeout: Duration, mut f: impl FnMut() -> Option<T>) -> Opt
 
 /// The `channelVolumes` of each of the player's streams, read from `pw-dump`, independently of the backend.
 fn volumes() -> Vec<Vec<f32>> {
-    let output = Command::new("pw-dump").output().expect("run pw-dump");
-    let dump: Vec<Value> = serde_json::from_slice(&output.stdout).expect("pw-dump prints JSON");
-    dump.iter()
+    pw_dump()
+        .iter()
         .filter(|o| o["type"].as_str().is_some_and(|t| t.ends_with(":Node")))
         .filter(|o| o["info"]["props"]["application.name"].as_str() == Some(NAME))
         .filter_map(|o| {

@@ -15,6 +15,8 @@
 
 #![cfg(target_os = "linux")]
 
+mod pw_tools;
+
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::f64::consts::TAU;
@@ -28,6 +30,7 @@ use std::time::{Duration, Instant};
 use std::{env, fs};
 
 use pipewire as pw;
+use pw_tools::{parse_pw_dump, pw_cat_raw_input, pw_dump};
 use rt_capture::linux::PipeWireSource;
 use rt_capture::{AppAudioSource, AudioApp, CaptureFormat, CaptureHandle};
 use serde_json::Value;
@@ -77,16 +80,8 @@ impl Player {
 
     fn start_with(name: &str, hz: f64, extra: &[&str]) -> Self {
         let mut child = Command::new("pw-cat")
-            .args([
-                "--playback",
-                "--raw",
-                "--format",
-                "f32",
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-            ])
+            .args(["--playback", "--format", "f32", "--rate", "48000", "--channels", "2"])
+            .args(pw_cat_raw_input())
             .args(["--latency", "1024", "--media-role", &role(name)])
             .arg("-P")
             .arg(format!(
@@ -148,10 +143,26 @@ impl Drop for Player {
     }
 }
 
-/// What `pw-dump` says now.
-fn dump() -> Vec<Value> {
-    let output = Command::new("pw-dump").output().expect("run pw-dump");
-    serde_json::from_slice(&output.stdout).expect("pw-dump prints JSON")
+#[test]
+fn objects_removed_while_pw_dump_runs_are_left_out() {
+    // The shape PipeWire 1.0's pw-dump printed while players quit: the full array, then one per removed object (or
+    // those first).
+    let node = |id: u64, name: &str| {
+        let props = serde_json::json!({ "node.name": name });
+        serde_json::json!({ "id": id, "type": "PipeWire:Interface:Node", "info": { "props": props } })
+    };
+    let full = Value::Array(vec![node(31, "rt-null-sink"), node(45, "pw-cat"), node(46, "pacat")]);
+    let removed = |id: u64| format!("[\n  {{\n    \"id\": {id},\n    \"info\": null\n  }}\n]\n");
+    let ids = |output: String| -> Vec<u64> {
+        parse_pw_dump(output.as_bytes())
+            .iter()
+            .filter_map(|o| o["id"].as_u64())
+            .collect()
+    };
+
+    assert_eq!(ids(format!("{full:#}\n")), [31, 45, 46]);
+    assert_eq!(ids(format!("{full:#}\n{}{}", removed(45), removed(46))), [31]);
+    assert_eq!(ids(format!("{}{full:#}\n", removed(50))), [31, 45, 46]);
 }
 
 fn props(object: &Value) -> &Value {
@@ -172,7 +183,7 @@ fn nodes_where(dump: &[Value], key: &str, value: &str) -> Vec<u64> {
 
 /// The `channelVolumes` of every playback stream of the app called `name`, read independently of the backend.
 fn volumes(name: &str) -> Vec<Vec<f32>> {
-    let dump = dump();
+    let dump = pw_dump();
     dump.iter()
         .filter(|o| is(o, ":Node") && props(o)["application.name"].as_str() == Some(name))
         .filter(|o| props(o)["media.class"].as_str() == Some("Stream/Output/Audio"))
@@ -325,7 +336,10 @@ fn lists_captures_and_ducks_a_player() {
     let app = find_app(&source, "RT Tone");
     println!("listed: {app:?}");
     assert_eq!(app.pid, player.pid());
-    assert_eq!(app.exe_path.as_deref(), Some(std::path::Path::new("/usr/bin/pw-cat")));
+    assert!(
+        app.exe_path.as_ref().is_some_and(|exe| exe.ends_with("pw-cat")),
+        "{app:?}"
+    );
     wait_for(Duration::from_secs(5), || {
         (!volumes("RT Own Output").is_empty()).then_some(())
     })
@@ -523,7 +537,7 @@ fn a_volume_changed_by_hand_during_a_duck_is_left_alone() {
     let _player = Player::start("RT Hand Tone");
     let app = find_app(&source, "RT Hand Tone");
     source.set_app_volume(&app, 0.25).unwrap();
-    let node = nodes_where(&dump(), "application.name", "RT Hand Tone")[0];
+    let node = nodes_where(&pw_dump(), "application.name", "RT Hand Tone")[0];
     wait_for(Duration::from_secs(2), || {
         close(&volumes("RT Hand Tone"), &[vec![0.25; 2]], 1e-4).then_some(())
     })
@@ -586,6 +600,11 @@ fn crash_while_ducking(name: &str, before: &[Vec<f32>], env: &[(&str, &str)]) {
         "{} is missing; build it with `cargo build -p rt-capture --example probe`",
         probe.display()
     );
+    // The probe looks the app up once, so the player's streams must be there first.
+    wait_for(Duration::from_secs(10), || {
+        (volumes(name).len() == before.len()).then_some(())
+    })
+    .unwrap_or_else(|| panic!("{name} plays: {:?}", volumes(name)));
     let mut prober = Command::new(&probe)
         .args(["duck", name, "0.25", "60"])
         .envs(env.iter().copied())
@@ -668,7 +687,7 @@ fn a_microphone_is_never_captured() {
     thread::sleep(Duration::from_millis(1500));
     let (mono, rate) = recording.left();
     // Every link into our capture comes from the app's stream.
-    let dump = dump();
+    let dump = pw_dump();
     let ours: BTreeSet<u64> = dump
         .iter()
         .filter(|o| is(o, ":Node"))
@@ -739,7 +758,7 @@ impl VirtualMic {
             .expect("run pw-cli");
         assert!(status.success(), "pw-cli create-node: {status}");
         let id = wait_for(Duration::from_secs(5), || {
-            nodes_where(&dump(), "node.name", name).first().copied()
+            nodes_where(&pw_dump(), "node.name", name).first().copied()
         })
         .expect("the microphone appears");
         Self { id }
