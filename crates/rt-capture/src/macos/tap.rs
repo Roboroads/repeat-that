@@ -94,6 +94,8 @@ struct Shared {
     /// The tap ended by itself (see [`Shared::end`]): the app quit, its device went away, or capture isn't allowed any
     /// more. Its IOProc sets it too when it panics, and the watcher then ends the tap.
     ended: AtomicBool,
+    /// Whether the muting tap is there, as `description` says, readable without waiting for its lock.
+    muted: AtomicBool,
     stop: AtomicBool,
     /// Wakes the watcher when processes come or go, or when it should stop.
     wake: Wake,
@@ -381,6 +383,7 @@ impl Tap {
             sink: Mutex::new(None),
             sinks: AtomicU64::new(0),
             ended: AtomicBool::new(false),
+            muted: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             wake: Wake::default(),
             description: Mutex::new(description),
@@ -466,7 +469,18 @@ impl Tap {
     }
 
     fn set_muted(&self, muted: bool) -> Result<()> {
-        lock(&self.shared.description).set_muted(muted, self.shared.device)
+        let mut description = lock(&self.shared.description);
+        let result = description.set_muted(muted, self.shared.device);
+        self.shared
+            .muted
+            .store(description.mute.get().is_some(), Ordering::Relaxed);
+        result
+    }
+
+    /// Whether this tap keeps the app ducked: muted, and maybe replayed. A duck leaves the app muted, a restore or a
+    /// failed duck unmuted, so this tells whether a restore has anything to undo. Doesn't wait for a duck under way.
+    pub(crate) fn ducked(&self) -> bool {
+        self.shared.muted.load(Ordering::Relaxed)
     }
 
     /// Ducks the app to `level` (0–1, 1 restores it) and returns once it's there, see `passthrough`. If the IOProc
@@ -694,6 +708,7 @@ impl Shared {
         self.ended.store(true, Ordering::Relaxed);
         self.command.store(Command::SILENT.pack(), Ordering::Relaxed);
         description.mute.end();
+        self.muted.store(false, Ordering::Relaxed);
     }
 
     /// One IO cycle.

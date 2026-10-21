@@ -458,6 +458,42 @@ fn ducking_to_zero_mutes_the_device_while_capture_keeps_full_level() {
 }
 
 #[test]
+#[ignore = "plays audio; needs BlackHole and the audio capture permission"]
+fn ducking_two_apps_at_once_takes_as_long_as_ducking_one() {
+    let _audio = lock(&AUDIO);
+    if !allowed() {
+        return;
+    }
+    let source = CoreAudioSource::new();
+    let (first, second) = (play_tone(), play_tone());
+    let (a, b) = (player_app(&first), player_app(&second));
+    let _recordings = (Recording::start(&source, &a), Recording::start(&source, &b));
+    thread::sleep(Duration::from_millis(300));
+    let timed = |duck: &dyn Fn()| {
+        let start = Instant::now();
+        duck();
+        start.elapsed()
+    };
+
+    let one = timed(&|| source.set_app_volume(&a, 0.2).expect("duck one app"));
+    source.set_app_volume(&a, 1.0).expect("restore it");
+    let both = timed(&|| {
+        let source = &source;
+        thread::scope(|scope| {
+            for app in [&a, &b] {
+                scope.spawn(move || source.set_app_volume(app, 0.2).expect("duck both apps"));
+            }
+        });
+    });
+    println!("summary: ducking one app took {one:.0?}, two at once {both:.0?}");
+    // A duck waits for the audio it hands over, a few hundred milliseconds; one at a time would take twice as long.
+    assert!(both < one * 3 / 2, "two ducks at once took {both:?}, one {one:?}");
+    for app in [&a, &b] {
+        source.set_app_volume(app, 1.0).expect("restore");
+    }
+}
+
+#[test]
 #[ignore = "plays audio; needs BlackHole, the permissions and the probe example"]
 fn a_killed_process_that_ducked_leaves_the_app_audible() {
     let _audio = lock(&AUDIO);

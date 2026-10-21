@@ -45,7 +45,7 @@ fn check_version(major: i64, minor: i64) -> Result<()> {
 mod os {
     use std::collections::HashMap;
     use std::path::Path;
-    use std::sync::{Arc, Mutex, Weak};
+    use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
     use super::{check_version, processes, sys, tap};
     use crate::{AppAudioSource, AudioApp, CaptureHandle, FrameSink, IconImage, PlatformOptions, Result};
@@ -97,17 +97,31 @@ mod os {
             Self::default()
         }
 
-        /// The running tap of `app`, or a new one.
+        /// The running tap of `app`, or a new one. A new tap waits for its device to run, which mustn't hold up other
+        /// apps' captures and ducks, so the list isn't locked meanwhile.
         fn tap(&self, app: &AudioApp) -> Result<Arc<tap::Tap>> {
-            let mut taps = self.taps.lock().unwrap_or_else(|e| e.into_inner());
-            taps.retain(|_, tap| tap.strong_count() > 0);
-            if let Some(tap) = taps.get(&app.pid).and_then(Weak::upgrade).filter(|tap| !tap.ended()) {
+            let running = |taps: &mut HashMap<u32, Weak<tap::Tap>>| {
+                taps.retain(|_, tap| tap.strong_count() > 0);
+                taps.get(&app.pid).and_then(Weak::upgrade).filter(|tap| !tap.ended())
+            };
+            let found = running(&mut lock(&self.taps));
+            if let Some(tap) = found {
                 return Ok(tap);
             }
             let tap = Arc::new(tap::Tap::start(app.pid)?);
+            let mut taps = lock(&self.taps);
+            if let Some(started) = running(&mut taps) {
+                // Another capture or duck of the app started one meanwhile: that one it is, and ours goes.
+                drop(taps);
+                return Ok(started);
+            }
             taps.insert(app.pid, Arc::downgrade(&tap));
             Ok(tap)
         }
+    }
+
+    fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     impl AppAudioSource for CoreAudioSource {
@@ -125,13 +139,20 @@ mod os {
 
         fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()> {
             let level = if level.is_nan() { 1.0 } else { level.clamp(0.0, 1.0) };
-            let mut ducked = self.ducked.lock().unwrap_or_else(|e| e.into_inner());
-            // Taps of other apps that ended by themselves were unmuted then; this app's is restored below.
-            ducked.retain(|pid, tap| *pid == app.pid || !tap.ended());
-            let tap = match ducked.get(&app.pid) {
+            // The list is only locked to look and to update it: a duck takes a few hundred milliseconds, seconds when
+            // its device stalls, which mustn't hold up other apps' ducks and restores. Ducks of one app take turns in
+            // its tap. Taps that go are dropped after unlocking, since dropping one waits for its watcher.
+            let (held, ended) = {
+                let mut ducked = lock(&self.ducked);
+                // Taps of other apps that ended by themselves were unmuted then; this app's is restored below.
+                let ended: Vec<_> = ducked.extract_if(|pid, tap| *pid != app.pid && tap.ended()).collect();
+                (ducked.get(&app.pid).cloned(), ended)
+            };
+            drop(ended);
+            let tap = match held {
                 // Restoring always goes to the tap that ducked the app, also one that ended by itself while a capture
                 // still holds it: that unmutes the app and stops the replay, if its end didn't already.
-                Some(tap) if level >= 1.0 || !tap.ended() => Arc::clone(tap),
+                Some(tap) if level >= 1.0 || !tap.ended() => tap,
                 // Nothing to restore on an app that isn't ducked.
                 None if level >= 1.0 => return Ok(()),
                 _ => {
@@ -140,12 +161,19 @@ mod os {
                 }
             };
             let result = tap.duck(level);
-            // A duck that failed left the app as it was before ducking, see `Tap::duck`.
-            if level < 1.0 && result.is_ok() {
-                ducked.insert(app.pid, tap);
-            } else {
-                ducked.remove(&app.pid);
-            }
+            // Held while the tap keeps the app ducked. A duck that failed left the app as it was before ducking (see
+            // `Tap::duck`). Of two ducks of the app at once, the one that updates last sees how the other left it.
+            let gone = {
+                let mut ducked = lock(&self.ducked);
+                if tap.ducked() {
+                    ducked.insert(app.pid, tap)
+                } else if ducked.get(&app.pid).is_some_and(|held| Arc::ptr_eq(held, &tap)) {
+                    ducked.remove(&app.pid)
+                } else {
+                    None
+                }
+            };
+            drop(gone);
             result
         }
     }
