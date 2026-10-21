@@ -5,6 +5,8 @@
 //! `TCCAccessRequest` from the private TCC framework do, and are loaded at run time. If they are missing, the app
 //! assumes it may capture and goes on: detection is simply off (a written assumption, see the plan).
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::permission::{PermissionHelp, PermissionStatus};
 use crate::{CaptureError, Result};
 
@@ -34,14 +36,37 @@ pub(crate) fn how_to_allow(major: i64) -> String {
     }
 }
 
-/// The capture error, if any, for `status`, after asking the user if they weren't yet.
-pub(crate) fn start_error(status: PermissionStatus, major: i64, ask: impl FnOnce()) -> Result<()> {
+/// Whether macOS was asked to show its question in this run. The question stays up until the user answers it, so it is
+/// asked once, not on every retry of a capture and every duck, which would only pile up requests.
+pub(crate) struct AskOnce(AtomicBool);
+
+impl AskOnce {
+    pub(crate) const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Calls `ask` if nothing was asked yet in this run.
+    pub(crate) fn ask(&self, ask: impl FnOnce()) {
+        if !self.0.swap(true, Ordering::Relaxed) {
+            ask();
+        }
+    }
+
+    /// Calls `ask` whether or not it was asked before: the user wants the question again.
+    pub(crate) fn ask_again(&self, ask: impl FnOnce()) {
+        self.0.store(true, Ordering::Relaxed);
+        ask();
+    }
+}
+
+/// The capture error, if any, for `status`, after asking the user (once, see [`AskOnce`]) if they weren't yet.
+pub(crate) fn start_error(status: PermissionStatus, major: i64, once: &AskOnce, ask: impl FnOnce()) -> Result<()> {
     match status {
         PermissionStatus::Allowed => Ok(()),
         PermissionStatus::NotAsked => {
             // macOS shows its question and doesn't wait for the answer. The engine tries again every 2 s, so capture
             // starts once the user allows it.
-            ask();
+            once.ask(ask);
             Err(CaptureError::Backend(WAITING.into()))
         }
         PermissionStatus::Denied => Err(CaptureError::PermissionDenied(how_to_allow(major))),
@@ -64,7 +89,7 @@ mod sys {
     use objc2_core_foundation::{CFDictionary, CFString};
     use objc2_foundation::NSBundle;
 
-    use super::{from_preflight, help_for, start_error};
+    use super::{AskOnce, from_preflight, help_for, start_error};
     use crate::macos::{check_version, sys::os_version};
     use crate::permission::{PermissionHelp, PermissionStatus};
     use crate::{CaptureError, Result};
@@ -124,6 +149,9 @@ mod sys {
         Ok(from_preflight(value))
     }
 
+    /// Whether this run asked macOS to show its question.
+    static ASKED: AskOnce = AskOnce::new();
+
     /// Makes macOS show its question, without waiting for the answer.
     fn request() {
         let Some(request) = tcc().request else {
@@ -138,7 +166,7 @@ mod sys {
     /// Whether a capture may start: allowed, or the error to start with (see `start_error`).
     pub(crate) fn check() -> Result<()> {
         let major = major()?;
-        start_error(status()?, major, request)
+        start_error(status()?, major, &ASKED, request)
     }
 
     pub(crate) fn help() -> Result<PermissionHelp> {
@@ -163,7 +191,7 @@ mod sys {
                 String::from_utf8_lossy(&reset.stderr).trim()
             )));
         }
-        request();
+        ASKED.ask_again(request);
         Ok(())
     }
 
@@ -216,24 +244,42 @@ mod tests {
 
     #[test]
     fn a_capture_starts_only_when_allowed() {
-        let mut asked = 0;
-        assert!(start_error(PermissionStatus::Allowed, 15, || asked += 1).is_ok());
+        let (mut asked, once) = (0, AskOnce::new());
+        assert!(start_error(PermissionStatus::Allowed, 15, &once, || asked += 1).is_ok());
         assert_eq!(asked, 0);
 
-        match start_error(PermissionStatus::NotAsked, 15, || asked += 1) {
+        match start_error(PermissionStatus::NotAsked, 15, &once, || asked += 1) {
             Err(CaptureError::Backend(why)) => assert_eq!(why, WAITING),
             other => panic!("{other:?}"),
         }
         assert_eq!(asked, 1, "macOS is asked to show its question");
 
-        match start_error(PermissionStatus::Denied, 15, || asked += 1) {
+        match start_error(PermissionStatus::Denied, 15, &once, || asked += 1) {
             Err(CaptureError::PermissionDenied(how)) => assert!(how.contains("Screen & System Audio Recording")),
             other => panic!("{other:?}"),
         }
-        match start_error(PermissionStatus::Denied, 14, || asked += 1) {
+        match start_error(PermissionStatus::Denied, 14, &once, || asked += 1) {
             Err(CaptureError::PermissionDenied(how)) => assert!(how.contains("Ask again")),
             other => panic!("{other:?}"),
         }
         assert_eq!(asked, 1, "a denial isn't asked again by itself");
+    }
+
+    #[test]
+    fn macos_is_asked_once_per_run_until_the_user_asks_again() {
+        // The engine retries a capture every 2 s, and every duck checks too, while the question is up.
+        let (mut asked, once) = (0, AskOnce::new());
+        for _ in 0..5 {
+            match start_error(PermissionStatus::NotAsked, 15, &once, || asked += 1) {
+                Err(CaptureError::Backend(why)) => assert_eq!(why, WAITING),
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(asked, 1);
+
+        // Ask again shows the question once more, and doesn't make the next retry show it again.
+        once.ask_again(|| asked += 1);
+        assert!(start_error(PermissionStatus::NotAsked, 15, &once, || asked += 1).is_err());
+        assert_eq!(asked, 2);
     }
 }
