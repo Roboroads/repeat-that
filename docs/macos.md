@@ -3,6 +3,9 @@
 macOS support is planned for milestone 6 and needs macOS 14.2 or later. Releases will be signed with a Developer ID
 certificate and notarized by Apple, so the app opens like any other once it is in Applications.
 
+Only Apple Silicon Macs are supported. Microsoft ships no x86_64 or universal ONNX Runtime after 1.23.2, and the speech
+detector needs it, so there is no Intel or universal build.
+
 ## Audio-capture permission
 
 Repeat That needs permission to capture other apps' audio. The first time you start capturing, macOS asks for it. If
@@ -36,15 +39,7 @@ cd app && npm install && npm run tauri build -- --bundles app,dmg
 ```
 
 The app ends up in `target/release/bundle/macos/` and the disk image in `target/release/bundle/dmg/`, at the root of
-the repository because the app crate is a member of the Cargo workspace. For a universal build (Apple Silicon and
-Intel in one app), add both Rust targets and pass the target to Tauri:
-
-```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
-npm run tauri build -- --target universal-apple-darwin --bundles app,dmg
-```
-
-That output is in `target/universal-apple-darwin/release/bundle/`, again with `macos/` and `dmg/` inside.
+the repository because the app crate is a member of the Cargo workspace.
 
 An app you build yourself isn't quarantined, so Gatekeeper doesn't check it.
 

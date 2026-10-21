@@ -16,6 +16,7 @@ mod mock_runtime_tests;
 mod portal;
 #[cfg(all(test, target_os = "linux"))]
 mod private_bus;
+pub mod self_check;
 mod service;
 mod session;
 mod settings;
