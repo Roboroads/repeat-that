@@ -10,6 +10,7 @@ mod ipc;
 mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
+pub mod self_check;
 mod service;
 mod settings;
 mod source;

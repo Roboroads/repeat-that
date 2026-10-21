@@ -171,6 +171,10 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   the app its volume back.
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
+- Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,
+  prints one JSON line `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..}` and exits before Tauri starts. The
+  exit code is 0 only when Silero loaded. CI runs it on every OS, and the macOS bundle check will use it too. It plays
+  and captures nothing. In debug builds `REPEAT_THAT_MOCK_VAD_FALLBACK=1` reports the fallback without loading Silero.
 - Svelte + TypeScript UI in `app/src`, built with Vite.
 
 ## Threading
