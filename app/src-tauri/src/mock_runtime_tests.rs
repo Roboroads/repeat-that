@@ -10,7 +10,7 @@ use tauri::Manager;
 
 use crate::actions::{AppAction, dispatch};
 use crate::engine::{AppEngine, SharedAppEngine};
-use crate::tray::{SharedStatus, lock_status};
+use crate::tray::SharedStatus;
 
 /// A mock app with the tray state and an engine that isn't running, which is all pausing needs.
 fn app() -> tauri::App<MockRuntime> {
@@ -26,15 +26,12 @@ fn toggle_pause_works_on_the_mock_runtime() {
     let app = app();
     let handle = app.handle();
     let is_paused = || handle.state::<SharedAppEngine>().is_paused();
-    let tray_paused = || lock_status(&handle.state::<SharedStatus>()).status.is_paused();
 
     assert!(!is_paused());
     dispatch(AppAction::TogglePause, handle);
     assert!(is_paused());
-    assert!(tray_paused(), "the tray's Pause checkbox follows");
     dispatch(AppAction::TogglePause, handle);
     assert!(!is_paused());
-    assert!(!tray_paused());
 }
 
 /// Pause toggles from the tray and the hotkeys can arrive at the same time; an even number of toggles must always end
@@ -57,7 +54,6 @@ fn simultaneous_pause_toggles_do_not_get_lost() {
     }
 
     assert!(!app.handle().state::<SharedAppEngine>().is_paused());
-    assert!(!lock_status(&app.handle().state::<SharedStatus>()).status.is_paused());
 }
 
 /// The manifest is what makes Windows load Common Controls v6, the only version that has `TaskDialogIndirect`

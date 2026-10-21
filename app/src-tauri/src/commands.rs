@@ -84,11 +84,10 @@ pub fn select_app(settings: State<'_, SettingsService>, app: AppEntry) -> Result
 /// Pausing stops capture and wipes the buffer; resuming captures again.
 #[tauri::command]
 pub fn set_paused<R: Runtime>(app: AppHandle<R>, paused: bool) {
+    // The engine's status changes once it has paused, and that goes out like any other change.
     if let Some(engine) = app.try_state::<SharedAppEngine>() {
         engine.set_paused(paused);
     }
-    // Without a target the engine's status doesn't change, but the tray's Pause checkbox does.
-    engine::publish_status(&app);
 }
 
 #[tauri::command]
@@ -403,16 +402,23 @@ mod tests {
         h.wait_for_status(PATIENCE, "paused with an empty buffer", |s| {
             state(s) == "paused" && buffered_ms(s) == 0
         });
-        assert!(tray(&h).status.is_paused(), "the tray's Pause checkbox is ticked");
+        h.wait_until(PATIENCE, "the tray's Pause checkbox ticked", || {
+            tray(&h).status.is_paused()
+        });
         invoke(&h, "set_paused", json!({ "paused": false })).unwrap();
         h.wait_for_status(PATIENCE, "capturing again", |s| state(s) == "capturing");
+        h.wait_until(PATIENCE, "the tray capturing again", || {
+            tray(&h).status.capture == CaptureView::Capturing("speech_8s".into())
+        });
     }
 
     #[test]
-    fn pausing_without_a_target_ticks_the_tray_checkbox() {
+    fn the_tray_shows_pausing_as_the_window_does() {
+        // Without an app the engine has nothing to pause and the window says so; the tray must not claim otherwise.
         let h = TestApp::with_engine();
         invoke(&h, "set_paused", json!({ "paused": true })).unwrap();
-        assert!(tray(&h).status.is_paused());
+        assert_eq!(state(&invoke(&h, "get_status", json!({})).unwrap()), "noTarget");
+        assert!(!tray(&h).status.is_paused());
         invoke(&h, "set_paused", json!({ "paused": false })).unwrap();
         assert!(!tray(&h).status.is_paused());
     }

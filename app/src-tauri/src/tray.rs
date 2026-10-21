@@ -71,12 +71,10 @@ impl Default for TrayStatus {
 }
 
 impl TrayStatus {
-    /// What the tray shows for `status`. `paused` is whether the user paused capture, which counts even with no app
-    /// picked (the engine then reports no target, but the Pause checkbox must stay checked).
-    pub fn from_status(status: &Status, paused: bool) -> Self {
+    /// What the tray shows for `status`: what the engine says, as the window shows it.
+    pub fn from_status(status: &Status) -> Self {
         let name = || status.target_name.clone().unwrap_or_else(|| "the app".into());
         let capture = match status.capture.state {
-            _ if paused => CaptureView::Paused,
             CaptureStateName::NoTarget => CaptureView::NoTarget,
             CaptureStateName::Waiting => CaptureView::Waiting(name()),
             CaptureStateName::Capturing => CaptureView::Capturing(name()),
@@ -720,7 +718,7 @@ mod tests {
     }
 
     fn view(status: &Status) -> CaptureView {
-        TrayStatus::from_status(status, false).capture
+        TrayStatus::from_status(status).capture
     }
 
     #[test]
@@ -753,10 +751,7 @@ mod tests {
     fn an_unsupported_system_says_why() {
         let status = wire(CaptureStateName::Unsupported, Some("No capture on this OS"), None);
         assert_eq!(view(&status), CaptureView::Unsupported("No capture on this OS".into()));
-        assert_eq!(
-            TrayStatus::from_status(&status, false).status_line(),
-            "No capture on this OS"
-        );
+        assert_eq!(TrayStatus::from_status(&status).status_line(), "No capture on this OS");
         let status = wire(CaptureStateName::Unsupported, None, None);
         assert_eq!(view(&status), CaptureView::Unsupported(UNSUPPORTED.into()));
     }
@@ -770,16 +765,6 @@ mod tests {
     }
 
     #[test]
-    fn pausing_wins_even_without_a_target() {
-        // The engine has nothing to pause without a target and says so, but the user did pause.
-        let status = TrayStatus::from_status(&wire(CaptureStateName::NoTarget, None, None), true);
-        assert!(status.is_paused());
-        assert_eq!(status.icon(), TrayIconKind::Paused);
-        let status = TrayStatus::from_status(&wire(CaptureStateName::Capturing, None, Some("Discord")), true);
-        assert!(status.is_paused());
-    }
-
-    #[test]
     fn playback_buffer_and_distance_to_live_come_from_the_status() {
         let status = Status {
             playback: Playback::Replaying,
@@ -787,7 +772,7 @@ mod tests {
             buffered_ms: 24_400,
             ..wire(CaptureStateName::Capturing, None, Some("Discord"))
         };
-        let tray = TrayStatus::from_status(&status, false);
+        let tray = TrayStatus::from_status(&status);
         assert_eq!(
             tray,
             TrayStatus {
@@ -804,7 +789,7 @@ mod tests {
             ..status
         };
         assert_eq!(
-            TrayStatus::from_status(&catching_up, false).status_line(),
+            TrayStatus::from_status(&catching_up).status_line(),
             "Catching up · 3 s behind live"
         );
     }

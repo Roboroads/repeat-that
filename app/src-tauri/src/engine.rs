@@ -144,6 +144,8 @@ impl AppEngine {
         }
     }
 
+    /// Whether pause was asked for last. The status says whether the engine has paused.
+    #[cfg(test)]
     pub fn is_paused(&self) -> bool {
         lock(&self.inner).paused
     }
@@ -295,14 +297,13 @@ pub fn publish_status<R: Runtime>(app: &AppHandle<R>) {
         if let Err(err) = app.emit(STATUS_EVENT, &status) {
             eprintln!("could not send the status: {err}");
         }
-        let paused = engine.as_ref().is_some_and(|engine| engine.is_paused());
         let hotkeys = app
             .try_state::<SettingsService>()
             .map(|settings| HotkeyLabels::from_states(&settings.get().hotkeys, &status.hotkeys))
             .unwrap_or_default();
         if let Some(shared) = app.try_state::<SharedStatus>() {
             *tray::lock_status(&shared) = TrayState {
-                status: TrayStatus::from_status(&status, paused),
+                status: TrayStatus::from_status(&status),
                 hotkeys,
             };
         }
