@@ -23,11 +23,11 @@
 - [ ] Verified on real Windows hardware with the `probe` example (Discord, Teams, a browser)
 
 ## Milestone 4 — Desktop app → **v0.1 (Windows)**
-- [ ] Tauri 2 shell, tray icon and menu
-- [ ] Global hotkeys (replay/step back, stop, catch-up)
-- [ ] App icons extracted from the executable for the app picker
-- [ ] Settings UI: app picker, buffer length, VAD sensitivity, output device, hotkeys, speed, ducking, autostart
-- [ ] Windows installer from CI, published with a `SHA256SUMS` file
+- [x] Tauri 2 shell, tray icon and menu
+- [x] Global hotkeys (replay/step back, stop, catch-up)
+- [x] App icons extracted from the executable for the app picker
+- [x] Settings UI: app picker, buffer length, VAD sensitivity, output device, hotkeys, speed, ducking, autostart
+- [x] Windows installer from CI, published with a `SHA256SUMS` file
 
 ## Milestone 5 — Linux
 - [ ] PipeWire capture backend, app volume via PipeWire

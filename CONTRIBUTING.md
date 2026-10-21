@@ -10,11 +10,43 @@ Thanks for wanting to help! Bug reports, feature ideas, testing on different har
 2. Run the Rust tests: `cargo test --workspace`
 3. Run the app: `cd app && npm install && npm run tauri dev`. It starts in the tray; the first launch also opens the
    settings window.
-4. Frontend checks, in `app/`: `npm run check` (svelte-check) and `npm test` (vitest).
+4. Frontend checks, in `app/`: `npm run check` (svelte-check, and a type check of the end-to-end test) and `npm test`
+   (vitest).
+5. End-to-end test, on Linux: see [Running the end-to-end test](#running-the-end-to-end-test).
 
 `tauri::generate_context!` embeds `app/dist`, the built frontend. A fresh debug build works without it (the build
 script puts a red "FRONTEND NOT BUILT" placeholder page there and warns); a release build refuses to go on. Run
 `npm run build` in `app/` to build the real one; `tauri dev` and `tauri build` do that for you.
+
+## Running the end-to-end test
+
+`app/e2e` holds a [WebdriverIO](https://webdriver.io) test that drives the real desktop app through
+[tauri-driver](https://crates.io/crates/tauri-driver), the way a person would: it picks the fake app, waits for speech
+to be buffered, replays, pauses, changes a setting and records a hotkey. It runs on Linux only, because a Linux debug
+build is the one that needs no capture backend: it plays the speech fixture as an app called `speech_8s`, and
+`REPEAT_THAT_NULL_OUTPUT=1` (set by the test) plays replays into nothing, so no audio device is needed either.
+
+One-time setup on Debian/Ubuntu:
+
+```sh
+sudo apt install xvfb webkit2gtk-driver dbus-daemon   # plus the packages from step 1 above
+cargo install tauri-driver --locked --version 2.1.0
+```
+
+Then, in `app/`:
+
+```sh
+xvfb-run -a npm run test:e2e    # on a desktop session, `npm run test:e2e` is enough
+```
+
+`npm run test:e2e` builds the debug app first (`tauri build --debug --no-bundle`), so the first run takes a few
+minutes. The specs themselves take about half a minute. Each spec file starts its own app with a fresh settings folder
+and its own D-Bus session, so the specs don't depend on each other and never touch your real settings or a copy of
+Repeat That that is already running. Specs are in `app/e2e/specs/*.e2e.ts`, the browser setup is in
+`app/e2e/wdio.conf.ts`.
+
+CI runs the same thing as the required check `E2E (Linux)`. Like every other test, it must not write captured audio to
+disk, and the `privacy` spec checks that.
 
 ## Project layout
 
@@ -28,7 +60,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
 ## Guidelines
 
 - Run `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` before opening a PR, and
-  `npm run check && npm test` in `app/` if you touched the UI.
+  `npm run check && npm test` in `app/` if you touched the UI, plus the end-to-end test if you changed what the window
+  or the tray does.
 - App icons are in-repo SVGs under the project license; see `app/src-tauri/icons/LICENSE.md` before adding assets.
 - Keep platform-specific code behind `#[cfg(target_os = "...")]` inside `rt-capture` (or clearly isolated in `app/`).
 - **Never write captured audio to disk** — not even in tests or debug builds. Use the WAV fixtures in

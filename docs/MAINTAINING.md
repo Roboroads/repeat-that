@@ -8,8 +8,8 @@ Notes for maintainers. Contributors don't need any of this.
 
 - no direct pushes, force pushes or deleting the branch
 - changes land through a pull request, squash-merged (so history stays linear)
-- CI must pass on Linux, Windows and macOS, the PR title must be a Conventional Commit, and all review threads must be
-  resolved
+- CI must pass on Linux, Windows and macOS (plus the end-to-end test of the app on Linux), the PR title must be a
+  Conventional Commit, and all review threads must be resolved
 - 0 required approvals, so a solo maintainer can merge their own PRs
 
 The repository is public, so GitHub enforces rulesets on it. It is not applied yet, see the
