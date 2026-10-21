@@ -16,6 +16,7 @@ embed-resource = "3"
 tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
+base64 = "0.23"
 png = "0.18"
 rt-capture = { path = "../../crates/rt-capture" }
 rt-engine = { path = "../../crates/rt-engine" }

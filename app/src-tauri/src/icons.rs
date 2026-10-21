@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use rt_capture::{AudioApp, IconImage};
 
 use crate::ipc::AppEntry;
@@ -74,27 +76,7 @@ pub fn png_data_url(icon: &IconImage) -> Option<String> {
         writer.write_image_data(&icon.rgba).ok()?;
         writer.finish().ok()?;
     }
-    Some(format!("data:image/png;base64,{}", base64(&png)))
-}
-
-/// Standard base64 with padding (RFC 4648 §4).
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let group = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |group, (i, &byte)| group | u32::from(byte) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(char::from(ALPHABET[(group >> (18 - 6 * i) & 0x3f) as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    Some(format!("data:image/png;base64,{}", BASE64.encode(&png)))
 }
 
 #[cfg(test)]
@@ -112,28 +94,11 @@ mod tests {
     }
 
     #[test]
-    fn base64_matches_the_rfc_vectors() {
-        let cases = [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ];
-        for (plain, encoded) in cases {
-            assert_eq!(base64(plain.as_bytes()), encoded, "{plain:?}");
-        }
-        assert_eq!(base64(&[0xfb, 0xff, 0xbf]), "+/+/");
-    }
-
-    #[test]
     fn an_icon_becomes_a_png_data_url_that_decodes_to_the_same_pixels() {
         let icon = red_square(4);
         let url = png_data_url(&icon).expect("encodes");
         let encoded = url.strip_prefix("data:image/png;base64,").expect("a PNG data URL");
-        let png = decode_base64(encoded);
+        let png = BASE64.decode(encoded).expect("valid base64");
         let mut reader = png::Decoder::new(std::io::Cursor::new(png)).read_info().unwrap();
         let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut pixels).unwrap();
@@ -205,20 +170,5 @@ mod tests {
     #[test]
     fn the_real_reader_has_no_icon_for_a_missing_file() {
         assert_eq!(IconCache::default().data_url(Path::new("does/not/exist.exe")), None);
-    }
-
-    fn decode_base64(text: &str) -> Vec<u8> {
-        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let digits: Vec<u32> = text
-            .bytes()
-            .filter(|&b| b != b'=')
-            .map(|b| ALPHABET.iter().position(|&a| a == b).expect("a base64 digit") as u32)
-            .collect();
-        let mut bytes = Vec::new();
-        for group in digits.chunks(4) {
-            let value = group.iter().enumerate().fold(0, |v, (i, d)| v | d << (18 - 6 * i));
-            bytes.extend((0..group.len() - 1).map(|i| (value >> (16 - 8 * i)) as u8));
-        }
-        bytes
     }
 }
