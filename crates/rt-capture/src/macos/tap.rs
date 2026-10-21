@@ -79,9 +79,9 @@ struct Shared {
     frames: AtomicU64,
     gain: AtomicU32,
     /// How far ahead of the tap's input the IOProc writes its output, in frames, from the latest cycle's timestamps.
+    /// The replay is heard about that much later than the app's own audio: both go out through the same device, so its
+    /// output latency adds to both. On CI (BlackHole) the replay was heard 45 ms late with 64 ms ahead.
     ahead: AtomicU64,
-    /// The aggregate device's own latencies on the way in and out, in frames.
-    device_latency: u64,
     /// Only the IOProc locks this, except while the tap is set up.
     io: Mutex<Io>,
     /// The capture's sink and the number it was attached with, see [`Capture`].
@@ -101,27 +101,34 @@ struct Io {
     tapped: Vec<f32>,
 }
 
-/// What the tap is made from, so it can be changed: its processes and whether they are muted.
+/// What the taps are made from, so they can be changed: the app's processes, and the tap that mutes them while the app
+/// is ducked.
+///
+/// The mute is a tap of its own, made when the app is muted and removed when it is unmuted. Muting through the
+/// capture's own tap would change that tap's description, and its audio drops out for some 35 ms whenever that happens
+/// (CI measured it), which is a gap in the replay right when the app is muted.
 struct Description {
     uuid: String,
     processes: Vec<AudioObjectID>,
-    muted: bool,
+    /// The muting tap and its UUID, while the app is muted.
+    mute: Option<(AudioObjectID, String)>,
 }
 
 impl Description {
-    fn build(&self) -> Retained<CATapDescription> {
+    /// A private stereo tap of the app's processes, with `uuid`.
+    fn build(&self, uuid: &str, muted: bool) -> Retained<CATapDescription> {
         let numbers: Vec<Retained<NSNumber>> = self.processes.iter().map(|&id| NSNumber::new_u32(id)).collect();
         let processes = NSArray::from_retained_slice(&numbers);
         // SAFETY: an array of numbers holding process object IDs, as the initializer wants; the setters take plain
         // values.
         unsafe {
             let description = CATapDescription::initStereoMixdownOfProcesses(CATapDescription::alloc(), &processes);
-            if let Some(uuid) = NSUUID::initWithUUIDString(NSUUID::alloc(), &NSString::from_str(&self.uuid)) {
+            if let Some(uuid) = NSUUID::initWithUUIDString(NSUUID::alloc(), &NSString::from_str(uuid)) {
                 description.setUUID(&uuid);
             }
             description.setName(&NSString::from_str("Repeat That"));
             description.setPrivate(true);
-            description.setMuteBehavior(if self.muted {
+            description.setMuteBehavior(if muted {
                 CATapMuteBehavior::Muted
             } else {
                 CATapMuteBehavior::Unmuted
@@ -130,15 +137,55 @@ impl Description {
         }
     }
 
-    /// Changes `tap` to this description.
-    fn apply(&self, tap: AudioObjectID) -> Result<()> {
-        autoreleasepool(|_| {
-            let description = self.build();
-            let pointer: *const CATapDescription = &*description;
-            // SAFETY: the property is a CATapDescription reference, which Core Audio retains as it needs.
-            unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
-        })
+    /// Makes a tap of the app's processes.
+    fn create(&self, uuid: &str, muted: bool) -> Result<AudioObjectID> {
+        let mut tap = 0;
+        let status = autoreleasepool(|_| {
+            let built = self.build(uuid, muted);
+            // SAFETY: a valid description and a place for the ID.
+            unsafe { AudioHardwareCreateProcessTap(Some(&built), &mut tap) }
+        });
+        sys::check("AudioHardwareCreateProcessTap", status)?;
+        Ok(tap)
     }
+
+    /// Gives the capture's tap `tap`, and the muting tap if there is one, the current processes.
+    fn apply(&self, tap: AudioObjectID) -> Result<()> {
+        let change = |tap: AudioObjectID, uuid: &str, muted: bool| {
+            autoreleasepool(|_| {
+                let description = self.build(uuid, muted);
+                let pointer: *const CATapDescription = &*description;
+                // SAFETY: the property is a CATapDescription reference, which Core Audio retains as it needs.
+                unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
+            })
+        };
+        if let Some((mute, uuid)) = &self.mute {
+            change(*mute, uuid, true)?;
+        }
+        change(tap, &self.uuid, false)
+    }
+
+    /// Mutes (`true`) or unmutes the app by making or removing the muting tap.
+    fn set_muted(&mut self, muted: bool) -> Result<()> {
+        match (&self.mute, muted) {
+            (None, true) => {
+                let uuid = new_uuid();
+                self.mute = Some((self.create(&uuid, true)?, uuid));
+            }
+            (Some((mute, _)), false) => {
+                // SAFETY: a tap we made, removed once.
+                let status = unsafe { AudioHardwareDestroyProcessTap(*mute) };
+                self.mute = None;
+                sys::check("AudioHardwareDestroyProcessTap", status)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+fn new_uuid() -> String {
+    autoreleasepool(|_| NSUUID::new().UUIDString().to_string())
 }
 
 /// Sleeps until woken or a timeout, for the watcher.
@@ -244,17 +291,11 @@ impl Tap {
         }
         let mut parts = Parts::default();
         let description = Description {
-            uuid: autoreleasepool(|_| NSUUID::new().UUIDString().to_string()),
+            uuid: new_uuid(),
             processes,
-            muted: false,
+            mute: None,
         };
-        let mut tap = 0;
-        let status = autoreleasepool(|_| {
-            let built = description.build();
-            // SAFETY: a valid description and a place for the ID.
-            unsafe { AudioHardwareCreateProcessTap(Some(&built), &mut tap) }
-        });
-        sys::check("AudioHardwareCreateProcessTap", status)?;
+        let tap = description.create(&description.uuid, false)?;
         parts.tap = Some(tap);
 
         // Replays play where the app plays.
@@ -284,9 +325,6 @@ impl Tap {
             sample_rate: rate.round() as u32,
             channels: tap_format.mChannelsPerFrame as u16,
         };
-        // Our replay is heard later than the app's own audio by what it takes to come in through the tap and go out
-        // again (the output's share is counted too, which only makes the takeover a little longer than needed).
-        let device_latency = sys::latency(aggregate, true) + sys::latency(aggregate, false);
         let shared = Arc::new(Shared {
             pid,
             tap,
@@ -296,7 +334,6 @@ impl Tap {
             frames: AtomicU64::new(0),
             gain: AtomicU32::new(0f32.to_bits()),
             ahead: AtomicU64::new(0),
-            device_latency,
             io: Mutex::new(Io {
                 player: Player::new(format.sample_rate),
                 tapped: Vec::with_capacity(MAX_CYCLE * usize::from(format.channels)),
@@ -337,11 +374,13 @@ impl Tap {
         }
         if cfg!(debug_assertions) {
             eprintln!(
-                "tap of PID {pid}: {} Hz, {} channels, device {device}, latency {} + {} frames, input streams {}",
+                "tap of PID {pid}: {} Hz, {} channels, device {device}, {} frames ahead, latency in {} out {} frames, \
+                 input streams {}",
                 format.sample_rate,
                 format.channels,
-                device_latency,
                 shared.ahead.load(Ordering::Relaxed),
+                sys::latency(aggregate, true),
+                sys::latency(aggregate, false),
                 sys::input_streams(aggregate)
             );
         }
@@ -382,21 +421,12 @@ impl Tap {
         IoStatus {
             frames,
             gain: f32::from_bits(self.shared.gain.load(Ordering::Relaxed)),
-            latency: self.shared.ahead.load(Ordering::Relaxed) + self.shared.device_latency,
+            latency: self.shared.ahead.load(Ordering::Relaxed),
         }
     }
 
     fn set_muted(&self, muted: bool) -> Result<()> {
-        let mut description = lock(&self.shared.description);
-        if description.muted == muted {
-            return Ok(());
-        }
-        description.muted = muted;
-        let applied = description.apply(self.shared.tap);
-        if applied.is_err() {
-            description.muted = !muted;
-        }
-        applied
+        lock(&self.shared.description).set_muted(muted)
     }
 
     /// Ducks the app to `level` (0–1, 1 restores it) and returns once it's there, see `passthrough`. If the IOProc
@@ -443,6 +473,7 @@ impl Drop for Tap {
         if let Some(watcher) = self.watcher.take() {
             let _ = watcher.join();
         }
+        let _ = self.set_muted(false);
         // `_parts` goes next.
     }
 }
