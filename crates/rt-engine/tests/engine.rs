@@ -1013,9 +1013,11 @@ fn quitting_during_a_replay_fades_out() {
 
     drop(engine);
     let samples = output.samples();
-    let tail = &samples[samples.len() - 48..];
+    // The last 16 samples of the 256-sample fade are below 16/256 of the tone's 0.5. Without a fade, 16 samples of the
+    // 220 Hz tone reach at least 0.11, even around a zero crossing.
+    let tail = &samples[samples.len() - 16..];
     let peak = tail.iter().fold(0.0f32, |m, s| m.max(s.abs()));
-    assert!(peak < 0.05, "it ends at {peak}, without a fade");
+    assert!(peak < 0.04, "it ends at {peak}, without a fade");
 }
 
 // --- Output -------------------------------------------------------------------------------------------------------
