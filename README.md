@@ -9,8 +9,8 @@ skips the silence, and replays the last thing that was said whenever you press a
 It's built for people whose attention wanders during calls (hello, ADHD 👋), but it's useful for anyone dealing with bad
 connections, accents, background noise, or just a moment of distraction.
 
-> **Status:** version 0.1 for Windows is feature-complete and is being tested on real hardware before the first release,
-> `v0.1.0`. Linux and macOS are planned, see the [roadmap](ROADMAP.md).
+> **Status:** version 0.1 for Windows is feature-complete and has been tested on real Windows hardware. The first
+> release is `v0.1.0`. Linux and macOS are planned, see the [roadmap](ROADMAP.md).
 
 ## Install (Windows)
 
