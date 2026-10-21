@@ -113,6 +113,15 @@ impl Sequencer {
         self.mute_changed = Some(io.frames);
     }
 
+    /// Muting the app failed, so it plays as it did, unmuted: the replay goes out (quickly, as when it hands the app
+    /// back) instead of doubling it, and the app isn't ducked any more. Returns the command for the IOProc.
+    pub(crate) fn mute_failed(&mut self) -> Command {
+        self.target = 1.0;
+        self.muted = false;
+        self.full_since = None;
+        Command::SILENT
+    }
+
     /// What to do next, given what the IOProc has done.
     pub(crate) fn next(&mut self, io: IoStatus) -> Step {
         let level = self.target;
@@ -373,6 +382,8 @@ mod tests {
         gains: Vec<f32>,
         /// The frame at which the app was muted (`true`) or unmuted, as asked.
         mutes: Vec<(u64, bool)>,
+        /// Muting the app fails, as making the muting tap may.
+        mute_fails: bool,
     }
 
     impl Sim {
@@ -385,6 +396,7 @@ mod tests {
                 latency: 0,
                 gains: Vec::new(),
                 mutes: Vec::new(),
+                mute_fails: false,
             }
         }
 
@@ -404,10 +416,14 @@ mod tests {
             }
         }
 
-        /// Asks the sequencer what to do and does it. `true` once it's done.
+        /// Asks the sequencer what to do and does it, like `Tap::duck`. `true` once it's done, or failed.
         fn control(&mut self) -> bool {
             loop {
                 match self.sequencer.next(self.io()) {
+                    Step::Mute(true) if self.mute_fails => {
+                        self.command = self.sequencer.mute_failed();
+                        return true;
+                    }
                     Step::Mute(muted) => {
                         self.mutes.push((self.frames, muted));
                         self.sequencer.set_muted(muted, self.io());
@@ -592,6 +608,31 @@ mod tests {
         assert_eq!(*sim.gains.last().unwrap(), 0.8);
         assert_eq!(sim.mutes.len(), 1);
         assert!(steepest(&sim.gains) <= 1.0 / to_frames(HANDOVER_FADE) as f32 + 1e-6);
+    }
+
+    #[test]
+    fn a_mute_that_fails_takes_the_replay_out_instead_of_doubling_the_app() {
+        let mut sim = Sim::new();
+        sim.mute_fails = true;
+        sim.duck(0.2);
+        assert!(sim.mutes.is_empty());
+        assert!(!sim.sequencer.muted());
+        // The replay had reached full level for the takeover: out again, quickly but without a jump.
+        assert_eq!(sim.command, Command::SILENT);
+        sim.settle(2);
+        assert_eq!(*sim.gains.last().unwrap(), 0.0);
+        assert!(steepest(&sim.gains) <= 1.0 / to_frames(HANDOVER_FADE) as f32 + 1e-6);
+
+        // The app isn't ducked, so restoring has nothing to do.
+        let start = sim.duck(1.0);
+        assert_eq!(sim.frames, start, "restored at once");
+        assert!(sim.mutes.is_empty());
+
+        // The next duck starts over.
+        sim.mute_fails = false;
+        sim.duck(0.2);
+        assert_eq!(sim.mutes.iter().map(|m| m.1).collect::<Vec<_>>(), [true]);
+        assert_eq!(*sim.gains.last().unwrap(), 0.2);
     }
 
     #[test]

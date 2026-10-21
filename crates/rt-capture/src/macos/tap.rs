@@ -463,7 +463,8 @@ impl Tap {
     }
 
     /// Ducks the app to `level` (0–1, 1 restores it) and returns once it's there, see `passthrough`. If the IOProc
-    /// doesn't run, the replay can't be heard, so the app is only muted while ducked.
+    /// doesn't run, the replay can't be heard, so the app is only muted while ducked. If the app can't be muted, it is
+    /// left playing as it did, without a replay, and the error is returned.
     pub(crate) fn duck(&self, level: f32) -> Result<()> {
         let mut sequencer = lock(&self.sequencer);
         sequencer.set_target(level);
@@ -477,13 +478,17 @@ impl Tap {
             if self.ended() || moved.elapsed() > DUCK_STALLED || start.elapsed() > DUCK_TIMEOUT {
                 self.shared.command.store(Command::SILENT.pack(), Ordering::Relaxed);
                 let muted = level < 1.0;
-                self.set_muted(muted)?;
+                if let Err(error) = self.set_muted(muted) {
+                    return self.mute_failed(&mut sequencer, error);
+                }
                 sequencer.set_muted(muted, io);
                 return Ok(());
             }
             match sequencer.next(io) {
                 Step::Mute(muted) => {
-                    self.set_muted(muted)?;
+                    if let Err(error) = self.set_muted(muted) {
+                        return self.mute_failed(&mut sequencer, error);
+                    }
                     sequencer.set_muted(muted, self.io_status());
                 }
                 Step::Wait(command) => {
@@ -496,6 +501,15 @@ impl Tap {
                 }
             }
         }
+    }
+
+    /// Muting the app failed with `error`: it plays unmuted, so the replay goes out instead of doubling it, and the app
+    /// isn't ducked.
+    fn mute_failed(&self, sequencer: &mut Sequencer, error: CaptureError) -> Result<()> {
+        self.shared
+            .command
+            .store(sequencer.mute_failed().pack(), Ordering::Relaxed);
+        Err(error)
     }
 }
 

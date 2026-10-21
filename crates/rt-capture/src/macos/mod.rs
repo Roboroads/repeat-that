@@ -137,9 +137,10 @@ mod os {
                 }
             };
             let result = tap.duck(level);
+            // A duck that failed left the app as it was before ducking, see `Tap::duck`.
             if level < 1.0 && result.is_ok() {
                 ducked.insert(app.pid, tap);
-            } else if level >= 1.0 {
+            } else {
                 ducked.remove(&app.pid);
             }
             result
