@@ -61,6 +61,19 @@ clients+=(
 )
 [ -n "$test_binary" ] && clients+=("$(cd "$(dirname "$test_binary")" && pwd)/$(basename "$test_binary")")
 
+# The code requirement of the binary at $1 in the binary form TCC stores, as hex; empty if it has none. tccd checks a
+# client against it, and may refuse a row without one.
+csreq_hex() {
+  local requirement blob
+  requirement=$(codesign -d -r- "$1" 2>&1 | sed -n 's/^designated => //p' || true)
+  [ -n "$requirement" ] || return 0
+  blob="${RUNNER_TEMP:-/tmp}/csreq-$$.bin"
+  if echo "$requirement" | csreq -r- -b "$blob" 2>/dev/null; then
+    xxd -p "$blob" | tr -d '\n'
+  fi
+  rm -f "$blob"
+}
+
 echo "::group::Grant audio capture and microphone"
 user_db="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
 system_db="/Library/Application Support/com.apple.TCC/TCC.db"
@@ -71,18 +84,23 @@ for db in "$user_db" "$system_db"; do
   fi
   for service in kTCCServiceAudioCapture kTCCServiceMicrophone; do
     for client in "${clients[@]}"; do
-      # Named columns, so it works with the schema of any recent macOS. client_type 1: a path; auth_value 2: allowed.
+      csreq=$(csreq_hex "$client")
+      csreq_sql=NULL
+      [ -n "$csreq" ] && csreq_sql="X'$csreq'"
+      # Named columns, so it works with the schema of any recent macOS. client_type 1: a path; auth_value 2: allowed;
+      # auth_reason 4: set by the system.
       if ! sudo sqlite3 "$db" "INSERT OR REPLACE INTO access
-          (service, client, client_type, auth_value, auth_reason, auth_version, indirect_object_identifier, flags,
-           last_modified)
-          VALUES ('$service', '$client', 1, 2, 4, 1, 'UNUSED', 0, CAST(strftime('%s','now') AS INTEGER));"; then
+          (service, client, client_type, auth_value, auth_reason, auth_version, csreq, indirect_object_identifier,
+           flags, last_modified)
+          VALUES ('$service', '$client', 1, 2, 4, 1, $csreq_sql, 'UNUSED', 0, CAST(strftime('%s','now') AS INTEGER));"
+      then
         echo "could not add $service for $client to $db"
         sudo sqlite3 "$db" ".schema access" || true
       fi
     done
   done
   echo "$db:"
-  sudo sqlite3 "$db" "SELECT service, client, auth_value FROM access
+  sudo sqlite3 "$db" "SELECT service, client, auth_value, auth_reason, length(csreq) FROM access
     WHERE service IN ('kTCCServiceAudioCapture', 'kTCCServiceMicrophone');" || true
 done
 # tccd reads the databases again when it starts; launchd restarts it.
@@ -96,6 +114,14 @@ after=$("$probe" permission 2>&1 || true)
 echo "$after"
 status=$(sed -n 's/^status: //p' <<<"$after")
 echo "::endgroup::"
+
+if [ "$status" != "Allowed" ]; then
+  # What tccd made of it, for the next attempt.
+  echo "::group::tccd's log"
+  log show --last 30s --style compact --predicate 'subsystem == "com.apple.TCC"' 2>/dev/null \
+    | grep -i -E "AudioCapture|Microphone|hosted-compute|probe|csreq|requirement|refus|denied|auth" | tail -60 || true
+  echo "::endgroup::"
+fi
 
 if [ "$status" = "Allowed" ]; then
   tcc=granted
