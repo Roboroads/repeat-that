@@ -128,9 +128,15 @@ it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it 
   optional platform's file that this run did not rebuild, such as a `.dmg` attached late earlier: it is kept. Its line
   is carried over from the release's current `SHA256SUMS`, and the downloaded file is checked against that line
   before anything is uploaded.
+- **Only successful platforms count.** The files of a platform whose job did not succeed are left out, even if its
+  build uploaded them before a later step failed. For an optional platform that means a warning and a release without
+  it.
 - **Checked before upload.** `SHA256SUMS` is written over the produced and kept files and verified with
-  `sha256sum --check`. After the upload the release must hold exactly those files plus `SHA256SUMS`, and only then is
-  the draft published.
+  `sha256sum --check`. The files are uploaded first and `SHA256SUMS` last, in calls of their own, so an upload that
+  stops half way never leaves a `SHA256SUMS` that lists files that aren't there. After the upload the release must
+  hold exactly those files plus `SHA256SUMS`, and only then is the draft published. If the upload stops, run the
+  failed job again (`gh run rerun <run id> --failed`, the log prints the command): it uploads everything again. On a
+  published release, run the workflow again with `replace` ticked instead.
 - Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
 
@@ -157,20 +163,40 @@ the `.dmg` to a release that is already out (or still a draft), and extends its 
   same run. A workflow that calls it needs `contents: write` and `actions: read`.
 - **From an earlier build** without rebuilding: Actions → Publish release → Run workflow, with `mode` `late-attach`,
   the `tag`, `platform` `macos` and `artifacts_run_id` set to the number in the URL of the successful macOS build
-  run (`.../actions/runs/<number>`). Artifacts are kept for 30 days, so after that the build has to run again.
+  run (`.../actions/runs/<number>`). Artifacts are kept for 30 days, so after that the build has to run again. That run
+  is trusted with the release's files, so it is checked first: it must be a run of `build-macos.yml` that was started
+  by hand (a pull request build is not notarized), that succeeded, on the default branch of this repository (not a
+  fork), and its commit must be the tag's commit or one of its ancestors (for a draft, the commit the draft targets).
 
 What it does, in order, stopping at the first problem:
 
-1. The release must exist (published or draft), `platform` must be an optional platform, and the release must not have
-   a file for that platform yet, unless `replace` is ticked.
-2. The downloaded files must all belong to that platform. A file of another platform fails.
+1. The release must exist (published or draft) and `platform` must be an optional platform. With `artifacts_run_id`,
+   the earlier run is checked as described above.
+2. The downloaded files must all belong to that platform, and their names must carry the tag's version
+   (`Repeat-That_0.2.0_universal.dmg` for `v0.2.0`). A file of another platform or another version fails.
 3. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
-   missing from the release.
-4. All files on the release are downloaded and checked against `SHA256SUMS`, so it extends a consistent base.
-5. The new `SHA256SUMS` is the old one plus the new line. Lines already in it never change; the job fails otherwise.
-   With `replace`, only the line of the replaced file changes.
-6. The `.dmg` is uploaded first, then `SHA256SUMS` (replacing the old one), so `SHA256SUMS` never lists a file that
-   isn't there yet. `SHA256SUMS` is the only file the late attach may replace on a published release.
+   missing from the release. Without `replace`, the release must not have a file for that platform yet.
+4. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new line, and every line
+   must hold for the file next to it, so it extends a consistent base. Lines already in it never change; the job fails
+   otherwise.
+5. With `replace`, every file of the platform on the release is replaced or, when its name differs from the new
+   file's, deleted, so the release never carries two `.dmg` files. Only their lines change or go.
+6. The `.dmg` is uploaded first, then `SHA256SUMS` (replacing the old one), then the files that leave the release are
+   deleted, so `SHA256SUMS` never lists a file that isn't there yet. `SHA256SUMS` is the only file the late attach may
+   replace on a published release. Right before replacing it, the job checks that nobody changed it since it was
+   read; if so, it stops instead of dropping that change.
+
+**If the job stops half way.** The most likely case is a `.dmg` that is uploaded while `SHA256SUMS` is not. Run the
+failed job again (`gh run rerun <run id> --failed`; the log prints the command and the new `SHA256SUMS`). A `.dmg`
+that is on the release but not in `SHA256SUMS`, and identical to the one just built, is taken as the leftover of that
+stop: it isn't uploaded again, and the job finishes by replacing `SHA256SUMS`. A `.dmg` that differs has to be deleted
+first (`gh release delete-asset <tag> <name>`) or replaced by running again with `replace` ticked. The same rerun
+finishes a `replace` that stopped before the old file was deleted.
+
+A late attach runs in a concurrency group of its own, so it is never queued behind another run or dropped when
+another one is waiting (GitHub keeps only one waiting run per group). That also means it doesn't wait for a full run
+of the same tag: don't start one while the other is still going. If the release changes in between, the checks
+before and after the upload fail the job instead of leaving wrong files.
 
 The late attach never changes whether the release is a draft or published: on a draft, a full run does the publishing.
 Running it twice fails because the `.dmg` already exists, unless `replace` is ticked. A full run after a late attach

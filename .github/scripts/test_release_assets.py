@@ -204,6 +204,159 @@ class SumsTests(unittest.TestCase):
         with self.assertRaises(ReleaseError):
             ra.check_preserved(old, new, replaceable={DMG})
 
+    def test_drop_removes_the_line_of_a_file_that_leaves_the_release(self):
+        old_dmg = "Repeat-That_0.1.9_universal.dmg"
+        existing = sums_text((EXE, H1), (old_dmg, H2))
+        text = ra.build_sums({DMG: H3}, existing=existing, replace=True, drop=[old_dmg])
+        self.assertEqual(text, sums_text((DMG, H3), (EXE, H1)))
+
+    def test_drop_of_a_name_without_a_line_is_fine(self):
+        # An interrupted replace already dropped the line; running again must still work.
+        text = ra.build_sums({DMG: H3}, existing=sums_text((EXE, H1)), drop=["Repeat-That_0.1.9_universal.dmg"])
+        self.assertEqual(text, sums_text((DMG, H3), (EXE, H1)))
+
+    def test_drop_cannot_name_an_added_file(self):
+        with self.assertRaises(ReleaseError):
+            ra.build_sums({DMG: H3}, existing=sums_text((EXE, H1)), drop=[DMG])
+
+    def test_without_drop_a_line_cannot_vanish(self):
+        old = ra.parse_sums(sums_text((EXE, H1), (DMG, H2)))
+        new = ra.parse_sums(sums_text((EXE, H1)))
+        ra.check_preserved(old, new, removable={DMG})
+        with self.assertRaises(ReleaseError):
+            ra.check_preserved(old, new)
+
+
+class VersionTests(unittest.TestCase):
+    def test_every_file_name_must_carry_the_tags_version(self):
+        ra.check_versions([EXE, DEB, RPM, APPIMAGE, FLATPAK, DMG], "v0.2.0")
+
+    def test_another_version_fails_and_names_the_file(self):
+        with self.assertRaises(ReleaseError) as caught:
+            ra.check_versions([DMG, "Repeat-That_0.1.9_universal.dmg"], "v0.2.0")
+        self.assertIn("Repeat-That_0.1.9_universal.dmg", str(caught.exception))
+        self.assertNotIn(DMG, str(caught.exception))
+
+    def test_a_longer_version_does_not_match_a_shorter_tag(self):
+        for name in ("Repeat-That_0.2.0.1_universal.dmg", "Repeat-That_10.2.0_universal.dmg"):
+            with self.assertRaises(ReleaseError, msg=name):
+                ra.check_versions([name], "v0.2.0")
+
+    def test_a_file_without_a_version_fails(self):
+        with self.assertRaises(ReleaseError):
+            ra.check_versions(["Repeat-That_universal.dmg"], "v0.2.0")
+
+
+RUN = {
+    "path": ".github/workflows/build-macos.yml",
+    "event": "workflow_dispatch",
+    "status": "completed",
+    "conclusion": "success",
+    "head_branch": "main",
+    "head_sha": "a" * 40,
+    "head_repository": {"full_name": "Roboroads/repeat-that"},
+}
+
+
+class SourceRunTests(unittest.TestCase):
+    """A late attach from `artifacts_run_id` trusts files built by another run, so that run is checked."""
+
+    def check(self, compare="ahead", platform="macos", **changes):
+        run = {**RUN, **changes}
+        return ra.check_source_run(run, {"status": compare}, platform, "Roboroads/repeat-that", "main")
+
+    def test_a_successful_dispatched_build_on_main_passes(self):
+        self.check()
+
+    def test_a_commit_equal_to_the_tag_passes(self):
+        self.check(compare="identical")
+
+    def test_a_commit_that_is_not_in_the_tags_history_fails(self):
+        for state in ("behind", "diverged", None):
+            with self.assertRaises(ReleaseError, msg=state):
+                self.check(compare=state)
+
+    def test_another_workflow_fails(self):
+        paths = [f".github/workflows/{name}" for name in ("build-windows.yml", "publish-release.yml")]
+        for path in [*paths, "x/build-macos.yml"]:
+            with self.assertRaises(ReleaseError, msg=path) as caught:
+                self.check(path=path)
+            self.assertIn("build-macos.yml", str(caught.exception))
+
+    def test_a_run_that_did_not_succeed_fails(self):
+        unfinished = {"status": "in_progress", "conclusion": None}
+        for changes in ({"conclusion": "failure"}, {"conclusion": "cancelled"}, unfinished):
+            with self.assertRaises(ReleaseError, msg=str(changes)):
+                self.check(**changes)
+
+    def test_a_pull_request_build_fails(self):
+        # Pull request builds are not notarized.
+        for event in ("pull_request", "pull_request_target", "push", "schedule"):
+            with self.assertRaises(ReleaseError, msg=event):
+                self.check(event=event)
+
+    def test_a_run_from_another_branch_fails(self):
+        with self.assertRaises(ReleaseError):
+            self.check(head_branch="ci/other")
+
+    def test_a_run_from_a_fork_fails_even_on_a_branch_called_main(self):
+        with self.assertRaises(ReleaseError):
+            self.check(head_repository={"full_name": "someone/repeat-that"})
+
+    def test_a_platform_that_is_required_or_unknown_fails(self):
+        for platform in ("windows", "beos"):
+            with self.assertRaises(ReleaseError, msg=platform):
+                self.check(platform=platform)
+
+    def test_every_problem_is_reported_at_once(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(compare="diverged", conclusion="failure", head_branch="dev")
+        self.assertEqual(len(caught.exception.errors), 3)
+
+
+class SelectArtifactsTests(unittest.TestCase):
+    """Publishing only uses the artifacts of platform jobs that succeeded."""
+
+    @staticmethod
+    def results(**states):
+        return {job: {"result": state} for job, state in states.items()}
+
+    def select(self, names, platforms=None, **states):
+        return ra.select_artifacts(names, self.results(**states), platforms=platforms or all_built())
+
+    def test_artifacts_of_succeeded_jobs_are_selected(self):
+        names = [f"release-windows-{EXE}", f"release-macos-{DMG}"]
+        selected, ignored = self.select(names, windows="success", macos="success")
+        self.assertEqual((selected, ignored), (names, []))
+
+    def test_an_optional_platform_that_failed_after_uploading_contributes_nothing(self):
+        names = [f"release-windows-{EXE}", f"release-macos-{DMG}"]
+        selected, ignored = self.select(names, windows="success", macos="failure")
+        self.assertEqual(selected, [f"release-windows-{EXE}"])
+        self.assertEqual([name for name, _ in ignored], [f"release-macos-{DMG}"])
+        self.assertIn("macOS", ignored[0][1])
+        self.assertIn("failure", ignored[0][1])
+
+    def test_a_skipped_or_cancelled_job_contributes_nothing(self):
+        for state in ("skipped", "cancelled"):
+            selected, _ = self.select([f"release-macos-{DMG}"], windows="success", macos=state)
+            self.assertEqual(selected, [], state)
+
+    def test_an_artifact_that_belongs_to_no_platform_fails(self):
+        for name in ("release-beos-x.zip", "release-windows", "SHA256SUMS", "release-"):
+            with self.assertRaises(ReleaseError, msg=name):
+                self.select([name], windows="success")
+
+    def test_an_artifact_of_a_platform_without_a_job_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            ra.select_artifacts([f"release-macos-{DMG}"], self.results(windows="success"), platforms=all_built())
+        self.assertIn("macos", str(caught.exception))
+
+    def test_the_table_decides_which_platforms_have_jobs(self):
+        # With today's table only windows has a build job, so a macos artifact is out of step.
+        with self.assertRaises(ReleaseError):
+            ra.select_artifacts([f"release-macos-{DMG}"], self.results(windows="success", macos="success"))
+
 
 class CheckAssetsFullTests(unittest.TestCase):
     """Full mode: what is already on the release against what this run produced."""
@@ -265,17 +418,25 @@ class CheckAssetsLateTests(unittest.TestCase):
     release = [EXE, "SHA256SUMS"]
     sums = sums_text((EXE, H1))
 
-    def check(self, produced=(DMG,), release=None, sums=None, platform="macos", replace=False):
+    def check(self, produced=(DMG,), release=None, sums=None, platform="macos", replace=False, tag=None):
         return ra.check_assets_late(
             self.release if release is None else release,
             list(produced),
             platform,
             self.sums if sums is None else sums,
             replace=replace,
+            tag=tag,
         )
 
     def test_adding_the_platforms_files_passes(self):
-        self.check()
+        plan = self.check()
+        self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([], [], []))
+
+    def test_a_file_whose_version_is_not_the_tags_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(produced=["Repeat-That_0.1.9_universal.dmg"], tag="v0.2.0")
+        self.assertIn("0.1.9", str(caught.exception))
+        self.check(tag="v0.2.0")  # DMG is 0.2.0
 
     def test_a_second_platforms_file_fails(self):
         with self.assertRaises(ReleaseError) as caught:
@@ -301,8 +462,50 @@ class CheckAssetsLateTests(unittest.TestCase):
         self.assertIn(DMG, str(caught.exception))
         self.assertIn("replace", str(caught.exception))
 
-    def test_an_existing_dmg_with_replace_passes(self):
-        self.check(release=[EXE, DMG, "SHA256SUMS"], sums=sums_text((EXE, H1), (DMG, H2)), replace=True)
+    def test_an_existing_dmg_with_replace_is_overwritten(self):
+        plan = self.check(release=[EXE, DMG, "SHA256SUMS"], sums=sums_text((EXE, H1), (DMG, H2)), replace=True)
+        self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([], [DMG], []))
+
+    def test_replace_removes_an_existing_dmg_with_another_name(self):
+        old = "Repeat-That_0.1.9_universal.dmg"
+        release, sums = [EXE, old, "SHA256SUMS"], sums_text((EXE, H1), (old, H2))
+        plan = self.check(release=release, sums=sums, replace=True)
+        self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([], [], [old]))
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(release=release, sums=sums)  # without replace the release is not touched
+        self.assertIn(old, str(caught.exception))
+
+    def test_replace_covers_every_existing_dmg(self):
+        old, older = "Repeat-That_0.1.9_universal.dmg", "Repeat-That_0.1.8_universal.dmg"
+        plan = self.check(
+            release=[EXE, old, DMG, older, "SHA256SUMS"],
+            sums=sums_text((EXE, H1), (old, H2), (DMG, H3), (older, H4)),
+            replace=True,
+        )
+        self.assertEqual((plan.overwrite, plan.remove), ([DMG], [old, older]))
+
+    def test_a_dmg_the_release_has_but_sha256sums_lacks_is_an_interrupted_attach(self):
+        # The .dmg was uploaded and the upload of SHA256SUMS failed: the same file is produced again.
+        plan = self.check(release=[EXE, DMG, "SHA256SUMS"])
+        self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([DMG], [], []))
+
+    def test_an_unlisted_dmg_this_run_did_not_produce_fails_without_replace(self):
+        stray = "Repeat-That_0.1.9_universal.dmg"
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(release=[EXE, stray, "SHA256SUMS"])
+        self.assertIn(stray, str(caught.exception))
+        self.assertIn("replace", str(caught.exception))
+
+    def test_an_unlisted_dmg_this_run_did_not_produce_is_removed_with_replace(self):
+        # What an interrupted replace leaves: the old name dropped from SHA256SUMS but not yet deleted.
+        stray = "Repeat-That_0.1.9_universal.dmg"
+        plan = self.check(release=[EXE, stray, "SHA256SUMS"], replace=True)
+        self.assertEqual((plan.pending, plan.remove), ([], [stray]))
+
+    def test_an_unlisted_file_of_another_platform_still_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(release=[EXE, DEB, "SHA256SUMS"], replace=True)
+        self.assertIn(DEB, str(caught.exception))
 
     def test_an_existing_asset_missing_from_sha256sums_fails(self):
         with self.assertRaises(ReleaseError) as caught:
@@ -362,10 +565,17 @@ class CheckReleaseTests(unittest.TestCase):
         with self.assertRaises(ReleaseError):
             ra.check_release("v0.2.0", [EXE, "SHA256SUMS"], draft=False, mode="late", platform="linux")
 
-    def test_late_mode_fails_when_the_platform_is_already_on_the_release(self):
-        with self.assertRaises(ReleaseError) as caught:
-            ra.check_release("v0.2.0", [EXE, DMG, "SHA256SUMS"], draft=False, mode="late", platform="macos")
-        self.assertIn(DMG, str(caught.exception))
+    def test_late_mode_leaves_the_existing_file_to_check_assets(self):
+        # Whether the file is attached, or an attach that stopped half way, needs SHA256SUMS: check_assets_late.
+        replaced = ra.check_release("v0.2.0", [EXE, DMG, "SHA256SUMS"], draft=False, mode="late", platform="macos")
+        self.assertEqual(replaced, [])
+
+    def test_late_mode_with_replace_lists_every_existing_file(self):
+        other = "Repeat-That_0.1.9_universal.dmg"
+        replaced = ra.check_release(
+            "v0.2.0", [EXE, other, DMG, "SHA256SUMS"], draft=False, mode="late", platform="macos", replace=True
+        )
+        self.assertEqual(replaced, [other, DMG])
 
     def test_late_mode_with_replace_allows_the_existing_file(self):
         replaced = ra.check_release(
@@ -516,6 +726,80 @@ class CommandLineTests(unittest.TestCase):
         code, _, err = self.run_main("gate", "--needs", "-", "--release", stdin=needs)
         self.assertEqual(code, 1)
         self.assertIn("::error::", err)
+
+    def test_sums_drops_the_line_of_a_file_that_leaves_the_release(self):
+        old = "Repeat-That_0.1.9_universal.dmg"
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / DMG).write_bytes(b"new dmg")
+            existing = folder / "old-sums"
+            existing.write_text(sums_text((EXE, H1), (old, H2)))
+            code, out, _ = self.run_main(
+                "sums", "--existing", str(existing), "--add", str(folder / DMG), "--drop", old
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(out, sums_text((DMG, hashlib.sha256(b"new dmg").hexdigest()), (EXE, H1)))
+
+    def late_args(self, folder, release, sums, *extra):
+        path = Path(folder)
+        (path / "release.json").write_text(json.dumps({"isDraft": False, "assets": [{"name": n} for n in release]}))
+        (path / "sums").write_text(sums)
+        return (
+            "check-assets", "--mode", "late", "--platform", "macos", "--release-json", str(path / "release.json"),
+            "--sums", str(path / "sums"), "--produced", f"new/{DMG}", *extra,
+        )  # fmt: skip
+
+    def test_check_assets_late_prints_what_the_job_must_skip_and_remove(self):
+        old = "Repeat-That_0.1.9_universal.dmg"
+        with tempfile.TemporaryDirectory() as folder:
+            args = self.late_args(folder, [EXE, old, DMG, "SHA256SUMS"], sums_text((EXE, H1), (old, H2)), "--replace")
+            code, out, _ = self.run_main(*args)
+        self.assertEqual(code, 0)
+        self.assertEqual(out.splitlines(), [f"pending {DMG}", f"remove {old}"])
+
+    def test_check_assets_late_checks_the_version_against_the_tag(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = self.late_args(folder, [EXE, "SHA256SUMS"], sums_text((EXE, H1)))
+            self.assertEqual(self.run_main(*args, "--tag", "v0.2.0")[0], 0)
+            code, _, err = self.run_main(*args, "--tag", "v0.3.0")
+        self.assertEqual(code, 1)
+        self.assertIn(DMG, err)
+
+    def test_check_source_run_reads_the_run_and_the_comparison(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "run.json").write_text(json.dumps(RUN))
+            (folder / "compare.json").write_text(json.dumps({"status": "ahead"}))
+            args = (
+                "check-source-run", "--run-json", str(folder / "run.json"),
+                "--compare-json", str(folder / "compare.json"),
+                "--platform", "macos", "--repo", "Roboroads/repeat-that", "--branch", "main",
+            )  # fmt: skip
+            self.assertEqual(self.run_main(*args)[0], 0)
+            (folder / "compare.json").write_text(json.dumps({"status": "diverged"}))
+            code, _, err = self.run_main(*args)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", err)
+
+    def test_select_artifacts_moves_only_the_files_of_succeeded_jobs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            artifact = f"release-windows-{EXE}"
+            (folder / "artifacts" / artifact).mkdir(parents=True)
+            (folder / "artifacts" / artifact / EXE).write_bytes(b"x")
+            needs = folder / "needs.json"
+            args = ("select-artifacts", "--needs", str(needs), "--from", str(folder / "artifacts"))
+
+            needs.write_text(json.dumps({"windows": {"result": "success"}}))
+            code, out, _ = self.run_main(*args, "--to", str(folder / "assets"))
+            self.assertEqual((code, [p.name for p in (folder / "assets").iterdir()]), (0, [EXE]))
+            self.assertNotIn("::warning::", out)
+
+            needs.write_text(json.dumps({"windows": {"result": "failure"}}))
+            code, out, _ = self.run_main(*args, "--to", str(folder / "none"))
+            self.assertEqual((code, list((folder / "none").iterdir())), (0, []))
+            self.assertIn("::warning::", out)
+            self.assertIn(EXE, out)
 
 
 if __name__ == "__main__":
