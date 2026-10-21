@@ -84,10 +84,7 @@ pub fn select_app(settings: State<'_, SettingsService>, app: AppEntry) -> Result
 /// Pausing stops capture and wipes the buffer; resuming captures again.
 #[tauri::command]
 pub fn set_paused<R: Runtime>(app: AppHandle<R>, paused: bool) {
-    // The engine's status changes once it has paused, and that goes out like any other change.
-    if let Some(engine) = app.try_state::<SharedAppEngine>() {
-        engine.set_paused(paused);
-    }
+    engine::change_paused(&app, |_| paused);
 }
 
 #[tauri::command]

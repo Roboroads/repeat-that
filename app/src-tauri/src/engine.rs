@@ -150,20 +150,12 @@ impl AppEngine {
         lock(&self.inner).paused
     }
 
-    /// Pausing stops capture and wipes the buffer.
-    pub fn set_paused(&self, paused: bool) {
+    /// Pauses or resumes: `change` gets whether pause was asked for last and returns what is wanted now. One step, so
+    /// two toggles at once end up back where they started. Pausing stops capture and wipes the buffer. Returns whether
+    /// pause is asked for now.
+    pub fn change_paused(&self, change: impl FnOnce(bool) -> bool) -> bool {
         let mut inner = lock(&self.inner);
-        inner.paused = paused;
-        if let Some(engine) = &inner.engine {
-            engine.handle().set_paused(paused);
-        }
-    }
-
-    /// Flips between paused and not paused as one step, so two toggles at once end up back where they started.
-    /// Returns whether it is paused now.
-    pub fn toggle_paused(&self) -> bool {
-        let mut inner = lock(&self.inner);
-        inner.paused = !inner.paused;
+        inner.paused = change(inner.paused);
         if let Some(engine) = &inner.engine {
             engine.handle().set_paused(inner.paused);
         }
@@ -265,6 +257,14 @@ fn duck_journal<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
         return None;
     }
     Some(dir.join("duck.journal"))
+}
+
+/// Pauses or resumes capture, see [`AppEngine::change_paused`]: the one way the tray, the hotkeys and the window do it.
+/// The engine's status changes once it has paused, and that goes out like any other change.
+pub fn change_paused<R: Runtime>(app: &AppHandle<R>, change: impl FnOnce(bool) -> bool) {
+    if let Some(engine) = app.try_state::<SharedAppEngine>() {
+        engine.change_paused(change);
+    }
 }
 
 /// The settings changed: the engine follows them, and the status goes out again because the hotkeys may have changed.
@@ -536,10 +536,10 @@ mod tests {
         engine.apply(&Settings::default());
         assert!(engine.handle().is_none());
         assert_eq!(engine.status(), rt_engine::Status::default());
-        assert!(engine.toggle_paused());
+        assert!(engine.change_paused(|paused| !paused));
         assert!(engine.is_paused());
-        assert!(!engine.toggle_paused());
-        engine.set_paused(true);
+        assert!(!engine.change_paused(|paused| !paused));
+        engine.change_paused(|_| true);
         assert!(engine.is_paused());
         engine.shutdown();
     }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, Runtime};
 
-use crate::engine::SharedAppEngine;
+use crate::engine;
 use crate::window;
 
 /// Something the user asked for, from the tray menu, a hotkey or the settings window.
@@ -76,10 +76,7 @@ impl<R: Runtime> ActionHost for AppHandle<R> {
     }
 
     fn toggle_paused(&self) {
-        // The engine's status changes once it has paused, and that goes out like any other change.
-        if let Some(engine) = self.try_state::<SharedAppEngine>() {
-            engine.toggle_paused();
-        }
+        engine::change_paused(self, |paused| !paused);
     }
 
     fn engine(&self) -> SharedEngine {
