@@ -3,10 +3,12 @@
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, FrameSink, MockSource};
 use rt_engine::{CpalOutput, NullOutput, OutputBackend};
+
+use crate::locking::lock;
 
 /// A WAV file to play as a fake app instead of capturing real apps, on any OS.
 pub const MOCK_WAV_VAR: &str = "REPEAT_THAT_MOCK_WAV";
@@ -56,10 +58,16 @@ pub fn from_env() -> SourceKind {
     choose(cfg!(windows), std::env::var_os(MOCK_WAV_VAR).as_deref(), DEBUG_FIXTURE)
 }
 
-/// Makes the source. `duck_journal` is where the Windows backend notes the volumes it lowered, so they come back after
-/// a crash; it holds volumes only, never audio. A WAV that can't be read leaves the app with nothing to capture, and
-/// the status says why.
+/// The source, made on a thread of its own right away (see [`LazySource`]). `duck_journal` is where the Windows backend
+/// notes the volumes it lowered, so they come back after a crash; it holds volumes only, never audio. A WAV that can't
+/// be read leaves the app with nothing to capture, and the status says why.
 pub fn build(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
+    let source = Arc::new(LazySource::new(move || make(kind, duck_journal)));
+    make_early(&source);
+    source
+}
+
+fn make(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
     match kind {
         SourceKind::Wasapi => wasapi(duck_journal),
         SourceKind::Mock(path) => match MockSource::from_wav(&path) {
@@ -74,24 +82,15 @@ pub fn build(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudi
 }
 
 /// The WASAPI source with a duck journal and guard. Restoring what an earlier run's journal lists talks to the audio
-/// service and sets up COM for the thread, so it runs on a thread of its own rather than the UI thread.
+/// service and sets up COM for the thread, which is why [`LazySource`] makes it away from the UI thread.
 #[cfg(windows)]
 fn wasapi(duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
-    let build = move || {
-        let source = rt_capture::WasapiSource::new();
-        match duck_journal {
-            // The guard reads the journal to know what to restore, so there is no guard without one.
-            Some(journal) => source.with_duck_journal(journal).with_duck_guard(),
-            None => source,
-        }
-    };
-    let source = std::thread::Builder::new()
-        .name("rt-source".into())
-        .spawn(build)
-        .ok()
-        .and_then(|thread| thread.join().ok())
-        .unwrap_or_default();
-    Arc::new(source)
+    let source = rt_capture::WasapiSource::new();
+    Arc::new(match duck_journal {
+        // The guard reads the journal to know what to restore, so there is no guard without one.
+        Some(journal) => source.with_duck_journal(journal).with_duck_guard(),
+        None => source,
+    })
 }
 
 #[cfg(not(windows))]
@@ -117,6 +116,62 @@ pub fn output_from_env() -> Box<dyn OutputBackend> {
         Box::new(NullOutput::default())
     } else {
         Box::new(CpalOutput::new())
+    }
+}
+
+/// Makes a source.
+type MakeSource = Box<dyn FnOnce() -> Arc<dyn AppAudioSource> + Send>;
+
+/// A source made on first use. Making one can block (the Windows backend first gives back the volumes an earlier run
+/// left lowered), and the engine's threads and the commands that list apps are the only users, so the UI thread never
+/// waits for it. Users that come while it is being made wait for that one.
+pub struct LazySource {
+    make: Mutex<Option<MakeSource>>,
+    source: OnceLock<Arc<dyn AppAudioSource>>,
+}
+
+impl LazySource {
+    pub fn new(make: impl FnOnce() -> Arc<dyn AppAudioSource> + Send + 'static) -> Self {
+        LazySource {
+            make: Mutex::new(Some(Box::new(make))),
+            source: OnceLock::new(),
+        }
+    }
+
+    fn get(&self) -> &dyn AppAudioSource {
+        self.source
+            .get_or_init(|| {
+                let make = lock(&self.make).take().expect("a lazy source is made once");
+                make()
+            })
+            .as_ref()
+    }
+}
+
+impl AppAudioSource for LazySource {
+    fn list_apps(&self) -> rt_capture::Result<Vec<AudioApp>> {
+        self.get().list_apps()
+    }
+
+    fn start(&self, app: &AudioApp, sink: FrameSink) -> rt_capture::Result<Box<dyn CaptureHandle>> {
+        self.get().start(app, sink)
+    }
+
+    fn set_app_volume(&self, app: &AudioApp, level: f32) -> rt_capture::Result<()> {
+        self.get().set_app_volume(app, level)
+    }
+}
+
+/// Makes `source` now on a thread of its own and returns at once, so an earlier run's lowered volumes come back at
+/// launch even before anything is captured.
+pub fn make_early(source: &Arc<LazySource>) {
+    let source = Arc::clone(source);
+    let spawned = std::thread::Builder::new().name("rt-source".into()).spawn(move || {
+        source.get();
+    });
+    if let Err(err) = spawned {
+        // The first user makes it instead.
+        eprintln!("could not start making the audio source: {err}");
     }
 }
 
@@ -226,6 +281,51 @@ mod tests {
         assert_eq!(reason(source.list_apps().map(drop)), UNSUPPORTED);
         assert_eq!(reason(source.start(&app, Box::new(|_, _| {})).map(drop)), UNSUPPORTED);
         assert_eq!(reason(source.set_app_volume(&app, 0.2)), UNSUPPORTED);
+    }
+
+    /// A source that counts how often it was made, and waits for `release` while it is made, if one is given.
+    fn counted(
+        release: Option<std::sync::mpsc::Receiver<()>>,
+    ) -> (Arc<LazySource>, Arc<std::sync::atomic::AtomicUsize>) {
+        let made = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&made);
+        let source = LazySource::new(move || {
+            if let Some(release) = release {
+                let _ = release.recv();
+            }
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Arc::new(MockSource::from_wav(DEBUG_FIXTURE.unwrap()).unwrap()) as Arc<dyn AppAudioSource>
+        });
+        (Arc::new(source), made)
+    }
+
+    #[test]
+    fn a_lazy_source_is_made_on_first_use_and_only_once() {
+        let (source, made) = counted(None);
+        assert_eq!(made.load(std::sync::atomic::Ordering::SeqCst), 0, "not made up front");
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let source = Arc::clone(&source);
+                std::thread::spawn(move || source.list_apps().unwrap())
+            })
+            .collect();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap()[0].name, "speech_8s");
+        }
+        assert_eq!(made.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn making_the_source_early_does_not_wait_for_it() {
+        // The app starts making it at launch, on the UI thread, and must go on while the audio service is slow.
+        let (release, wait) = std::sync::mpsc::channel();
+        let (source, made) = counted(Some(wait));
+        make_early(&source);
+        assert_eq!(made.load(std::sync::atomic::Ordering::SeqCst), 0);
+        release.send(()).unwrap();
+        // The first use waits for the one being made, and doesn't make another.
+        assert_eq!(source.list_apps().unwrap().len(), 1);
+        assert_eq!(made.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]
