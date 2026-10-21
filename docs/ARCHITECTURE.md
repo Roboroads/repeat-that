@@ -99,7 +99,8 @@ length, sensitivity, replay and catch-up speed, duck level, output device) and s
 [Threading](#threading). `engine.handle()` gives a cloneable `EngineHandle`: `set_target`, `set_paused`, `replay`,
 `stop`, `toggle_catch_up` and `set_config` return at once; `list_apps` and `list_output_devices` block. `subscribe()`
 delivers the `Status` (capture state, target, playback, how far behind live, buffered speech, output device or error,
-VAD fallback) on every change and every 500 ms during a replay.
+VAD fallback) on every change and every 500 ms during a replay; a receiver that falls 64 statuses behind is
+disconnected.
 
 - **Target app**: remembered by executable path (case-insensitive on Windows), or by name when there is none (the mock
   source), never by PID, which changes when the app restarts. Without a running capture the control thread looks for
@@ -150,7 +151,12 @@ duck thread:    the blocking set_app_volume fades, latest level wins
 ```
 
 - The capture callback and the output callback never block or allocate: they only push to and pop from lock-free
-  single-producer, single-consumer queues (`rtrb`).
+  single-producer, single-consumer queues (`rtrb`). A change of the capture format goes into a second queue with the
+  position in the stream where it happens, so the worker reads every sample in its own format.
+- Pausing or choosing another app wipes the buffer before the capture stops (which can take a while), and the worker
+  drops what the stopping capture still delivers, so a replay pressed meanwhile finds nothing.
+- A duck that fails (other than for an app that's gone) is retried every 500 ms. When the target reconnects with a new
+  PID during a replay, the new process is ducked too.
 - The recorder sits behind a `Mutex` shared by the worker and the player thread. Each holds it for one 50 ms part or
   one 10 ms block, so neither waits long.
 - Listing apps, starting a capture (seconds on Windows) and ducking (a fade of a few hundred milliseconds) block, so
