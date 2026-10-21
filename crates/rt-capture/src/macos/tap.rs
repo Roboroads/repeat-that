@@ -106,12 +106,13 @@ struct Io {
 ///
 /// The mute is a tap of its own, made when the app is muted and removed when it is unmuted. Muting through the
 /// capture's own tap would change that tap's description, and its audio drops out for some 35 ms whenever that happens
-/// (CI measured it), which is a gap in the replay right when the app is muted.
+/// (CI measured it), which is a gap in the replay right when the app is muted. A tap only mutes while it is read
+/// (CI measured that too), so the muting tap gets an aggregate device of its own, which runs while it exists.
 struct Description {
     uuid: String,
     processes: Vec<AudioObjectID>,
-    /// The muting tap and its UUID, while the app is muted.
-    mute: Option<(AudioObjectID, String)>,
+    /// The muting tap with its aggregate device, and its UUID, while the app is muted.
+    mute: Option<(Parts, String)>,
 }
 
 impl Description {
@@ -159,27 +160,45 @@ impl Description {
                 unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
             })
         };
-        if let Some((mute, uuid)) = &self.mute {
+        if let Some((Parts { tap: Some(mute), .. }, uuid)) = &self.mute {
             change(*mute, uuid, true)?;
         }
         change(tap, &self.uuid, false)
     }
 
-    /// Mutes (`true`) or unmutes the app by making or removing the muting tap.
-    fn set_muted(&mut self, muted: bool) -> Result<()> {
-        match (&self.mute, muted) {
-            (None, true) => {
-                let uuid = new_uuid();
-                self.mute = Some((self.create(&uuid, true)?, uuid));
-            }
-            (Some((mute, _)), false) => {
-                // SAFETY: a tap we made, removed once.
-                let status = unsafe { AudioHardwareDestroyProcessTap(*mute) };
-                self.mute = None;
-                sys::check("AudioHardwareDestroyProcessTap", status)?;
-            }
-            _ => {}
+    /// Mutes (`true`) or unmutes the app by making or removing the muting tap, reading it through an aggregate device
+    /// on `device`.
+    fn set_muted(&mut self, muted: bool, device: AudioObjectID) -> Result<()> {
+        if !muted {
+            // Dropping the parts stops the aggregate and removes it and the tap.
+            self.mute = None;
+            return Ok(());
         }
+        if self.mute.is_some() {
+            return Ok(());
+        }
+        let uuid = new_uuid();
+        let mut parts = Parts::default();
+        parts.tap = Some(self.create(&uuid, true)?);
+        let aggregate = create_aggregate(&uuid, &*sys::device_uid(device)?)?;
+        parts.aggregate = Some(aggregate);
+        // SAFETY: an IOProc that needs no client data.
+        let status = unsafe {
+            AudioDeviceCreateIOProcID(
+                aggregate,
+                Some(silence),
+                std::ptr::null_mut(),
+                NonNull::from(&mut parts.io_proc),
+            )
+        };
+        sys::check("AudioDeviceCreateIOProcID", status)?;
+        use_only_the_tap(aggregate, parts.io_proc);
+        // SAFETY: the IOProc was just made on this device.
+        sys::check("AudioDeviceStart", unsafe {
+            AudioDeviceStart(aggregate, parts.io_proc)
+        })?;
+        parts.started = true;
+        self.mute = Some((parts, uuid));
         Ok(())
     }
 }
@@ -426,7 +445,7 @@ impl Tap {
     }
 
     fn set_muted(&self, muted: bool) -> Result<()> {
-        lock(&self.shared.description).set_muted(muted)
+        lock(&self.shared.description).set_muted(muted, self.shared.device)
     }
 
     /// Ducks the app to `level` (0–1, 1 restores it) and returns once it's there, see `passthrough`. If the IOProc
@@ -549,6 +568,25 @@ fn use_only_the_tap(aggregate: AudioObjectID, io_proc: AudioDeviceIOProcID) {
             NonNull::new_unchecked(base.cast()),
         );
     }
+}
+
+/// The IOProc of the muting tap's aggregate device: it only has to run for the tap to mute, and plays silence.
+unsafe extern "C-unwind" fn silence(
+    _device: AudioObjectID,
+    _now: NonNull<AudioTimeStamp>,
+    _input: NonNull<AudioBufferList>,
+    _input_time: NonNull<AudioTimeStamp>,
+    output: NonNull<AudioBufferList>,
+    _output_time: NonNull<AudioTimeStamp>,
+    _client: *mut c_void,
+) -> i32 {
+    // SAFETY: the cycle's output buffers, `mDataByteSize` bytes each (or none).
+    for buffer in unsafe { buffers(output) } {
+        if !buffer.mData.is_null() {
+            unsafe { std::ptr::write_bytes(buffer.mData.cast::<u8>(), 0, buffer.mDataByteSize as usize) };
+        }
+    }
+    0
 }
 
 /// Core Audio's process list changed: wake the watcher.
