@@ -1,0 +1,83 @@
+name: macOS report
+description: Something went wrong with Repeat That on a Mac
+labels: [macos]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nobody on the team has a Mac, so the macOS builds are marked untested. Your report is how we find out what
+        happens on real hardware.
+
+        If capture returns silence, check the audio-capture permission first. The reset command is in
+        [docs/macos.md](https://github.com/Roboroads/repeat-that/blob/main/docs/macos.md#audio-capture-permission).
+
+        Never attach audio or recordings to an issue. Repeat That keeps audio in memory only, and nothing here needs it
+        ([PRIVACY.md](https://github.com/Roboroads/repeat-that/blob/main/PRIVACY.md)).
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Apple menu, About This Mac.
+      placeholder: e.g. macOS 15.2
+    validations:
+      required: true
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Chip
+      description: About This Mac lists a Chip (Apple Silicon) or a Processor (Intel).
+      options:
+        - Apple Silicon (M1 or later)
+        - Intel
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Repeat That version
+      description: In Finder, select Repeat That in Applications and press Cmd+I.
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: target-app
+    attributes:
+      label: App you were capturing
+      placeholder: e.g. Discord, Microsoft Teams, Safari
+  - type: textarea
+    id: what
+    attributes:
+      label: What failed?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: self-check
+    attributes:
+      label: Self-check output
+      description: |
+        Open Terminal and run this. It prints one line of JSON and exits:
+
+        ```
+        /Applications/Repeat\ That.app/Contents/MacOS/repeat-that --rt-self-check
+        ```
+
+        Paste the line here. If the app is somewhere other than Applications, change the path. If Terminal prints
+        an error instead, paste the error.
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Whatever the app prints when you start it from Terminal with the command above, minus `--rt-self-check`. If it
+        crashed, add the crash report from Console (Crash Reports, named repeat-that). Logs don't contain audio, but
+        they can contain your user name and file paths, so read them before you paste.
+      render: text
+  - type: checkboxes
+    id: no-audio
+    attributes:
+      label: Privacy
+      options:
+        - label: I have not attached any audio or recordings.
+          required: true
