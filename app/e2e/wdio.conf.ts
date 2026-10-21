@@ -3,11 +3,12 @@
 // backend: it plays a speech recording as a fake app (`speech_8s`) and replays into nothing.
 //
 // Run it with `npm run test:e2e` (on a machine without a display: `xvfb-run -a npm run test:e2e`), which builds the
-// debug app first (the `pretest:e2e` script). Needs `tauri-driver` (`cargo install tauri-driver --locked`) and
-// `WebKitWebDriver` (Debian/Ubuntu: the `webkit2gtk-driver` package). More in CONTRIBUTING.md.
+// debug app first (the `pretest:e2e` script). Needs Node.js 22.19 or later, `tauri-driver` (`cargo install tauri-driver
+// --locked`) and `WebKitWebDriver` (Debian/Ubuntu: the `webkit2gtk-driver` package). More in CONTRIBUTING.md.
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -19,15 +20,28 @@ const targetDir = process.env.CARGO_TARGET_DIR
 const application = path.join(targetDir, 'debug', 'repeat-that');
 
 const driverCommand = process.env.TAURI_DRIVER ?? 'tauri-driver';
-const driverPort = 4444;
 
 /** What one session runs: a private D-Bus, a tauri-driver (with the app below it) and the app's folders. */
 interface Session {
-  home: string;
+  root: string;
   bus: ChildProcess;
   driver: ChildProcess;
 }
 let session: Session | null = null;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A port nobody listens on right now. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as net.AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
 
 /** Stops a process and everything it started (it leads its own process group). */
 async function stop(child: ChildProcess): Promise<void> {
@@ -39,7 +53,7 @@ async function stop(child: ChildProcess): Promise<void> {
     } catch {
       return; // The whole group is gone.
     }
-    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3_000))]);
+    await Promise.race([exited, sleep(3_000)]);
   }
 }
 
@@ -54,12 +68,21 @@ function killNow({ bus, driver }: Session): void {
   }
 }
 
+/**
+ * Waits until `ready` says yes while `child` is still running. The answer only counts when `child` is still there a
+ * moment later: a driver that finds its port taken exits at once, and then whoever else holds the port (a driver left
+ * over from an earlier run, say) must not be mistaken for it.
+ */
 async function waitFor(what: string, ready: () => Promise<boolean>, child: ChildProcess): Promise<void> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`${what} exited with code ${child.exitCode}`);
-    if (await ready().catch(() => false)) return;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (await ready().catch(() => false)) {
+      await sleep(300);
+      if (child.exitCode !== null) throw new Error(`${what} exited with code ${child.exitCode} right after it came up`);
+      return;
+    }
+    await sleep(100);
   }
   throw new Error(`${what} did not come up`);
 }
@@ -67,11 +90,12 @@ async function waitFor(what: string, ready: () => Promise<boolean>, child: Child
 export const config: WebdriverIO.Config = {
   runner: 'local',
   specs: ['./specs/**/*.e2e.ts'],
-  // Every spec file gets its own app, with fresh settings (see `beforeSession`), and one app at a time: the app
-  // allows one running copy, and the global hotkeys and the audio engine are not meant to be shared.
+  // Every spec file gets its own app, with fresh settings (see `beforeSession`), and one app at a time: the global
+  // hotkeys and the audio engine are not meant to be shared.
   maxInstances: 1,
   hostname: '127.0.0.1',
-  port: driverPort,
+  // A placeholder: each session gets a driver on a free port of its own, which `beforeSession` puts here.
+  port: 4444,
   capabilities: [{ maxInstances: 1, 'tauri:options': { application } } as WebdriverIO.Capabilities],
   logLevel: 'warn',
   waitforTimeout: 15_000,
@@ -91,29 +115,40 @@ export const config: WebdriverIO.Config = {
   /**
    * Starts what one app needs, so that each spec file gets an app that has never run before and cannot meet another
    * one:
-   *  - Its own settings folder (the app reads XDG_CONFIG_HOME). Only settings are written there, never audio.
+   *  - One scratch folder for everything the app can write to by default: its home, temp, runtime, config, data and
+   *    cache folders. Only settings are meant to end up there, never audio, and the privacy spec looks through it.
    *  - Its own D-Bus session. The single-instance check of the app goes over the session bus, so an app already running
    *    on this machine (the real one, or a stuck test run) would swallow the test's launch, and a CI runner may have no
    *    session bus at all.
+   *  - Its own tauri-driver and WebKitWebDriver, on ports that are free right now. A driver left over from an earlier
+   *    run on a fixed port would answer instead, and start the app with the real settings and D-Bus.
    *  - No GPU. WebKit asks the GPU's DRM device for the display's refresh rate otherwise, and on a virtual GPU that
    *    call can hang for good, with the app stuck in the kernel where nothing can kill it. Software rendering is also
    *    what a CI runner has, so the test runs the same everywhere.
    * The null output and the fixture mock are what a debug build uses on Linux anyway (see src-tauri/src/source.rs).
    */
-  async beforeSession() {
-    const home = await mkdtemp(path.join(tmpdir(), 'repeat-that-e2e-'));
-    await Promise.all(['config', 'data', 'cache'].map((name) => mkdir(path.join(home, name))));
-    const busSocket = path.join(home, 'bus');
+  async beforeSession(config) {
+    const root = await mkdtemp(path.join(tmpdir(), 'repeat-that-e2e-'));
+    const names = ['home', 'tmp', 'run', 'config', 'data', 'cache'];
+    const folders = Object.fromEntries(names.map((name) => [name, path.join(root, name)]));
+    await Promise.all(Object.values(folders).map((folder) => mkdir(folder, { mode: 0o700 })));
+    const busSocket = path.join(root, 'bus');
     const bus = spawn('dbus-daemon', ['--session', '--nofork', `--address=unix:path=${busSocket}`], {
       detached: true,
       stdio: 'ignore',
     });
+    const port = await freePort();
+    let nativePort = await freePort();
+    while (nativePort === port) nativePort = await freePort();
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      HOME: folders.home,
+      TMPDIR: folders.tmp,
+      XDG_RUNTIME_DIR: folders.run,
+      XDG_CONFIG_HOME: folders.config,
+      XDG_DATA_HOME: folders.data,
+      XDG_CACHE_HOME: folders.cache,
       DBUS_SESSION_BUS_ADDRESS: `unix:path=${busSocket}`,
-      XDG_CONFIG_HOME: path.join(home, 'config'),
-      XDG_DATA_HOME: path.join(home, 'data'),
-      XDG_CACHE_HOME: path.join(home, 'cache'),
       WEBKIT_FORCE_VBLANK_TIMER: '1',
       WEBKIT_DISABLE_DMABUF_RENDERER: '1',
       WEBKIT_DISABLE_COMPOSITING_MODE: '1',
@@ -121,30 +156,27 @@ export const config: WebdriverIO.Config = {
       REPEAT_THAT_NULL_OUTPUT: '1',
     };
     delete env.REPEAT_THAT_MOCK_WAV;
-    const driver = spawn(driverCommand, ['--port', String(driverPort)], {
+    const driver = spawn(driverCommand, ['--port', String(port), '--native-port', String(nativePort)], {
       env,
       detached: true,
       stdio: ['ignore', 'inherit', 'inherit'],
     });
-    session = { home, bus, driver };
+    session = { root, bus, driver };
     // For the specs, which run in this process: they look in it for what the app left behind.
-    process.env.E2E_APP_HOME = home;
-    // A session that fails to start never reaches `afterSession`, and must not leave a driver on the port.
+    process.env.E2E_APP_HOME = root;
+    // A session that fails to start never reaches `afterSession`, and must not leave a driver behind.
     process.once('exit', () => session && killNow(session));
     await waitFor('dbus-daemon', async () => existsSync(busSocket), bus);
-    await waitFor(
-      driverCommand,
-      async () => (await fetch(`http://127.0.0.1:${driverPort}/status`)).ok,
-      driver,
-    );
+    await waitFor(driverCommand, async () => (await fetch(`http://127.0.0.1:${port}/status`)).ok, driver);
+    config.port = port;
   },
 
   async afterSession() {
     if (session === null) return;
-    const { home, bus, driver } = session;
+    const { root, bus, driver } = session;
     session = null;
     await stop(driver);
     await stop(bus);
-    await rm(home, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   },
 };

@@ -11,7 +11,8 @@ Repeat That handles other people's voices, so privacy is a core design rule, not
   program file, the buffer length, the hotkeys, the output device. The duck journal (`duck.journal` in the app's local
   data folder, `%LOCALAPPDATA%\me.roboroads.repeat-that` on Windows) lists the volumes that capture lowered while
   ducking, so they can be restored after a crash. It holds identifiers of audio sessions and volume levels, nothing
-  else. The end-to-end test checks that a run with capture and replay leaves no audio file behind.
+  else. The end-to-end test runs the app with its home, temp, config, data and cache folders in one scratch folder
+  and checks that a run with capture and replay leaves no audio file in it.
 - **Short-lived.** The buffer only holds the last *X* seconds of speech (configurable). Older audio is overwritten
   continuously, and the whole buffer is wiped when you stop capturing or quit the app.
 - **Local only.** Nothing is uploaded. There is no telemetry and no account. Transcription (planned) runs on-device.
