@@ -2,10 +2,12 @@
 //!
 //! `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..}`. The exit code is 0 only when Silero loaded, so a
 //! script (CI, a bundle check) can tell a working install from one that fell back to the energy detector. It loads
-//! Silero the way the engine does and plays and captures nothing.
+//! Silero the way the engine does, runs one frame of silence through it, and plays and captures nothing.
 //!
 //! The app is its own self-check, so `main` must call [`run_if_requested`] early, before Tauri starts. A Windows
-//! release build has no console (`windows_subsystem = "windows"`), so there the exit code is all a caller sees.
+//! release build has no console (`windows_subsystem = "windows"`), so the line is never printed there and the exit
+//! code is all a caller sees. Run it with `start /wait repeat-that.exe --rt-self-check` and read `%ERRORLEVEL%`, or
+//! with `Start-Process -Wait -PassThru repeat-that.exe --rt-self-check` in PowerShell and read `ExitCode`.
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -88,16 +90,33 @@ fn wants_mock_fallback(debug_build: bool, value: Option<&OsStr>) -> bool {
     debug_build && value == Some(OsStr::new("1"))
 }
 
-/// Loads Silero, or reports why it didn't on stderr (stdout is the JSON line only).
+/// Loads Silero and runs a frame of silence through it, or reports why it didn't on stderr (stdout is the JSON line
+/// only). Loading alone isn't enough: ONNX Runtime can accept the model and still fail to run it.
 fn detect(mock_fallback: bool) -> Detector {
     if mock_fallback {
         eprintln!("{MOCK_FALLBACK_VAR} is set, so Silero VAD is not loaded");
         return Detector::Fallback;
     }
-    match SileroVad::new() {
-        Ok(_) => Detector::Silero,
-        Err(e) => {
-            eprintln!("Silero VAD failed to load: {e}");
+    classify(run_silero())
+}
+
+/// Loads Silero and returns the probability it gives a frame of silence, or what went wrong.
+fn run_silero() -> Result<f32, String> {
+    let mut vad = SileroVad::new().map_err(|e| format!("Silero VAD failed to load: {e}"))?;
+    vad.self_test()
+        .map_err(|e| format!("Silero VAD loaded but failed to run: {e}"))
+}
+
+/// Silero counts as loaded only when the run succeeded and gave a probability.
+fn classify(outcome: Result<f32, String>) -> Detector {
+    match outcome {
+        Ok(probability) if (0.0..=1.0).contains(&probability) => Detector::Silero,
+        Ok(output) => {
+            eprintln!("Silero VAD gave {output}, which is not a probability");
+            Detector::Fallback
+        }
+        Err(why) => {
+            eprintln!("{why}");
             Detector::Fallback
         }
     }
@@ -158,6 +177,25 @@ mod tests {
         assert!(!wants_mock_fallback(true, None));
         assert!(!wants_mock_fallback(true, Some(OsStr::new(""))));
         assert!(!wants_mock_fallback(true, Some(OsStr::new("0"))));
+    }
+
+    #[test]
+    fn a_probability_from_the_model_means_silero() {
+        for probability in [0.0, 0.03, 1.0] {
+            assert_eq!(classify(Ok(probability)), Detector::Silero);
+        }
+    }
+
+    #[test]
+    fn a_failed_run_means_fallback() {
+        assert_eq!(classify(Err("inference failed".into())), Detector::Fallback);
+    }
+
+    #[test]
+    fn an_output_that_is_no_probability_means_fallback() {
+        for output in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+            assert_eq!(classify(Ok(output)), Detector::Fallback, "output {output}");
+        }
     }
 
     #[test]

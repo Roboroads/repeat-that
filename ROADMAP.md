@@ -36,7 +36,8 @@
 
 ## Milestone 6 — macOS
 - [ ] Core Audio process tap backend (macOS 14.2+)
-- [ ] Universal binary, `.dmg` signed with a Developer ID Application certificate and notarized
+- [ ] Apple Silicon `.dmg`, signed with a Developer ID Application certificate and notarized (Apple Silicon only: Microsoft
+  ships no x86_64 or universal ONNX Runtime after 1.23.2)
 - [ ] The `.dmg` itself is signed, notarized and stapled, not only the `.app` inside it
 - [ ] Capture works under the hardened runtime in a notarized build (`NSAudioCaptureUsageDescription`, entitlements as needed)
 - [ ] The `.dmg` is listed in the release's `SHA256SUMS`
