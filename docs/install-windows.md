@@ -3,8 +3,8 @@
 Repeat That needs 64-bit Windows 10 version 2004 (build 19041) or newer, or Windows 11. Windows on ARM isn't
 supported yet.
 
-The app is free and volunteer-run, and the installers aren't code-signed yet (we're applying for free signing through
-[SignPath Foundation](https://signpath.org)). Windows therefore shows a SmartScreen warning the first time you run one.
+The app is free and volunteer-run, and the installer isn't code-signed yet (we're applying for free signing through
+[SignPath Foundation](https://signpath.org)). Windows therefore shows a SmartScreen warning the first time you run it.
 That's expected; the steps below get you past it.
 
 ## Download
@@ -13,20 +13,8 @@ Get the installer from the [Releases page](https://github.com/Roboroads/repeat-t
 
 | File | What it is |
 | --- | --- |
-| `Repeat-That_<version>_x64-setup.exe` | The normal installer. Installs for your user only and doesn't ask for administrator rights. |
-| `Repeat-That_<version>_x64_en-US.msi` | For managed PCs and scripted installs. Installs for all users, so it asks for administrator rights. |
-| `SHA256SUMS` | Checksums of the two installers, to [verify your download](verify-downloads.md). |
-
-If you aren't sure, take the `.exe`. The two are separate installs, not two ways to get the same one:
-
-| | `.exe` | `.msi` |
-| --- | --- | --- |
-| Installed for | Your user (under `%LOCALAPPDATA%`) | All users (under `C:\Program Files`) |
-| Needs administrator rights | No | Yes |
-| On uninstall | Offers to delete the app's data | Leaves the data of every user behind |
-
-**Pick one and stay with it.** Installing the other kind next to it gives you two copies, two Start menu entries and two
-entries under Installed apps. If you want to switch, uninstall the old one first.
+| `Repeat-That_<version>_x64-setup.exe` | The installer. Installs for your user only (under `%LOCALAPPDATA%`) and doesn't ask for administrator rights. |
+| `SHA256SUMS` | The checksum of the installer, to [verify your download](verify-downloads.md). |
 
 ## Install
 
@@ -46,24 +34,23 @@ Compare your download with the release's `SHA256SUMS` before you run it; see [ve
 
 ## Updating and uninstalling
 
-There's no automatic updater yet. To update, download the newer installer of the same kind you installed (`.exe` or
-`.msi`) and run it over the old version; your settings are kept.
+There's no automatic updater yet. To update, download the newer installer and run it over the old version; your settings
+are kept.
 
-To uninstall, use **Settings → Apps → Installed apps → Repeat That**. The `.exe` uninstaller offers to delete the app's
-data. The `.msi` doesn't: it removes the program but leaves each user's data in place. The data is in
-`%APPDATA%\me.roboroads.repeat-that` and holds your settings and the chosen app's name and path, never audio. Delete
-that folder yourself if you want it gone after an `.msi` uninstall.
+To uninstall, use **Settings → Apps → Installed apps → Repeat That**. The uninstaller offers to delete the app's data.
+The data is in `%APPDATA%\me.roboroads.repeat-that` and holds your settings and the chosen app's name and path, never
+audio.
 
 ## Build from source
 
-Installers come from CI, but you can build your own:
+The installer comes from CI, but you can build your own:
 
 ```powershell
 # needs Rust (https://rustup.rs), Node.js 22 LTS or later and the Visual Studio C++ build tools
 git clone https://github.com/Roboroads/repeat-that
 cd repeat-that\app
 npm ci
-npm run tauri build -- --bundles nsis,msi
+npm run tauri build
 ```
 
-The installers end up in `target\release\bundle\nsis\` and `target\release\bundle\msi\`.
+The installer ends up in `target\release\bundle\nsis\`.
