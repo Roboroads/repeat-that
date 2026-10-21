@@ -4,9 +4,13 @@
 //! their bundle. macOS knows which app is responsible for each process, so the helpers are grouped under that app's
 //! process. Without that function, a helper is grouped by the outermost `.app` bundle it lives in, and a process
 //! outside any bundle is an app of its own.
+//!
+//! A tap follows its app's processes as they come and go ([`follow`], [`members`]), and gives both its taps the new
+//! ones together ([`change_both`], [`Retry`]).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::AudioApp;
 
@@ -199,6 +203,58 @@ pub(crate) fn outermost_app(path: &Path) -> Option<&Path> {
 
 fn is_bundle(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("app"))
+}
+
+/// Gives the capture's tap, and the muting tap while the app is `muted`, the processes `new` instead of `old`, so the
+/// two never hold different ones: if the muting tap refuses them, the capture's tap gets `old` back. `change(muting,
+/// processes)` changes the muting tap (`true`) or the capture's.
+pub(crate) fn change_both<E>(
+    old: &[u32],
+    new: &[u32],
+    muted: bool,
+    mut change: impl FnMut(bool, &[u32]) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
+    change(false, new)?;
+    if muted && let Err(error) = change(true, new) {
+        let _ = change(false, old);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// When the watcher tries again to give the taps processes they refused: after [`Retry::FIRST`], then twice as long
+/// each time, up to [`Retry::LONGEST`]. Every change costs the capture a short dropout, so processes the taps keep
+/// refusing aren't tried every round. Other processes are tried right away.
+#[derive(Debug, Default)]
+pub(crate) struct Retry {
+    /// The processes refused last, when, and how long to wait from then.
+    refused: Option<(Vec<u32>, Instant, Duration)>,
+}
+
+impl Retry {
+    const FIRST: Duration = Duration::from_secs(1);
+    const LONGEST: Duration = Duration::from_secs(30);
+
+    /// Whether to try giving the taps `processes` at `now`.
+    pub(crate) fn may_try(&self, processes: &[u32], now: Instant) -> bool {
+        self.refused
+            .as_ref()
+            .is_none_or(|(refused, at, wait)| refused != processes || now >= *at + *wait)
+    }
+
+    /// The taps refused `processes` at `now`.
+    pub(crate) fn failed(&mut self, processes: &[u32], now: Instant) {
+        let wait = match &self.refused {
+            Some((refused, _, wait)) if refused == processes => (*wait * 2).min(Self::LONGEST),
+            _ => Self::FIRST,
+        };
+        self.refused = Some((processes.to_vec(), now, wait));
+    }
+
+    /// The taps took the processes.
+    pub(crate) fn succeeded(&mut self) {
+        self.refused = None;
+    }
 }
 
 #[cfg(test)]
@@ -454,5 +510,76 @@ mod tests {
         assert_eq!(outer(WEBKIT_GPU), None);
         assert_eq!(outer("/Applications/Not an app.apps/x"), None);
         assert_eq!(outer(""), None);
+    }
+
+    /// The changes [`change_both`] asked for: (the muting tap?, processes).
+    type Changes = Vec<(bool, Vec<u32>)>;
+
+    /// Runs [`change_both`] from `[1]` to `[1, 2]`, with the taps that refuse, and returns its result and the changes
+    /// asked for.
+    fn change(muted: bool, refusing: &[bool]) -> (Result<(), &'static str>, Changes) {
+        let mut changes = Vec::new();
+        let result = change_both(&[1], &[1, 2], muted, |muting, processes| {
+            changes.push((muting, processes.to_vec()));
+            if refusing.contains(&muting) {
+                Err("busy")
+            } else {
+                Ok(())
+            }
+        });
+        (result, changes)
+    }
+
+    #[test]
+    fn both_taps_take_new_processes_or_neither_does() {
+        let (capture, muting) = (false, true);
+        assert_eq!(
+            change(true, &[]),
+            (Ok(()), vec![(capture, vec![1, 2]), (muting, vec![1, 2])])
+        );
+        // The muting tap refuses them: the capture's tap gets its old ones back.
+        assert_eq!(
+            change(true, &[muting]),
+            (
+                Err("busy"),
+                vec![(capture, vec![1, 2]), (muting, vec![1, 2]), (capture, vec![1])]
+            )
+        );
+        // The capture's tap refuses them: the muting tap isn't asked.
+        assert_eq!(change(true, &[capture]), (Err("busy"), vec![(capture, vec![1, 2])]));
+        // Not muted: only the capture's tap.
+        assert_eq!(change(false, &[]), (Ok(()), vec![(capture, vec![1, 2])]));
+    }
+
+    #[test]
+    fn processes_the_taps_refused_are_tried_again_later_and_later() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut retry = Retry::default();
+        assert!(retry.may_try(&[1, 2], at(0)));
+
+        retry.failed(&[1, 2], at(0));
+        assert!(!retry.may_try(&[1, 2], at(999)));
+        assert!(retry.may_try(&[1, 2], at(1000)));
+        retry.failed(&[1, 2], at(1000));
+        assert!(!retry.may_try(&[1, 2], at(2999)));
+        assert!(retry.may_try(&[1, 2], at(3000)));
+        // Other processes are tried right away, and start over.
+        assert!(retry.may_try(&[1, 3], at(1001)));
+        retry.failed(&[1, 3], at(1001));
+        assert!(retry.may_try(&[1, 3], at(2001)));
+
+        // The wait grows to 30 s, no further.
+        let mut now = 0;
+        for _ in 0..10 {
+            retry.failed(&[1, 3], at(now));
+            now += 60_000;
+        }
+        now -= 60_000;
+        assert!(!retry.may_try(&[1, 3], at(now + 29_999)));
+        assert!(retry.may_try(&[1, 3], at(now + 30_000)));
+
+        retry.succeeded();
+        assert!(retry.may_try(&[1, 3], at(now)));
     }
 }

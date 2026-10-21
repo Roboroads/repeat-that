@@ -33,7 +33,7 @@ use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFString, CFType};
 use objc2_foundation::{NSArray, NSNumber, NSString, NSUUID};
 
 use super::passthrough::{self, Buffer, BufferMut, Command, IoStatus, Mute, Player, Sequencer, Step};
-use super::processes::{self, Follow};
+use super::processes::{self, Follow, Retry};
 use super::{permission, sys};
 use crate::permission::PermissionStatus;
 use crate::{CaptureError, CaptureFormat, CaptureHandle, FrameSink, Result};
@@ -119,6 +119,8 @@ struct Description {
     processes: Vec<AudioObjectID>,
     /// The muting tap with its aggregate device, and its UUID, while the app is muted.
     mute: Mute<(Parts, String)>,
+    /// When to try again processes the taps refused.
+    retry: Retry,
 }
 
 impl Description {
@@ -156,21 +158,27 @@ impl Description {
         Ok(tap)
     }
 
-    /// Gives the capture's tap `tap`, and the muting tap if there is one, the current processes.
-    fn apply(&self, tap: AudioObjectID) -> Result<()> {
-        let change = |tap: AudioObjectID, uuid: &str, muted: bool| {
+    /// Gives the capture's tap `tap`, and the muting tap if there is one, the processes `new`: both or neither, see
+    /// [`processes::change_both`]. Keeps them as the current processes if they took them.
+    fn apply(&mut self, tap: AudioObjectID, new: Vec<AudioObjectID>) -> Result<()> {
+        let mute = self
+            .mute
+            .get()
+            .and_then(|(parts, uuid)| Some((parts.tap?, uuid.as_str())));
+        processes::change_both(&self.processes, &new, mute.is_some(), |muting, processes| {
+            let (tap, uuid) = match mute {
+                Some(mute) if muting => mute,
+                _ => (tap, self.uuid.as_str()),
+            };
             autoreleasepool(|_| {
-                let description = Self::build(&self.processes, uuid, muted);
+                let description = Self::build(processes, uuid, muting);
                 let pointer: *const CATapDescription = &*description;
                 // SAFETY: the property is a CATapDescription reference, which Core Audio retains as it needs.
                 unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
             })
-        };
-        let captured = change(tap, &self.uuid, false);
-        if let Some((Parts { tap: Some(mute), .. }, uuid)) = self.mute.get() {
-            change(*mute, uuid, true)?;
-        }
-        captured
+        })?;
+        self.processes = new;
+        Ok(())
     }
 
     /// Mutes (`true`) or unmutes the app by making or removing the muting tap, see [`Mute`].
@@ -324,6 +332,7 @@ impl Tap {
             uuid: new_uuid(),
             processes,
             mute: Mute::default(),
+            retry: Retry::default(),
         };
         let tap = Description::create(&description.processes, &description.uuid, false)?;
         parts.tap = Some(tap);
@@ -779,17 +788,19 @@ fn watch(shared: &Shared) {
             Ok(processes) if processes.is_empty() => return ended("the app quit"),
             Ok(processes) => {
                 let mut description = lock(&shared.description);
-                if description.processes != processes {
-                    let old = std::mem::replace(&mut description.processes, processes);
-                    let applied = description.apply(shared.tap);
+                let now = Instant::now();
+                if description.processes != processes && description.retry.may_try(&processes, now) {
+                    let old = description.processes.clone();
+                    let applied = description.apply(shared.tap, processes.clone());
                     if cfg!(debug_assertions) {
                         eprintln!(
-                            "tap of PID {}: processes {old:?} -> {:?}: {applied:?}",
-                            shared.pid, description.processes
+                            "tap of PID {}: processes {old:?} -> {processes:?}: {applied:?}",
+                            shared.pid
                         );
                     }
-                    if applied.is_err() {
-                        description.processes = old;
+                    match applied {
+                        Ok(()) => description.retry.succeeded(),
+                        Err(_) => description.retry.failed(&processes, now),
                     }
                 }
             }
