@@ -3191,6 +3191,7 @@ dependencies = [
  "embed-resource",
  "png 0.18.1",
  "rt-capture",
+ "rt-core",
  "rt-engine",
  "serde",
  "serde_json",

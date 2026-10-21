@@ -73,7 +73,10 @@ Planned: a live transcript of recent speech (local Whisper, fully offline), Linu
 |---|---|---|---|
 | Windows (x64) | Windows 10 2004 / 11 | WASAPI process loopback | v0.1 |
 | Linux (Debian/Ubuntu, `.deb`) | Debian 12 / Ubuntu 22.04 with PipeWire | PipeWire per-stream capture | Planned |
-| macOS (Intel + Apple Silicon, universal) | macOS 14.2 | Core Audio process taps | Planned |
+| macOS (Apple Silicon only) | macOS 14.2 | Core Audio process taps | Planned |
+
+macOS is Apple Silicon only: Microsoft ships no x86_64 or universal ONNX Runtime after 1.23.2, and the speech detector
+needs it.
 
 On Linux and macOS a debug build of the app runs, but there is no capture backend yet: it plays a speech recording as a
 fake app called `speech_8s`, which is what the end-to-end test uses.

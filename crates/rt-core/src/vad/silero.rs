@@ -41,6 +41,14 @@ impl SileroVad {
         })
     }
 
+    /// Runs one frame of silence through the model and returns its speech probability.
+    ///
+    /// Loading the model doesn't prove that ONNX Runtime can run it, and [`Vad::speech_probability`] hides a failed
+    /// run as silence. This returns the error instead, so a self-check can tell a working install from a broken one.
+    pub fn self_test(&mut self) -> Result<f32, Error> {
+        self.infer(&[0.0; FRAME_LEN])
+    }
+
     fn infer(&mut self, frame: &[f32]) -> Result<f32, Error> {
         self.input.clear();
         self.input.extend_from_slice(&self.context);
@@ -100,6 +108,13 @@ mod tests {
         for _ in 0..20 {
             assert!(vad.speech_probability(&[0.0; FRAME_LEN]) < 0.1);
         }
+    }
+
+    #[test]
+    fn self_test_runs_a_silent_frame_through_the_model() {
+        let mut vad = SileroVad::new().expect("model loads");
+        let probability = vad.self_test().expect("inference runs");
+        assert!(probability < 0.1, "probability {probability}");
     }
 
     #[test]
