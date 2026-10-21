@@ -52,6 +52,9 @@
             "context": "Frontend"
           },
           {
+            "context": "E2E (Linux)"
+          },
+          {
             "context": "Conventional Commit title"
           }
         ]
