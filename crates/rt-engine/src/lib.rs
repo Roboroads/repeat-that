@@ -294,8 +294,9 @@ impl EngineHandle {
         let _ = self.control.send(ControlCmd::SetPaused(paused));
     }
 
-    /// The replay button: replays the latest speech and plays on to live, or steps one utterance back during a replay.
-    /// With nothing to replay, a short beep.
+    /// The replay button: replays the latest speech and plays on to live. During a replay it steps one utterance back
+    /// (at the oldest one, back to its start); during a catch-up it goes on at replay speed from where it is. With
+    /// nothing to replay, a short beep.
     pub fn replay(&self) {
         let _ = self.playback.send(PlayCmd::Replay);
     }
@@ -305,8 +306,9 @@ impl EngineHandle {
         let _ = self.playback.send(PlayCmd::Stop);
     }
 
-    /// While idle, replays at catch-up speed. During a replay, switches between catch-up and replay speed at once. A
-    /// catch-up ends as soon as it has caught up with live, where a replay follows someone still talking.
+    /// The catch-up button: replays at catch-up speed, and ends as soon as it has caught up with live (where a replay
+    /// follows someone still talking). During a catch-up it steps one utterance back (at the oldest one, back to its
+    /// start); during a replay it goes on at catch-up speed from where it is. Named for the toggle it once was.
     pub fn toggle_catch_up(&self) {
         let _ = self.playback.send(PlayCmd::ToggleCatchUp);
     }

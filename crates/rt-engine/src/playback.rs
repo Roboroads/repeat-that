@@ -126,9 +126,9 @@ impl PlayerThread {
 
     fn handle(&mut self, command: PlayCmd) {
         match command {
-            PlayCmd::Replay => self.replay(),
+            PlayCmd::Replay => self.press(false),
             PlayCmd::Stop => self.stop(),
-            PlayCmd::ToggleCatchUp => self.toggle_catch_up(),
+            PlayCmd::ToggleCatchUp => self.press(true),
             PlayCmd::SetConfig(config) => {
                 self.config = config;
                 self.apply_mode();
@@ -236,18 +236,23 @@ impl PlayerThread {
         }
     }
 
-    fn toggle_catch_up(&mut self) {
+    /// The replay hotkey (`catch_up` false) or the catch-up hotkey (true). While idle it starts a replay at that speed.
+    /// During a replay at that speed it steps one utterance back; during one at the other speed it switches to this
+    /// speed from where the replay is.
+    fn press(&mut self, catch_up: bool) {
         if !self.is_playing() {
-            self.catching_up = true;
+            self.catching_up = catch_up;
             self.replay();
             if !self.is_playing() {
                 self.catching_up = false;
             }
-            return;
+        } else if self.catching_up == catch_up {
+            self.replay();
+        } else {
+            self.catching_up = catch_up;
+            self.apply_mode();
+            self.report_behind(false);
         }
-        self.catching_up = !self.catching_up;
-        self.apply_mode();
-        self.report_behind(false);
     }
 
     /// Stops the replay: the output fades out, and the volume comes back after the restore delay.

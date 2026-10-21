@@ -114,8 +114,10 @@ disconnected.
 - **Ducking**: a replay ducks the app (20% by default) as it starts; the volume comes back 300 ms after the replay ends
   or stops, unless another replay starts within those 300 ms. Without any output device the replay is aborted and
   nothing is ducked.
-- **Catch-up**: toggles between catch-up speed (1.5×) and replay speed mid-replay; from idle it starts a replay at
-  catch-up speed. It resets when the replay ends.
+- **Catch-up**: from idle it starts a replay at catch-up speed (1.5×), which ends as soon as it has caught up with
+  live instead of following the speaker. Each hotkey pressed again during a replay at its own speed steps one
+  utterance back (at the oldest one, back to its start); pressed during a replay at the other speed, it switches to
+  its own speed from where the replay is. Catch-up resets when the replay ends.
 - **Wipes**: pausing, choosing another app and dropping the engine stop capture and playback, give the app its volume
   back, and wipe the buffer. A capture in another format (sample rate, channels) starts a new buffer.
 - **Settings apply live**: a smaller buffer evicts at once, a new sensitivity applies from the next VAD frame, neither
