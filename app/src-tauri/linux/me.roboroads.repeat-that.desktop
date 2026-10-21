@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Repeat That
+Comment=Replay what was just said on a call
+Exec=repeat-that
+Icon=me.roboroads.repeat-that
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+StartupWMClass=repeat-that

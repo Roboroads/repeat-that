@@ -1,0 +1,8 @@
+# The bundler makes a desktop file named after the product ("Repeat That.desktop") whatever is configured. This one
+# hides it, so that me.roboroads.repeat-that.desktop is the only entry in the menu and the only one a window can match.
+[Desktop Entry]
+Type=Application
+Name=Repeat That
+Exec=repeat-that
+Icon=me.roboroads.repeat-that
+NoDisplay=true

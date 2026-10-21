@@ -9,6 +9,8 @@ mod fake_portal;
 mod hotkeys;
 mod icons;
 mod ipc;
+#[cfg(test)]
+mod linux_package_tests;
 mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
@@ -191,71 +193,6 @@ mod tests {
                 "{link} is not allowed"
             );
         }
-    }
-
-    /// `tauri.linux.conf.json`, which Tauri merges over `tauri.conf.json` on Linux.
-    fn linux_config() -> serde_json::Value {
-        serde_json::from_str(&std::fs::read_to_string("tauri.linux.conf.json").expect("the Linux config")).unwrap()
-    }
-
-    #[test]
-    fn every_icon_the_linux_package_is_built_from_exists() {
-        let config = linux_config();
-        let icons = config["bundle"]["icon"].as_array().expect("the icon list");
-        let installed = config["bundle"]["linux"]["deb"]["files"]
-            .as_object()
-            .expect("the files");
-        let sources = icons
-            .iter()
-            .map(|icon| icon.as_str().unwrap())
-            .chain(installed.values().map(|source| source.as_str().unwrap()));
-        for source in sources {
-            assert!(std::path::Path::new(source).is_file(), "{source} is missing");
-        }
-    }
-
-    #[test]
-    fn the_linux_package_installs_the_icon_under_the_name_the_desktop_file_asks_for() {
-        // The bundler's desktop file says `Icon=repeat-that` and puts the PNGs of `bundle.icon` under that name in the
-        // theme. A desktop that can't find them there (an icon cache that was never rebuilt, a theme that wants
-        // another size) is what the extra files are for: a scalable one, a 256 px one and the one in `pixmaps`, which
-        // is searched whatever the theme says. They must carry the same name.
-        let name = "repeat-that";
-        let config = linux_config();
-        let installed = config["bundle"]["linux"]["deb"]["files"]
-            .as_object()
-            .expect("the files");
-        let destinations: Vec<&str> = installed.keys().map(String::as_str).collect();
-        for wanted in [
-            format!("/usr/share/icons/hicolor/scalable/apps/{name}.svg"),
-            format!("/usr/share/icons/hicolor/256x256/apps/{name}.png"),
-            format!("/usr/share/pixmaps/{name}.png"),
-        ] {
-            assert!(
-                destinations.contains(&wanted.as_str()),
-                "{wanted} is not installed: {destinations:?}"
-            );
-        }
-        for destination in destinations {
-            let file = destination.rsplit('/').next().unwrap();
-            assert_eq!(file.split('.').next(), Some(name), "{destination}");
-        }
-        // The binary the desktop file starts has the same name.
-        let cargo = std::fs::read_to_string("Cargo.toml").unwrap();
-        assert!(cargo.contains("name = \"repeat-that\""));
-    }
-
-    #[test]
-    fn no_icon_is_installed_in_a_directory_that_does_not_match_its_size() {
-        // `128x128@2x.png` is 256 px, which the bundler files under `256x256@2`: the directory for a 512 px image.
-        let config = linux_config();
-        let icons: Vec<&str> = config["bundle"]["icon"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|icon| icon.as_str().unwrap())
-            .collect();
-        assert!(!icons.iter().any(|icon| icon.contains("@2x")), "{icons:?}");
     }
 
     #[test]

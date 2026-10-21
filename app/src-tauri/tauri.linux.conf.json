@@ -1,13 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "enableGTKAppId": true
+  },
   "bundle": {
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.png"],
+    "icon": ["icons/32x32.png"],
     "linux": {
       "deb": {
+        "desktopTemplate": "linux/hidden.desktop",
         "files": {
-          "/usr/share/icons/hicolor/scalable/apps/repeat-that.svg": "icons/svg/app.svg",
-          "/usr/share/icons/hicolor/256x256/apps/repeat-that.png": "icons/128x128@2x.png",
-          "/usr/share/pixmaps/repeat-that.png": "icons/128x128.png"
+          "/usr/share/applications/me.roboroads.repeat-that.desktop": "linux/me.roboroads.repeat-that.desktop",
+          "/usr/share/icons/hicolor/scalable/apps/me.roboroads.repeat-that.svg": "icons/svg/app.svg",
+          "/usr/share/icons/hicolor/32x32/apps/me.roboroads.repeat-that.png": "icons/32x32.png",
+          "/usr/share/icons/hicolor/128x128/apps/me.roboroads.repeat-that.png": "icons/128x128.png",
+          "/usr/share/icons/hicolor/256x256/apps/me.roboroads.repeat-that.png": "icons/128x128@2x.png",
+          "/usr/share/icons/hicolor/512x512/apps/me.roboroads.repeat-that.png": "icons/icon.png",
+          "/usr/share/pixmaps/me.roboroads.repeat-that.png": "icons/128x128.png"
         }
       }
     }
