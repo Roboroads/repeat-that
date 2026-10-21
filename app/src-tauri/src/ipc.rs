@@ -109,6 +109,97 @@ impl HotkeyStates {
     }
 }
 
+/// How the global hotkeys reach the app on this desktop, `Status.hotkeyBackend`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HotkeyBackendKind {
+    /// The app registers key combinations itself (Windows, macOS, X11).
+    #[default]
+    Plugin,
+    /// The desktop owns the keys: the app asks the XDG GlobalShortcuts portal (Wayland), and the user can change them
+    /// in the system settings.
+    Portal,
+    /// No hotkeys on this desktop. The window shows the command-line actions to bind by hand.
+    None,
+}
+
+/// The key combination the desktop assigned to each action, as it describes it, `Status.hotkeyTriggers`. Only the
+/// portal assigns keys; `None` = the action has no key.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyTriggers {
+    pub replay: Option<String>,
+    pub stop: Option<String>,
+    pub catch_up: Option<String>,
+}
+
+impl HotkeyTriggers {
+    pub fn slots(&self) -> [&Option<String>; HOTKEY_COUNT] {
+        [&self.replay, &self.stop, &self.catch_up]
+    }
+
+    // Only the portal, which is Linux's, fills them in.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn slots_mut(&mut self) -> [&mut Option<String>; HOTKEY_COUNT] {
+        [&mut self.replay, &mut self.stop, &mut self.catch_up]
+    }
+}
+
+/// What `configure_shortcuts` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigureOutcome {
+    /// The desktop is showing where to change the keys. Only the portal does that, which is Linux's.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Opened,
+    /// This desktop can't be asked to; the window says where in the system settings to look.
+    Unsupported,
+    /// The desktop is waiting for an answer to its shortcuts dialog, so it isn't asked again until that is answered.
+    /// Only the portal has such a dialog, which is Linux's.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Busy,
+}
+
+/// The shell command that runs each action in the running app, `Status.hotkeyCommands`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyCommands {
+    pub replay: String,
+    pub stop: String,
+    pub catch_up: String,
+}
+
+impl HotkeyCommands {
+    pub fn slots_mut(&mut self) -> [&mut String; HOTKEY_COUNT] {
+        [&mut self.replay, &mut self.stop, &mut self.catch_up]
+    }
+}
+
+/// What the status says about the desktop the app runs on. Its fields sit directly in `Status` on the wire.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopStatus {
+    pub hotkey_backend: HotkeyBackendKind,
+    /// Filled under the portal only.
+    pub hotkey_triggers: HotkeyTriggers,
+    /// Filled when there are no hotkeys (`hotkey_backend` is `None`) only.
+    pub hotkey_commands: Option<HotkeyCommands>,
+    /// Whether a tray host is there to show the tray icon. Everywhere but Linux it always is.
+    pub tray_available: bool,
+}
+
+impl Default for DesktopStatus {
+    /// A desktop like Windows: hotkeys through the plugin and a tray.
+    fn default() -> Self {
+        DesktopStatus {
+            hotkey_backend: HotkeyBackendKind::Plugin,
+            hotkey_triggers: HotkeyTriggers::default(),
+            hotkey_commands: None,
+            tray_available: true,
+        }
+    }
+}
+
 /// What capture is doing, `Status.capture.state`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -171,6 +262,8 @@ pub struct Status {
     pub vad_fallback: bool,
     /// Why the settings can't be saved, in words for the user; `None` when they can.
     pub settings_problem: Option<String>,
+    #[serde(flatten)]
+    pub desktop: DesktopStatus,
 }
 
 /// An app that plays audio, for the app list. `select_app` gets one back, usually without its icon.

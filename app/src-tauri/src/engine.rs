@@ -11,11 +11,14 @@ use rt_engine::{Engine, EngineConfig, EngineHandle, OutputBackend, TargetApp};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::actions::EngineControl;
+use crate::hotkeys::HotkeyReport;
 use crate::ipc::{
-    CaptureStateName, CaptureStatus, HotkeyStates, OutputStatus, Playback, Sensitivity, Settings, Status,
+    CaptureStateName, CaptureStatus, DesktopStatus, HotkeyBackendKind, HotkeyStates, OutputStatus, Playback,
+    Sensitivity, Settings, Status,
 };
 use crate::locking::lock;
 use crate::service::SettingsService;
+use crate::session::{self, Env, ProcessEnv};
 use crate::source::{self, SourceKind};
 use crate::tray::{self, HotkeyLabels, SharedStatus, TrayState, TrayStatus};
 
@@ -46,9 +49,14 @@ pub fn engine_target(settings: &Settings) -> Option<TargetApp> {
     })
 }
 
-/// The engine's status as the window and the tray get it, with what the settings know: the hotkeys and whether the
-/// settings can be saved.
-pub fn wire_status(engine: &rt_engine::Status, hotkeys: HotkeyStates, settings_problem: Option<String>) -> Status {
+/// The engine's status as the window and the tray get it, with what the settings know (the hotkeys and whether the
+/// settings can be saved) and what the desktop is like.
+pub fn wire_status(
+    engine: &rt_engine::Status,
+    hotkeys: HotkeyStates,
+    settings_problem: Option<String>,
+    desktop: DesktopStatus,
+) -> Status {
     use rt_engine::CaptureState as Engine;
     let (state, message) = match &engine.capture {
         Engine::NoTarget => (CaptureStateName::NoTarget, None),
@@ -76,6 +84,18 @@ pub fn wire_status(engine: &rt_engine::Status, hotkeys: HotkeyStates, settings_p
         hotkeys,
         vad_fallback: engine.vad_fallback,
         settings_problem,
+        desktop,
+    }
+}
+
+/// What the status says about the desktop: how the hotkeys work (and the keys the desktop gave, or the commands to bind
+/// by hand when there are none) and whether the tray has a host.
+pub fn desktop_status(report: HotkeyReport, tray_available: bool, env: &dyn Env) -> DesktopStatus {
+    DesktopStatus {
+        hotkey_backend: report.backend,
+        hotkey_triggers: report.triggers,
+        hotkey_commands: (report.backend == HotkeyBackendKind::None).then(|| session::hotkey_commands(env)),
+        tray_available,
     }
 }
 
@@ -281,11 +301,22 @@ pub fn current_status<R: Runtime>(app: &AppHandle<R>) -> Status {
         .try_state::<SharedAppEngine>()
         .map(|engine| engine.status())
         .unwrap_or_default();
-    let (hotkeys, problem) = app
+    let (hotkeys, problem, report) = app
         .try_state::<SettingsService>()
-        .map(|settings| (settings.hotkey_states(), settings.storage_problem()))
+        .map(|settings| {
+            (
+                settings.hotkey_states(),
+                settings.storage_problem(),
+                settings.hotkey_report(),
+            )
+        })
         .unwrap_or_default();
-    wire_status(&engine, hotkeys, problem)
+    wire_status(
+        &engine,
+        hotkeys,
+        problem,
+        desktop_status(report, session::tray_available(app), &ProcessEnv),
+    )
 }
 
 /// Sends the status to the window and the tray, always from a thread of its own. So statuses go out in order, nothing
@@ -340,7 +371,7 @@ fn send_status<R: Runtime>(app: &AppHandle<R>) {
     }
     let hotkeys = app
         .try_state::<SettingsService>()
-        .map(|settings| HotkeyLabels::from_states(&settings.get().hotkeys, &status.hotkeys))
+        .map(|settings| HotkeyLabels::for_status(&settings.get().hotkeys, &status))
         .unwrap_or_default();
     if let Some(shared) = app.try_state::<SharedStatus>() {
         *tray::lock_status(&shared) = TrayState {
@@ -364,7 +395,7 @@ pub fn shutdown<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::{Duck, HotkeyState, Target};
+    use crate::ipc::{Duck, HotkeyState, HotkeyTriggers, Target};
 
     #[test]
     fn the_engine_config_follows_the_settings() {
@@ -476,7 +507,7 @@ mod tests {
             vad_fallback: true,
         };
         assert_eq!(
-            wire_status(&engine, ok_hotkeys(), None),
+            wire_status(&engine, ok_hotkeys(), None, DesktopStatus::default()),
             Status {
                 capture: CaptureStatus {
                     state: CaptureStateName::Capturing,
@@ -494,6 +525,7 @@ mod tests {
                 hotkeys: ok_hotkeys(),
                 vad_fallback: true,
                 settings_problem: None,
+                desktop: DesktopStatus::default(),
             }
         );
     }
@@ -509,6 +541,7 @@ mod tests {
                 },
                 ok_hotkeys(),
                 None,
+                DesktopStatus::default(),
             )
             .capture
         };
@@ -532,7 +565,12 @@ mod tests {
 
     #[test]
     fn idle_playback_is_not_behind() {
-        let status = wire_status(&rt_engine::Status::default(), HotkeyStates::UNBOUND, None);
+        let status = wire_status(
+            &rt_engine::Status::default(),
+            HotkeyStates::UNBOUND,
+            None,
+            DesktopStatus::default(),
+        );
         assert_eq!(status.playback, Playback::Idle);
         assert_eq!(status.behind_ms, None);
         assert_eq!(status.buffered_ms, 0);
@@ -544,6 +582,7 @@ mod tests {
             &rt_engine::Status::default(),
             HotkeyStates::UNBOUND,
             Some("The settings file is read-only".into()),
+            DesktopStatus::default(),
         );
         assert_eq!(
             status.settings_problem.as_deref(),
@@ -551,11 +590,14 @@ mod tests {
         );
     }
 
+    fn wire_json(desktop: DesktopStatus) -> serde_json::Value {
+        serde_json::to_value(wire_status(&rt_engine::Status::default(), ok_hotkeys(), None, desktop)).unwrap()
+    }
+
     #[test]
     fn the_status_is_camel_case_on_the_wire() {
-        let json = serde_json::to_value(wire_status(&rt_engine::Status::default(), ok_hotkeys(), None)).unwrap();
         assert_eq!(
-            json,
+            wire_json(DesktopStatus::default()),
             serde_json::json!({
                 "capture": { "state": "noTarget", "message": null },
                 "targetName": null,
@@ -566,8 +608,127 @@ mod tests {
                 "hotkeys": { "replay": "ok", "stop": "inUse", "catchUp": "unbound" },
                 "vadFallback": false,
                 "settingsProblem": null,
+                "hotkeyBackend": "plugin",
+                "hotkeyTriggers": { "replay": null, "stop": null, "catchUp": null },
+                "hotkeyCommands": null,
+                "trayAvailable": true,
             })
         );
+    }
+
+    #[test]
+    fn the_portal_triggers_and_a_missing_tray_reach_the_status() {
+        let json = wire_json(DesktopStatus {
+            hotkey_backend: HotkeyBackendKind::Portal,
+            hotkey_triggers: HotkeyTriggers {
+                replay: Some("Ctrl+Alt+Space".into()),
+                stop: None,
+                catch_up: Some("Ctrl+Alt+Enter".into()),
+            },
+            hotkey_commands: None,
+            tray_available: false,
+        });
+        assert_eq!(json["hotkeyBackend"], "portal");
+        assert_eq!(
+            json["hotkeyTriggers"],
+            serde_json::json!({ "replay": "Ctrl+Alt+Space", "stop": null, "catchUp": "Ctrl+Alt+Enter" })
+        );
+        assert_eq!(json["hotkeyCommands"], serde_json::Value::Null);
+        assert_eq!(json["trayAvailable"], false);
+    }
+
+    #[test]
+    fn the_commands_reach_the_status_when_there_are_no_hotkeys() {
+        let json = wire_json(DesktopStatus {
+            hotkey_backend: HotkeyBackendKind::None,
+            hotkey_commands: Some(crate::session::hotkey_commands(&crate::session::ProcessEnv)),
+            ..DesktopStatus::default()
+        });
+        assert_eq!(json["hotkeyBackend"], "none");
+        let commands = &json["hotkeyCommands"];
+        assert!(
+            commands["replay"].as_str().unwrap().ends_with(" --replay"),
+            "{commands}"
+        );
+        assert!(commands["stop"].as_str().unwrap().ends_with(" --stop"), "{commands}");
+        assert!(
+            commands["catchUp"].as_str().unwrap().ends_with(" --catch-up"),
+            "{commands}"
+        );
+    }
+
+    struct FlatpakEnv;
+
+    impl Env for FlatpakEnv {
+        fn var(&self, name: &str) -> Option<String> {
+            (name == "FLATPAK_ID").then(|| "me.roboroads.RepeatThat".to_string())
+        }
+    }
+
+    fn report(backend: HotkeyBackendKind, replay: Option<&str>) -> HotkeyReport {
+        HotkeyReport {
+            backend,
+            triggers: HotkeyTriggers {
+                replay: replay.map(String::from),
+                ..HotkeyTriggers::default()
+            },
+        }
+    }
+
+    #[test]
+    fn with_the_plugin_the_desktop_has_nothing_to_add() {
+        assert_eq!(
+            desktop_status(report(HotkeyBackendKind::Plugin, None), true, &FlatpakEnv),
+            DesktopStatus::default()
+        );
+    }
+
+    #[test]
+    fn under_the_portal_the_status_carries_the_keys_and_no_commands() {
+        let desktop = desktop_status(
+            report(HotkeyBackendKind::Portal, Some("Ctrl+Alt+Space")),
+            true,
+            &FlatpakEnv,
+        );
+        assert_eq!(desktop.hotkey_backend, HotkeyBackendKind::Portal);
+        assert_eq!(desktop.hotkey_triggers.replay.as_deref(), Some("Ctrl+Alt+Space"));
+        assert_eq!(desktop.hotkey_commands, None);
+    }
+
+    #[test]
+    fn with_no_hotkeys_the_status_carries_the_commands_of_this_package() {
+        let desktop = desktop_status(report(HotkeyBackendKind::None, None), true, &FlatpakEnv);
+        assert_eq!(desktop.hotkey_backend, HotkeyBackendKind::None);
+        let commands = desktop.hotkey_commands.expect("the commands to bind by hand");
+        assert_eq!(commands.replay, "flatpak run me.roboroads.RepeatThat --replay");
+        assert_eq!(commands.stop, "flatpak run me.roboroads.RepeatThat --stop");
+        assert_eq!(commands.catch_up, "flatpak run me.roboroads.RepeatThat --catch-up");
+    }
+
+    #[test]
+    fn a_missing_tray_host_is_in_the_status() {
+        assert!(!desktop_status(report(HotkeyBackendKind::Plugin, None), false, &FlatpakEnv).tray_available);
+        assert!(desktop_status(report(HotkeyBackendKind::Plugin, None), true, &FlatpakEnv).tray_available);
+    }
+
+    #[test]
+    fn the_existing_status_fields_keep_their_names() {
+        // The desktop's fields sit next to them, not in a group of their own: what the window already reads must not move.
+        let json = wire_json(DesktopStatus::default());
+        for key in [
+            "capture",
+            "targetName",
+            "playback",
+            "behindMs",
+            "bufferedMs",
+            "output",
+            "hotkeys",
+            "vadFallback",
+            "settingsProblem",
+        ] {
+            assert!(json.get(key).is_some(), "{key}");
+        }
+        assert!(json.get("desktop").is_none());
     }
 
     #[test]

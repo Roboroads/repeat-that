@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Settings } from '../api';
-  import { formatAccel } from '../hotkey';
+  import { hotkeyHint } from '../hotkey';
   import { describeStatus, outputWarnings } from '../status';
   import type { SettingsStore } from '../store.svelte';
 
@@ -17,10 +17,8 @@
   const nothingToCapture = $derived(state === 'noTarget' || state === 'unsupported');
   const playing = $derived((store.status?.playback ?? 'idle') !== 'idle');
 
-  const hint = (action: 'replay' | 'stop') => {
-    const keys = formatAccel(settings.hotkeys[action]);
-    return keys.length > 0 ? keys.join('+') : undefined;
-  };
+  // Where the desktop owns the keys, the hint is the key it assigned, not the one that was asked for.
+  const hint = (action: 'replay' | 'stop') => hotkeyHint(action, settings, store.status);
 </script>
 
 <section class="status" aria-label="Status">

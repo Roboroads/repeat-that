@@ -1,6 +1,6 @@
 import { emit } from '@tauri-apps/api/event';
 import { fireEvent, screen, waitFor, within } from '@testing-library/svelte';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Status } from '../api';
 import { argsOf, holdAnswers, renderApp } from '../../test-utils';
 
@@ -269,5 +269,227 @@ describe('reset to defaults', () => {
     await renderApp();
 
     expect(screen.getByRole('button', { name: 'Reset to defaults' })).toBeDisabled();
+  });
+});
+
+const KEYS_FROM_THE_DESKTOP = { replay: 'Ctrl+Alt+Space', stop: null, catchUp: 'Meta+Escape' };
+
+describe('hotkeys the desktop assigns (the portal)', () => {
+  const portal = (extra: Partial<Status> = {}) => ({
+    statusOverrides: { hotkeyBackend: 'portal' as const, hotkeyTriggers: KEYS_FROM_THE_DESKTOP, ...extra },
+  });
+
+  it('shows the key each action got, and "Not assigned" for one that got none', async () => {
+    await renderApp(portal());
+
+    const rows = document.querySelectorAll<HTMLElement>('.hotkey');
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]).getByText('Replay')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('Ctrl+Alt+Space')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Stop')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Not assigned')).toBeInTheDocument();
+    expect(within(rows[2]).getByText('Meta+Escape')).toBeInTheDocument();
+  });
+
+  it('has no recorder and no reset', async () => {
+    await renderApp(portal());
+
+    expect(screen.queryByRole('button', { name: /hotkey:/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset to defaults' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Click to set')).not.toBeInTheDocument();
+  });
+
+  it('never touches the hotkeys by itself', async () => {
+    const { backend } = await renderApp(portal());
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    expect(suspends(backend)).toEqual([]);
+    expect(argsOf(backend, 'update_settings')).toEqual([]);
+  });
+
+  it('asks the desktop to show its shortcut settings', async () => {
+    const { backend } = await renderApp(portal());
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    await waitFor(() => expect(argsOf(backend, 'configure_shortcuts')).toHaveLength(1));
+    expect(screen.queryByText(/Shortcuts → Repeat That/)).not.toBeInTheDocument();
+  });
+
+  it('says where to look when the desktop cannot be asked to', async () => {
+    await renderApp({ ...portal(), configureOutcome: 'unsupported' });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    const where = await screen.findByText(/System Settings → Shortcuts → Repeat That/);
+    expect(where).toHaveTextContent('Settings → Keyboard → View and Customize Shortcuts → Apps');
+  });
+
+  it('offers to set the shortcuts up when no action has a key, which is how a closed dialog is asked for again', async () => {
+    const { backend } = await renderApp(
+      portal({ hotkeyTriggers: { replay: null, stop: null, catchUp: null } }),
+    );
+
+    expect(screen.queryByRole('button', { name: 'Change in system settings' })).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole('button', { name: 'Set up shortcuts' }));
+
+    await waitFor(() => expect(argsOf(backend, 'configure_shortcuts')).toHaveLength(1));
+    expect(screen.queryByText(/waiting for you/)).not.toBeInTheDocument();
+  });
+
+  it('goes back to the system settings once any action has a key', async () => {
+    const view = await renderApp(portal({ hotkeyTriggers: { replay: null, stop: null, catchUp: null } }));
+    expect(screen.getByRole('button', { name: 'Set up shortcuts' })).toBeInTheDocument();
+
+    await emit('status', {
+      ...view.backend.status(),
+      hotkeyTriggers: { replay: 'Meta+R', stop: null, catchUp: null },
+    });
+
+    expect(await screen.findByRole('button', { name: 'Change in system settings' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Set up shortcuts' })).not.toBeInTheDocument();
+  });
+
+  it('says the desktop is waiting for its dialog to be answered when it is', async () => {
+    await renderApp({ ...portal(), configureOutcome: 'busy' });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    expect(await screen.findByText(/waiting for you to answer its shortcuts dialog/)).toBeInTheDocument();
+  });
+
+  it('forgets that note when asking again works', async () => {
+    const { backend } = await renderApp({ ...portal(), configureOutcome: 'busy' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+    await screen.findByText(/waiting for you to answer/);
+
+    backend.configureOutcome = 'opened';
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    await waitFor(() => expect(screen.queryByText(/waiting for you to answer/)).not.toBeInTheDocument());
+  });
+
+  it('says what went wrong when asking fails', async () => {
+    const { backend } = await renderApp(portal());
+    backend.overrides.configure_shortcuts = () => {
+      throw { kind: 'backend', message: 'Could not open the shortcut settings: the desktop did not answer' };
+    };
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('the desktop did not answer');
+  });
+
+  it('follows a key the user changes in the system settings', async () => {
+    const view = await renderApp(portal());
+    expect(screen.getByText('Ctrl+Alt+Space')).toBeInTheDocument();
+
+    await emit('status', {
+      ...view.backend.status(),
+      hotkeyTriggers: { replay: 'Meta+R', stop: 'Meta+S', catchUp: null },
+    });
+
+    expect(await screen.findByText('Meta+R')).toBeInTheDocument();
+    expect(screen.getByText('Meta+S')).toBeInTheDocument();
+    expect(screen.queryByText('Ctrl+Alt+Space')).not.toBeInTheDocument();
+  });
+
+  it('does not repeat the in-use and invalid notes of the recorder', async () => {
+    await renderApp(portal({ hotkeys: { replay: 'inUse', stop: 'invalid', catchUp: 'ok' } }));
+
+    expect(screen.queryByText('In use by another app')).not.toBeInTheDocument();
+    expect(screen.queryByText('Invalid')).not.toBeInTheDocument();
+  });
+});
+
+describe('no hotkeys on this desktop', () => {
+  const COMMANDS = {
+    replay: 'repeat-that --replay',
+    stop: 'repeat-that --stop',
+    catchUp: 'repeat-that --catch-up',
+  };
+  const none = (hotkeyCommands: Status['hotkeyCommands'] = COMMANDS) => ({
+    statusOverrides: { hotkeyBackend: 'none' as const, hotkeyCommands },
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+
+  it('warns that global hotkeys are not available', async () => {
+    await renderApp(none());
+
+    expect(screen.getByText(/Global hotkeys aren't available on this desktop/)).toBeInTheDocument();
+  });
+
+  it('shows the command of each action, and how to bind it', async () => {
+    await renderApp(none());
+
+    for (const command of Object.values(COMMANDS)) expect(screen.getByText(command)).toBeInTheDocument();
+    expect(screen.getByText(/custom keyboard shortcut/)).toBeInTheDocument();
+    expect(screen.getByText(/Custom Shortcuts/)).toBeInTheDocument();
+  });
+
+  it('has no recorder and no reset', async () => {
+    await renderApp(none());
+
+    expect(screen.queryByRole('button', { name: /hotkey:/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset to defaults' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Change in system settings' })).not.toBeInTheDocument();
+  });
+
+  it('copies a command and says so', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await renderApp(none());
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy the Catch up command' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('repeat-that --catch-up'));
+    expect(await screen.findByRole('button', { name: 'Copied the Catch up command' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy the Replay command' })).toBeInTheDocument();
+  });
+
+  it('copies each of the three commands', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await renderApp(none());
+
+    for (const label of ['Replay', 'Stop', 'Catch up']) {
+      await fireEvent.click(screen.getByRole('button', { name: `Copy the ${label} command` }));
+    }
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
+    expect(writeText.mock.calls.map(([text]) => text)).toEqual(Object.values(COMMANDS));
+  });
+
+  it('shows the commands as the backend worded them for a flatpak', async () => {
+    await renderApp(
+      none({
+        replay: 'flatpak run me.roboroads.RepeatThat --replay',
+        stop: 'flatpak run me.roboroads.RepeatThat --stop',
+        catchUp: 'flatpak run me.roboroads.RepeatThat --catch-up',
+      }),
+    );
+
+    expect(screen.getByText('flatpak run me.roboroads.RepeatThat --stop')).toBeInTheDocument();
+  });
+
+  it('still explains itself before the backend has sent the commands', async () => {
+    await renderApp(none(null));
+
+    expect(screen.getByText(/Global hotkeys aren't available on this desktop/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Copy the/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('hotkeys with the plugin', () => {
+  it('show nothing of the other modes', async () => {
+    await renderApp();
+
+    expect(screen.queryByRole('button', { name: 'Change in system settings' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Global hotkeys aren't available/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Not assigned')).not.toBeInTheDocument();
   });
 });

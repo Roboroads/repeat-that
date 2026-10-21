@@ -16,6 +16,20 @@ describe('first run', () => {
     await expect(headline()).toHaveText('No app selected');
   });
 
+  // The private D-Bus of the test has no StatusNotifierWatcher, so this is a desktop without a tray: the window is the
+  // only way in, and the General section says so and has the Quit the tray menu would have.
+  it('explains that there is no tray, and offers to quit', async () => {
+    await expect($('p*=No tray on this desktop')).toBeExisting();
+    await expect($('p*=Open Repeat That from your app menu')).toBeExisting();
+    await expect($('button=Quit Repeat That')).toBeExisting();
+  });
+
+  it('keeps the plain recorder on X11, where the hotkeys work through the plugin', async () => {
+    await expect($('button[aria-label^="Replay hotkey"]')).toBeDisplayed();
+    await expect($('p*=Global hotkeys aren')).not.toBeExisting();
+    await expect($('button=Change in system settings')).not.toBeExisting();
+  });
+
   it('lists the fake app that the debug build plays', async () => {
     await expect(appRadio(FAKE_APP)).toBeDisplayed();
     await expect(appRadio(FAKE_APP)).not.toBeSelected();

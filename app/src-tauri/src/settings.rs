@@ -22,6 +22,9 @@ pub struct HotkeyDef {
     pub field: &'static str,
     /// What the user calls it, for error messages.
     pub label: &'static str,
+    /// The name of the action outside the app: the ID the desktop's shortcut portal knows it by, and the
+    /// command-line flag that runs it (`--replay`).
+    pub command: &'static str,
     pub default: &'static str,
 }
 
@@ -32,18 +35,21 @@ pub const HOTKEYS: [HotkeyDef; HOTKEY_COUNT] = [
         action: AppAction::Replay,
         field: "replay",
         label: "Replay",
+        command: "replay",
         default: "Ctrl+Alt+Space",
     },
     HotkeyDef {
         action: AppAction::Stop,
         field: "stop",
         label: "Stop",
+        command: "stop",
         default: "Ctrl+Alt+Backspace",
     },
     HotkeyDef {
         action: AppAction::CatchUp,
         field: "catchUp",
         label: "Catch-up",
+        command: "catch-up",
         default: "Ctrl+Alt+Enter",
     },
 ];
@@ -426,11 +432,50 @@ mod tests {
                 "{}",
                 def.field
             );
+
+            // The keys the portal assigned and the commands to bind by hand follow the same table.
+            let mut triggers = crate::ipc::HotkeyTriggers::default();
+            *triggers.slots_mut()[index] = Some("Meta+K".into());
+            assert_eq!(
+                serde_json::to_value(&triggers).unwrap()[def.field],
+                "Meta+K",
+                "{}",
+                def.field
+            );
+            assert_eq!(triggers.slots().iter().filter(|slot| slot.is_some()).count(), 1);
+
+            let mut commands = crate::ipc::HotkeyCommands {
+                replay: String::new(),
+                stop: String::new(),
+                catch_up: String::new(),
+            };
+            *commands.slots_mut()[index] = "repeat-that --x".into();
+            assert_eq!(
+                serde_json::to_value(&commands).unwrap()[def.field],
+                "repeat-that --x",
+                "{}",
+                def.field
+            );
+            assert_eq!(
+                serde_json::to_value(&commands).unwrap().as_object().unwrap().len(),
+                HOTKEYS.len()
+            );
         }
         assert_eq!(
             HOTKEY_ACTIONS.to_vec(),
             HOTKEYS.iter().map(|def| def.action).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn the_command_names_are_unique_and_fit_a_flag_and_a_portal_id() {
+        // They are the command-line flags (`--catch-up`) and the IDs the desktop's shortcut portal keeps its keys under,
+        // so renaming one would lose the user's keys and break the commands they bound by hand.
+        let commands: Vec<_> = HOTKEYS.iter().map(|def| def.command).collect();
+        assert_eq!(commands, ["replay", "stop", "catch-up"]);
+        for command in commands {
+            assert!(command.chars().all(|c| c.is_ascii_lowercase() || c == '-'), "{command}");
+        }
     }
 
     #[test]

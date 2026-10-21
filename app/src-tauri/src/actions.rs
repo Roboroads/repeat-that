@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::engine;
+use crate::settings::HOTKEYS;
 use crate::window;
 
 /// Something the user asked for, from the tray menu, a hotkey or the settings window.
@@ -84,6 +85,25 @@ impl<R: Runtime> ActionHost for AppHandle<R> {
     }
 }
 
+/// The action a command line asks for: `--replay`, `--stop` or `--catch-up` (the names in the hotkey table). Anything
+/// else is ignored, so a flag a later version adds, or one the OS adds, never keeps an action from running. With more
+/// than one action the first wins.
+pub fn cli_action<S: AsRef<str>>(args: &[S]) -> Option<AppAction> {
+    // The first argument is the program.
+    args.iter().skip(1).find_map(|arg| {
+        let flag = arg.as_ref().strip_prefix("--")?;
+        HOTKEYS.iter().find(|def| def.command == flag).map(|def| def.action)
+    })
+}
+
+/// Runs the action a launch asked for, if it asked for one. The first launch of the app does this once the app is up; a
+/// launch of an app that already runs is handed to it (see `window::on_second_launch`), which does the same.
+pub fn run_launch_action<S: AsRef<str>>(args: &[S], host: &dyn ActionHost) {
+    if let Some(action) = cli_action(args) {
+        dispatch(action, host);
+    }
+}
+
 /// Runs `action`.
 pub fn dispatch(action: AppAction, host: &dyn ActionHost) {
     match action {
@@ -96,15 +116,17 @@ pub fn dispatch(action: AppAction, host: &dyn ActionHost) {
     }
 }
 
+/// Stand-ins for the engine and the app, for tests of everything that dispatches actions.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub mod fake {
     use std::cell::{Cell, RefCell};
     use std::sync::Mutex;
 
+    use super::*;
+
     #[derive(Default)]
-    struct FakeEngine {
-        calls: Mutex<Vec<&'static str>>,
+    pub struct FakeEngine {
+        pub calls: Mutex<Vec<&'static str>>,
     }
 
     impl EngineControl for FakeEngine {
@@ -122,14 +144,14 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct FakeHost {
-        paused: Cell<bool>,
-        calls: RefCell<Vec<String>>,
-        engine: Arc<FakeEngine>,
+    pub struct FakeHost {
+        pub paused: Cell<bool>,
+        pub calls: RefCell<Vec<String>>,
+        pub engine: Arc<FakeEngine>,
     }
 
     impl FakeHost {
-        fn is_paused(&self) -> bool {
+        pub fn is_paused(&self) -> bool {
             self.paused.get()
         }
     }
@@ -152,6 +174,12 @@ mod tests {
             self.engine.clone()
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeHost;
+    use super::*;
 
     fn run(action: AppAction, host: &FakeHost) -> Vec<String> {
         dispatch(action, host);
@@ -197,6 +225,116 @@ mod tests {
             dispatch(action, &host);
         }
         assert!(host.engine.calls.lock().unwrap().is_empty());
+    }
+
+    // Command-line actions
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn each_playback_flag_asks_for_its_action() {
+        assert_eq!(cli_action(&args(&["repeat-that", "--replay"])), Some(AppAction::Replay));
+        assert_eq!(cli_action(&args(&["repeat-that", "--stop"])), Some(AppAction::Stop));
+        assert_eq!(
+            cli_action(&args(&["repeat-that", "--catch-up"])),
+            Some(AppAction::CatchUp)
+        );
+    }
+
+    #[test]
+    fn a_plain_launch_asks_for_nothing() {
+        assert_eq!(cli_action(&args(&["repeat-that"])), None);
+        assert_eq!(cli_action(&args(&[])), None);
+    }
+
+    #[test]
+    fn unknown_flags_are_ignored() {
+        assert_eq!(cli_action(&args(&["repeat-that", "--frobnicate"])), None);
+        assert_eq!(
+            cli_action(&args(&["repeat-that", "--frobnicate", "--replay", "--verbose"])),
+            Some(AppAction::Replay)
+        );
+    }
+
+    #[test]
+    fn an_action_works_with_the_hidden_flag_in_either_order() {
+        assert_eq!(
+            cli_action(&args(&["repeat-that", "--hidden", "--stop"])),
+            Some(AppAction::Stop)
+        );
+        assert_eq!(
+            cli_action(&args(&["repeat-that", "--catch-up", "--hidden"])),
+            Some(AppAction::CatchUp)
+        );
+        assert_eq!(cli_action(&args(&["repeat-that", "--hidden"])), None);
+    }
+
+    #[test]
+    fn only_the_exact_flag_counts() {
+        for flag in [
+            "--replayed",
+            "--replay=1",
+            "replay",
+            "-replay",
+            "--Replay",
+            "--catchup",
+            "--catch_up",
+        ] {
+            assert_eq!(cli_action(&args(&["repeat-that", flag])), None, "{flag}");
+        }
+    }
+
+    #[test]
+    fn with_two_actions_the_first_wins() {
+        assert_eq!(
+            cli_action(&args(&["repeat-that", "--stop", "--replay"])),
+            Some(AppAction::Stop)
+        );
+    }
+
+    #[test]
+    fn the_program_name_is_never_a_flag() {
+        assert_eq!(cli_action(&args(&["--replay"])), None);
+    }
+
+    #[test]
+    fn a_launch_with_an_action_runs_it_and_nothing_else() {
+        for (flag, call) in [
+            ("--replay", "replay"),
+            ("--stop", "stop"),
+            ("--catch-up", "toggle_catch_up"),
+        ] {
+            let host = FakeHost::default();
+            run_launch_action(&args(&["repeat-that", flag]), &host);
+            assert_eq!(*host.engine.calls.lock().unwrap(), [call], "{flag}");
+            assert!(host.calls.borrow().is_empty(), "{flag} must not touch the windows");
+        }
+    }
+
+    #[test]
+    fn a_launch_without_an_action_runs_nothing() {
+        let host = FakeHost::default();
+        run_launch_action(&args(&["repeat-that", "--hidden", "--frobnicate"]), &host);
+        assert!(host.engine.calls.lock().unwrap().is_empty());
+        assert!(host.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn every_invocation_counts_as_a_press() {
+        // Pressing replay again during a replay steps back, and the catch-up action switches speed: both are the
+        // engine's rules, which only hear presses. So each command-line call must reach it, with no held-key logic in
+        // between that would swallow a second one.
+        let host = FakeHost::default();
+        for _ in 0..3 {
+            run_launch_action(&args(&["repeat-that", "--replay"]), &host);
+        }
+        run_launch_action(&args(&["repeat-that", "--catch-up"]), &host);
+        assert_eq!(
+            *host.engine.calls.lock().unwrap(),
+            ["replay", "replay", "replay", "toggle_catch_up"]
+        );
     }
 
     #[test]
