@@ -14,11 +14,25 @@
 //! - With the half-dB steps here on a fixed 10 ms grid, no millisecond was more than 0.7 dB off in six runs of ten
 //!   fades each. The end-to-end test fails anything over two steps (1 dB).
 //!
+//! On Linux a stream applies a new volume from the next cycle of the PipeWire graph, so the fade steps once per cycle
+//! and the capture gives each cycle the level of its start (`VOLUME_DELAY`, 1 ms after the call). What a headless
+//! PipeWire 1.4 measured (1024-frame cycles at 48 kHz, 21 ms), with the same tone and test:
+//!
+//! - The capture gets the audio after the stream's volume: a tone at 0.354 RMS came in at 0.0055 with `channelVolumes`
+//!   at 0.015625. So it needs the compensation too.
+//! - A `pw-cat` stream, which is asynchronous (`node.async`), made the audio we capture in a cycle in the cycle before.
+//!   Without that, every fade was a step (0.48 dB) off all along; looking the level up a cycle earlier left no
+//!   millisecond off in five fades, and half a cycle earlier left two of them a step off.
+//! - A PulseAudio app (`pacat` through pipewire-pulse) isn't asynchronous and needs no cycle back: one 42 ms cycle a
+//!   step off in ten fades, against every fade a step off with it.
+//!
+//! The end-to-end test fails anything over two steps (1 dB) there too.
+//!
 //! The fade also sounds smoother to the user. All of this only holds while the steps stay apart, so a fade neither
 //! catches up on steps it fell behind on nor starts right after the one before: see [`next_due`] and [`run`].
 
-// Only the Windows backend uses this so far; the tests run everywhere.
-#![cfg_attr(not(windows), allow(dead_code))]
+// Only the Windows and Linux backends use this; the tests run everywhere.
+#![cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,8 +43,10 @@ use crate::clamp_duck_level;
 /// The largest change in one step, in dB. Small enough that being two steps off is still inaudible.
 const MAX_STEP_DB: f64 = 0.5;
 
-/// Time between steps: one period of the Windows audio engine, so each step reaches the audio on its own. A duck to
-/// 25% (−12 dB) takes 25 steps, 240 ms; one to the 5% minimum 53 steps, 520 ms.
+/// Time between steps on Windows: one period of the Windows audio engine, so each step reaches the audio on its own. A
+/// duck to 25% (−12 dB) takes 25 steps, 240 ms; one to the 5% minimum 53 steps, 520 ms. Linux steps once per graph
+/// cycle instead, which it measures (see `linux::step_interval`).
+#[cfg(windows)]
 pub(crate) const STEP_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The duck levels a ramp from `from` to `to` sets, in order: equal steps in dB of at most [`MAX_STEP_DB`], the last

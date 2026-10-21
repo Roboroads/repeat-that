@@ -1,6 +1,7 @@
 // End-to-end test of the desktop app: WebdriverIO drives the real debug build through tauri-driver, which starts
-// WebKitWebDriver and the app. Linux only, because the Linux build is the one that can run without a real capture
-// backend: it plays a speech recording as a fake app (`speech_8s`) and replays into nothing.
+// WebKitWebDriver and the app. Linux only, because the Linux build is the one that can run on a virtual display. The app
+// doesn't capture real apps here: it plays a speech recording as a fake app (`speech_8s`, see `REPEAT_THAT_MOCK_WAV`
+// below) and replays into nothing.
 //
 // Run it with `npm run test:e2e` (on a machine without a display: `xvfb-run -a npm run test:e2e`), which builds the
 // debug app first (the `pretest:e2e` script). Needs Node.js 22.19 or later, `tauri-driver` (`cargo install tauri-driver
@@ -18,6 +19,8 @@ const targetDir = process.env.CARGO_TARGET_DIR
   ? path.resolve(process.env.CARGO_TARGET_DIR)
   : path.join(repoDir, 'target');
 const application = path.join(targetDir, 'debug', 'repeat-that');
+/** The speech recording the app plays as its only app, `speech_8s`. */
+const fixture = path.join(repoDir, 'crates', 'rt-core', 'tests', 'fixtures', 'speech_8s.wav');
 
 const driverCommand = process.env.TAURI_DRIVER ?? 'tauri-driver';
 
@@ -125,7 +128,8 @@ export const config: WebdriverIO.Config = {
    *  - No GPU. WebKit asks the GPU's DRM device for the display's refresh rate otherwise, and on a virtual GPU that
    *    call can hang for good, with the app stuck in the kernel where nothing can kill it. Software rendering is also
    *    what a CI runner has, so the test runs the same everywhere.
-   * The null output and the fixture mock are what a debug build uses on Linux anyway (see src-tauri/src/source.rs).
+   *  - The speech fixture as the only app (`REPEAT_THAT_MOCK_WAV`), instead of the PipeWire backend a Linux build
+   *    has, and an output that plays into nothing (`REPEAT_THAT_NULL_OUTPUT`). See src-tauri/src/source.rs.
    */
   async beforeSession(config) {
     const root = await mkdtemp(path.join(tmpdir(), 'repeat-that-e2e-'));
@@ -154,8 +158,8 @@ export const config: WebdriverIO.Config = {
       WEBKIT_DISABLE_COMPOSITING_MODE: '1',
       LIBGL_ALWAYS_SOFTWARE: '1',
       REPEAT_THAT_NULL_OUTPUT: '1',
+      REPEAT_THAT_MOCK_WAV: fixture,
     };
-    delete env.REPEAT_THAT_MOCK_WAV;
     const driver = spawn(driverCommand, ['--port', String(port), '--native-port', String(nativePort)], {
       env,
       detached: true,

@@ -2,7 +2,7 @@
 //!
 //! Each OS gets its own backend behind [`AppAudioSource`]:
 //! - Windows: WASAPI process loopback (Windows 10 2004+), see `WasapiSource`
-//! - Linux: PipeWire (planned)
+//! - Linux: PipeWire, see `linux::PipeWireSource`
 //! - macOS: Core Audio process taps (macOS 14.2+, planned)
 //!
 //! Every OS has a module that this file includes under the name `os` (see the `mod` lines below), and the module has
@@ -35,9 +35,13 @@ mod ramp;
 pub mod windows;
 #[cfg(windows)]
 use windows as os;
-#[cfg(not(any(windows)))]
+#[cfg(target_os = "linux")]
+pub mod linux;
+#[cfg(target_os = "linux")]
+use linux as os;
+#[cfg(not(any(windows, target_os = "linux")))]
 mod unsupported;
-#[cfg(not(any(windows)))]
+#[cfg(not(any(windows, target_os = "linux")))]
 use unsupported as os;
 
 pub use icon::{IconImage, app_icon};
@@ -217,7 +221,7 @@ pub(crate) struct DuckChange {
 const DUCK_HISTORY_KEEP: u64 = 10_000_000;
 
 /// A safety net in case changes come much faster than fades make them (about 100 a second).
-const DUCK_HISTORY_MAX: usize = 1024;
+pub(crate) const DUCK_HISTORY_MAX: usize = 1024;
 
 impl DuckLevel {
     pub(crate) fn new() -> Self {
@@ -262,6 +266,21 @@ impl DuckLevel {
     pub(crate) fn history(&self, out: &mut Vec<DuckChange>) {
         out.clear();
         out.extend(self.lock().iter().copied());
+    }
+
+    /// [`history`](Self::history) for a thread that must not wait, like a real-time audio thread: `false`, leaving
+    /// `out` as it was, while a fade is changing the history. `out` needs room for [`DUCK_HISTORY_MAX`] changes so
+    /// copying never allocates.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn try_history(&self, out: &mut Vec<DuckChange>) -> bool {
+        let changes = match self.0.try_lock() {
+            Ok(changes) => changes,
+            Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return false,
+        };
+        out.clear();
+        out.extend(changes.iter().copied());
+        true
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<DuckChange>> {
@@ -388,6 +407,20 @@ mod tests {
             let time = latest - age;
             assert_eq!(level_at(&history, time), Some(played_at(time)), "{} ms old", age / MS);
         }
+    }
+
+    #[test]
+    fn a_real_time_thread_never_waits_for_the_history() {
+        let level = DuckLevel::new();
+        level.set(0.5, 100);
+        let mut copy = Vec::with_capacity(DUCK_HISTORY_MAX);
+        assert!(level.try_history(&mut copy));
+        assert_eq!(copy, history(&level));
+        // While a fade holds it, the copy from before stays.
+        let held = level.lock();
+        assert!(!level.try_history(&mut copy));
+        drop(held);
+        assert_eq!(copy.len(), 2);
     }
 
     #[test]

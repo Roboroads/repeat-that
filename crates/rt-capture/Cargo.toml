@@ -30,8 +30,18 @@ windows = { version = "0.62", features = [
 # `windows::core`. Bump both together.
 windows-core = "0.62"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+# Same version as cpal's PipeWire host (rt-engine), so both share one libpipewire binding. 0.3.65 is what Debian 12 has.
+pipewire = { version = "0.10", features = ["v0_3_65"] }
+png = "0.18"
+
 [dev-dependencies]
 rt-core = { path = "../rt-core" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The end-to-end test reads volumes and links from `pw-dump`.
+serde_json = "1"
 
 [target.'cfg(windows)'.dev-dependencies]
 # Same features as above; the end-to-end test reads session volumes on its own.

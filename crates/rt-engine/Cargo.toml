@@ -13,8 +13,16 @@ rt-capture = { path = "../rt-capture" }
 rt-core = { path = "../rt-core" }
 rtrb = "0.4"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Replays play through PipeWire where it runs, so the output list shows its sinks by name; ALSA otherwise.
+cpal = { version = "0.18", features = ["pipewire"] }
+
 [dev-dependencies]
 hound = "3.5"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The end-to-end test reads volumes from `pw-dump`.
+serde_json = "1"
 
 [target.'cfg(windows)'.dev-dependencies]
 # The end-to-end test reads session volumes on its own.

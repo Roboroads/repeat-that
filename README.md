@@ -75,8 +75,8 @@ Planned: a live transcript of recent speech (local Whisper, fully offline), Linu
 | Linux (Debian/Ubuntu, `.deb`) | Debian 12 / Ubuntu 22.04 with PipeWire | PipeWire per-stream capture | Planned |
 | macOS (Intel + Apple Silicon, universal) | macOS 14.2 | Core Audio process taps | Planned |
 
-On Linux and macOS a debug build of the app runs, but there is no capture backend yet: it plays a speech recording as a
-fake app called `speech_8s`, which is what the end-to-end test uses.
+On macOS a debug build of the app runs, but there is no capture backend yet: it plays a speech recording as a fake app
+called `speech_8s`, which is what the end-to-end test uses on Linux too.
 
 **macOS note:** macOS releases will be signed with a Developer ID certificate and notarized by Apple, so they open like
 any other app. The audio-capture permission and the steps to build on macOS (Xcode command-line tools, Rust,
@@ -103,15 +103,16 @@ npm run tauri dev
 ```
 
 The app starts in the tray. The first launch also opens the settings window; closing it keeps the app running in the
-tray, and Quit in the tray menu ends it. On Linux and macOS there is no capture backend yet, so a debug build plays a
-speech recording as a fake app, `speech_8s`. Add `REPEAT_THAT_NULL_OUTPUT=1` on a machine without an audio device.
+tray, and Quit in the tray menu ends it. On macOS there is no capture backend yet, so a debug build plays a speech
+recording as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` does that on any OS. Add
+`REPEAT_THAT_NULL_OUTPUT=1` on a machine without an audio device.
 
 System packages (the [Tauri prerequisites](https://tauri.app/start/prerequisites/) cover Windows and macOS):
 
 ```sh
 # Debian / Ubuntu
 sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
-  libasound2-dev libxdo-dev
+  libasound2-dev libxdo-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit together.

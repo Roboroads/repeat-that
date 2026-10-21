@@ -5,14 +5,17 @@ Thanks for wanting to help! Bug reports, feature ideas, testing on different har
 ## Getting started
 
 1. Install [Rust](https://rustup.rs) (stable), Node.js 22.19 or later, and the
-   [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Debian/Ubuntu:
-   `sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev`
+   [Tauri prerequisites](https://tauri.app/start/prerequisites/) for your OS. On Debian/Ubuntu, with the PipeWire
+   headers and clang that the capture backend builds against:
+   `sudo apt install pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang`
 2. Run the Rust tests: `cargo test --workspace`
 3. Run the app: `cd app && npm install && npm run tauri dev`. It starts in the tray; the first launch also opens the
    settings window.
 4. Frontend checks, in `app/`: `npm run check` (svelte-check, and a type check of the end-to-end test) and `npm test`
    (vitest).
 5. End-to-end test, on Linux: see [Running the end-to-end test](#running-the-end-to-end-test).
+6. Capture tests against a real audio service: see [Testing capture on Linux](#testing-capture-on-linux) (Windows runs
+   them in CI only).
 
 `tauri::generate_context!` embeds `app/dist`, the built frontend. A fresh debug build works without it (the build
 script puts a red "FRONTEND NOT BUILT" placeholder page there and warns); a release build refuses to go on. Run
@@ -22,9 +25,9 @@ script puts a red "FRONTEND NOT BUILT" placeholder page there and warns); a rele
 
 `app/e2e` holds a [WebdriverIO](https://webdriver.io) test that drives the real desktop app through
 [tauri-driver](https://crates.io/crates/tauri-driver), the way a person would: it picks the fake app, waits for speech
-to be buffered, replays, pauses, changes a setting and records a hotkey. It runs on Linux only, because a Linux debug
-build is the one that needs no capture backend: it plays the speech fixture as an app called `speech_8s`, and
-`REPEAT_THAT_NULL_OUTPUT=1` (set by the test) plays replays into nothing, so no audio device is needed either.
+to be buffered, replays, pauses, changes a setting and records a hotkey. It runs on Linux only, on a virtual display. The test gives the app the speech fixture as
+its only app, `speech_8s` (`REPEAT_THAT_MOCK_WAV`), instead of the PipeWire backend, and `REPEAT_THAT_NULL_OUTPUT=1`
+plays replays into nothing, so it needs no audio service or device.
 
 It needs Node.js 22.19 or later, which is what WebdriverIO asks for (`engines` in `app/package.json`). One-time setup on
 Debian/Ubuntu:
@@ -48,6 +51,34 @@ Specs are in `app/e2e/specs/*.e2e.ts`, the setup is in `app/e2e/wdio.conf.ts`.
 
 CI runs the same thing as the required check `E2E (Linux)`. Like every other test, it must not write captured audio to
 disk, and the `privacy` spec checks that.
+
+## Testing capture on Linux
+
+The PipeWire backend has end-to-end tests that play tones and speech through a real PipeWire and capture, duck and
+restore them: `crates/rt-capture/tests/linux_audio.rs` and `crates/rt-engine/tests/linux_engine.rs`. They are
+`#[ignore]`d, because they need PipeWire, WirePlumber and pipewire-pulse, and their tools:
+
+```sh
+sudo apt install pipewire wireplumber pipewire-pulse pipewire-bin pulseaudio-utils dbus-daemon
+```
+
+`.github/scripts/start-pipewire.sh` starts all of them headless, with a D-Bus session and a null sink to play into, in
+a folder of their own: your desktop's audio, and the volumes WirePlumber remembers for your apps, aren't touched. It
+prints the variables that point a shell at it (CI runs the same script):
+
+```sh
+eval "$(.github/scripts/start-pipewire.sh)"
+cargo build -p rt-capture --example probe      # the duck guard test kills it while it ducks
+cargo test -p rt-capture --test linux_audio -- --ignored --nocapture --test-threads=1
+cargo test -p rt-engine --test linux_engine -- --ignored --nocapture
+.github/scripts/start-pipewire.sh --stop
+```
+
+The tones are made in memory and piped into `pw-cat` and `pacat`; nothing is written to disk but the probe's duck
+journal, which holds volumes only. To try the backend by hand in the same shell, play a tone (`pw-cat --playback` a raw
+sine, or any app) and use the probe: `cargo run -p rt-capture --example probe -- list`, then `capture <name> 15
+--duck`, which should print a steady level through seconds 5 to 10 while `pw-dump <node>` shows the stream's
+`channelVolumes` at 0.2 (`wpctl get-volume` shows the cube root of that, 0.58).
 
 ## Project layout
 

@@ -55,8 +55,8 @@ fn main() -> Result<(), Error> {
     }
 }
 
-/// The capture backend, with a duck journal (and on Windows a guard) so a probe killed mid-duck (`taskkill /F`) gives
-/// the app its volume back.
+/// The capture backend, with a duck journal (and a guard, except in a Flatpak) so a probe killed mid-duck
+/// (`taskkill /F`, `kill -9`) gives the app its volume back.
 fn source() -> Result<Box<dyn AppAudioSource>, Error> {
     let journal = env::temp_dir().join("repeat-that-probe-duck.journal");
     Ok(rt_capture::platform_source_with(PlatformOptions {
@@ -104,12 +104,13 @@ fn capture(source: &dyn AppAudioSource, app: &AudioApp, secs: u64, duck: bool) -
     let mut next_report = Duration::from_secs(1);
     let mut ducked = false;
     while start.elapsed() < Duration::from_secs(secs) {
-        if duck && !ducked && start.elapsed() >= Duration::from_secs(5) {
+        let duck_time = (Duration::from_secs(5)..Duration::from_secs(10)).contains(&start.elapsed());
+        if duck && !ducked && duck_time {
             source.set_app_volume(app, 0.2)?;
             ducked = true;
             println!("-- ducked to 20%");
         }
-        if duck && ducked && start.elapsed() >= Duration::from_secs(10) {
+        if duck && ducked && !duck_time {
             source.set_app_volume(app, 1.0)?;
             ducked = false;
             println!("-- volume restored");

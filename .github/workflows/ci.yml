@@ -79,13 +79,16 @@ jobs:
       - uses: actions/checkout@v7
         if: needs.changes.outputs.code != 'false'
       # The desktop app (app/src-tauri) is part of the workspace, so cargo needs the Tauri system libraries and the
-      # built frontend (`tauri::generate_context!` embeds app/dist).
+      # built frontend (`tauri::generate_context!` embeds app/dist). The PipeWire backend needs libpipewire's headers
+      # and clang (bindgen); its end-to-end tests below need PipeWire, WirePlumber, pipewire-pulse and their tools.
       - name: Install system packages (Linux)
         if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev
+            pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev \
+            libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang \
+            pipewire wireplumber pipewire-bin pipewire-pulse pulseaudio-utils dbus-daemon
       - uses: actions/setup-node@v7
         if: needs.changes.outputs.code != 'false'
         with:
@@ -134,6 +137,23 @@ jobs:
       - name: Engine test (Windows)
         if: needs.changes.outputs.code != 'false' && runner.os == 'Windows'
         run: cargo test -p rt-engine --test windows_engine -- --ignored --nocapture
+      # End-to-end test of Linux capture: PipeWire, WirePlumber and pipewire-pulse in a runtime folder of their own,
+      # with a null sink to play into. The script points the steps after it at them (XDG_RUNTIME_DIR in GITHUB_ENV).
+      - name: Start PipeWire (Linux)
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
+        run: .github/scripts/start-pipewire.sh "$RUNNER_TEMP/pw"
+      - name: Build probe (Linux)
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
+        run: cargo build -p rt-capture --example probe
+      - name: Capture test (Linux)
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
+        run: cargo test -p rt-capture --test linux_audio -- --ignored --nocapture --test-threads=1
+      - name: Engine test (Linux)
+        if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
+        run: cargo test -p rt-engine --test linux_engine -- --ignored --nocapture
+      - name: PipeWire logs (Linux)
+        if: failure() && needs.changes.outputs.code != 'false' && runner.os == 'Linux'
+        run: tail -n 100 "$RUNNER_TEMP"/pw/log/*.log
 
   frontend:
     name: Frontend
@@ -161,7 +181,7 @@ jobs:
         if: needs.changes.outputs.code != 'false'
 
   # Drives the real desktop app (WebdriverIO and tauri-driver, on a virtual display) the way a person would: it picks the
-  # fake app that debug builds play on Linux, replays, pauses and changes settings. See app/e2e/wdio.conf.ts. Like the
+  # fake app the harness gives it (a speech recording, see REPEAT_THAT_MOCK_WAV), replays, pauses and changes settings. See app/e2e/wdio.conf.ts. Like the
   # other jobs it runs unless the run is cancelled, and a docs-only change skips every step, not the job. WebdriverIO
   # needs Node.js 22.19 or later (`engines` in app/package.json), hence the Node version below.
   e2e:
@@ -176,14 +196,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         if: needs.changes.outputs.code != 'false'
-      # The Tauri libraries, the display (xvfb), the WebDriver of WebKitGTK and the D-Bus daemon that each test app gets
-      # for itself.
+      # The Tauri libraries, libpipewire's headers and clang for the capture backend, the display (xvfb), the WebDriver
+      # of WebKitGTK and the D-Bus daemon that each test app gets for itself.
       - name: Install system packages
         if: needs.changes.outputs.code != 'false'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev \
+            libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang \
             xvfb webkit2gtk-driver dbus-daemon
       - uses: actions/setup-node@v7
         if: needs.changes.outputs.code != 'false'
