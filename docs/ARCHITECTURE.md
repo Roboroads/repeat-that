@@ -30,7 +30,24 @@ pub trait AppAudioSource: Send + Sync {
 }
 ```
 
-`platform_source()` returns the backend for the current OS.
+`platform_source()` returns the backend for the current OS, and `platform_source_with(PlatformOptions { duck_journal })`
+does so with the options each OS decides what to do with (Windows: a duck journal, which also starts the duck guard).
+`HAS_PLATFORM_BACKEND` says whether this OS has one at all.
+
+**One module per OS.** `lib.rs` includes exactly one OS module under the name `os`: `windows`, or `unsupported` on an OS
+without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same four
+items, and the platform-neutral entry points only call these:
+
+| Item | Used by |
+|---|---|
+| `HAS_BACKEND: bool` | `HAS_PLATFORM_BACKEND`, which the app uses to choose between the backend, a mock and "unsupported" |
+| `source(&PlatformOptions) -> Result<Box<dyn AppAudioSource>>` | `platform_source()` and `platform_source_with()` |
+| `icon(exe, size) -> Option<IconImage>` | `app_icon()` |
+| `run_duck_guard(journal, parent) -> bool` | `duck_guard::run_if_requested()`, which `main` calls first thing; `true` once a guard has run, `false` where the OS has none |
+
+A new backend adds its module, a `use <module> as os;` line and its OS to the `not(any(..))` of `unsupported` in
+`lib.rs`, and nothing else in the platform-neutral code. When the OS refuses capture, a backend returns
+`CaptureError::PermissionDenied`, whose message says how to allow it; the engine retries it like any other error.
 
 | Backend | API | Notes |
 |---|---|---|

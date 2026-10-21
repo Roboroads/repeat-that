@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, FrameSink, MockSource};
+use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, FrameSink, MockSource, PlatformOptions};
 use rt_engine::{CpalOutput, NullOutput, OutputBackend};
 
 use crate::locking::lock;
@@ -30,22 +30,23 @@ const DEBUG_FIXTURE: Option<&str> = None;
 /// Which capture source to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceKind {
-    /// WASAPI process loopback (Windows).
-    Wasapi,
+    /// The OS's capture backend: WASAPI process loopback on Windows.
+    Platform,
     /// A WAV file playing as a fake app, named after the file.
     Mock(PathBuf),
     /// Nothing can be captured; the message says why.
     Unsupported(String),
 }
 
-/// Picks the source. A WAV in `mock_wav` wins everywhere; otherwise the OS backend if there is one (`has_backend`),
-/// else the `debug_fixture` (debug builds have one), else nothing. An empty variable counts as unset.
+/// Picks the source. A WAV in `mock_wav` wins everywhere; otherwise the OS backend if there is one (`has_backend`, see
+/// [`rt_capture::HAS_PLATFORM_BACKEND`]), else the `debug_fixture` (debug builds have one), else nothing. An empty
+/// variable counts as unset.
 pub fn choose(has_backend: bool, mock_wav: Option<&OsStr>, debug_fixture: Option<&str>) -> SourceKind {
     if let Some(wav) = mock_wav.filter(|wav| !wav.is_empty()) {
         return SourceKind::Mock(PathBuf::from(wav));
     }
     if has_backend {
-        return SourceKind::Wasapi;
+        return SourceKind::Platform;
     }
     match debug_fixture {
         Some(fixture) => SourceKind::Mock(PathBuf::from(fixture)),
@@ -55,10 +56,14 @@ pub fn choose(has_backend: bool, mock_wav: Option<&OsStr>, debug_fixture: Option
 
 /// [`choose`] for this build, OS and environment.
 pub fn from_env() -> SourceKind {
-    choose(cfg!(windows), std::env::var_os(MOCK_WAV_VAR).as_deref(), DEBUG_FIXTURE)
+    choose(
+        rt_capture::HAS_PLATFORM_BACKEND,
+        std::env::var_os(MOCK_WAV_VAR).as_deref(),
+        DEBUG_FIXTURE,
+    )
 }
 
-/// The source, made on a thread of its own right away (see [`LazySource`]). `duck_journal` is where the Windows backend
+/// The source, made on a thread of its own right away (see [`LazySource`]). `duck_journal` is where the OS backend
 /// notes the volumes it lowered, so they come back after a crash; it holds volumes only, never audio. A WAV that can't
 /// be read leaves the app with nothing to capture, and the status says why.
 pub fn build(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
@@ -69,7 +74,7 @@ pub fn build(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudi
 
 fn make(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
     match kind {
-        SourceKind::Wasapi => wasapi(duck_journal),
+        SourceKind::Platform => platform(duck_journal),
         SourceKind::Mock(path) => match MockSource::from_wav(&path) {
             Ok(mock) => Arc::new(mock),
             Err(err) => {
@@ -81,21 +86,21 @@ fn make(kind: SourceKind, duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSour
     }
 }
 
-/// The WASAPI source with a duck journal and guard. Restoring what an earlier run's journal lists talks to the audio
-/// service and sets up COM for the thread, which is why [`LazySource`] makes it away from the UI thread.
-#[cfg(windows)]
-fn wasapi(duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
-    let source = rt_capture::WasapiSource::new();
-    Arc::new(match duck_journal {
-        // The guard reads the journal to know what to restore, so there is no guard without one.
-        Some(journal) => source.with_duck_journal(journal).with_duck_guard(),
-        None => source,
-    })
-}
-
-#[cfg(not(windows))]
-fn wasapi(_duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
-    Arc::new(Unsupported(UNSUPPORTED.into()))
+/// The OS backend with a duck journal (and on Windows a guard). Restoring what an earlier run's journal lists talks to
+/// the audio service, and on Windows sets up COM for the thread, which is why [`LazySource`] makes it away from the UI
+/// thread. A backend that can't be set up leaves the app with nothing to capture, and the status says why.
+fn platform(duck_journal: Option<PathBuf>) -> Arc<dyn AppAudioSource> {
+    match rt_capture::platform_source_with(PlatformOptions { duck_journal }) {
+        Ok(source) => Arc::from(source),
+        Err(err) => {
+            eprintln!("could not set up audio capture: {err}");
+            Arc::new(Unsupported(match err {
+                // Already a sentence for the user.
+                CaptureError::Unsupported(why) => why,
+                other => other.to_string(),
+            }))
+        }
+    }
 }
 
 fn file_name(path: &Path) -> String {
@@ -209,9 +214,9 @@ mod tests {
     }
 
     #[test]
-    fn windows_captures_real_apps() {
-        assert_eq!(choose(true, None, None), SourceKind::Wasapi);
-        assert_eq!(choose(true, None, Some(FIXTURE)), SourceKind::Wasapi);
+    fn the_platform_backend_wins_without_a_mock() {
+        assert_eq!(choose(true, None, None), SourceKind::Platform);
+        assert_eq!(choose(true, None, Some(FIXTURE)), SourceKind::Platform);
     }
 
     #[test]
@@ -224,12 +229,12 @@ mod tests {
 
     #[test]
     fn an_empty_mock_variable_is_ignored() {
-        assert_eq!(choose(true, os(""), None), SourceKind::Wasapi);
+        assert_eq!(choose(true, os(""), None), SourceKind::Platform);
         assert_eq!(choose(false, os(""), None), SourceKind::Unsupported(UNSUPPORTED.into()));
     }
 
     #[test]
-    fn debug_builds_elsewhere_play_the_fixture() {
+    fn debug_builds_without_a_backend_play_the_fixture() {
         assert_eq!(
             choose(false, None, Some(FIXTURE)),
             SourceKind::Mock(PathBuf::from(FIXTURE))
@@ -237,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn release_builds_elsewhere_capture_nothing() {
+    fn release_builds_without_a_backend_capture_nothing() {
         assert_eq!(choose(false, None, None), SourceKind::Unsupported(UNSUPPORTED.into()));
     }
 
@@ -265,10 +270,17 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
     #[test]
-    fn the_unsupported_source_refuses_everything_with_its_reason() {
-        let source = build(SourceKind::Wasapi, None);
+    fn without_a_backend_the_platform_source_refuses_everything_with_its_reason() {
+        // On OSes with a backend this would talk to the real audio service.
+        if rt_capture::HAS_PLATFORM_BACKEND {
+            return;
+        }
+        let reason_of_the_backend = match rt_capture::platform_source() {
+            Err(CaptureError::Unsupported(why)) => why,
+            _ => panic!("expected Unsupported"),
+        };
+        let source = build(SourceKind::Platform, None);
         let app = AudioApp {
             pid: 1,
             name: "Discord".into(),
@@ -278,9 +290,12 @@ mod tests {
             Err(CaptureError::Unsupported(why)) => why,
             other => panic!("expected Unsupported, got {other:?}"),
         };
-        assert_eq!(reason(source.list_apps().map(drop)), UNSUPPORTED);
-        assert_eq!(reason(source.start(&app, Box::new(|_, _| {})).map(drop)), UNSUPPORTED);
-        assert_eq!(reason(source.set_app_volume(&app, 0.2)), UNSUPPORTED);
+        assert_eq!(reason(source.list_apps().map(drop)), reason_of_the_backend);
+        assert_eq!(
+            reason(source.start(&app, Box::new(|_, _| {})).map(drop)),
+            reason_of_the_backend
+        );
+        assert_eq!(reason(source.set_app_volume(&app, 0.2)), reason_of_the_backend);
     }
 
     /// A source that counts how often it was made, and waits for `release` while it is made, if one is given.

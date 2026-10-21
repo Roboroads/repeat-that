@@ -23,15 +23,7 @@ pub fn app_icon(exe: &Path, size_px: u32) -> Option<IconImage> {
     if !(1..=MAX_SIZE_PX).contains(&size_px) {
         return None;
     }
-    #[cfg(windows)]
-    {
-        crate::windows::icon::extract(exe, size_px)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = exe;
-        None
-    }
+    crate::os::icon(exe, size_px)
 }
 
 /// Whether any pixel of `bgra` (32-bit pixels) has alpha. Icons from before alpha existed have none: all of their
