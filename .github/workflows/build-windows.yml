@@ -1,7 +1,7 @@
 name: Build Windows installers
 
-# Builds the Windows x64 installers (NSIS .exe and MSI) and checksums them.
-#   * pull_request / workflow_dispatch without a tag: dry run. The installers and SHA256SUMS are workflow artifacts.
+# Builds the Windows x64 installer (the NSIS .exe) and checksums it.
+#   * pull_request / workflow_dispatch without a tag: dry run. The installer and SHA256SUMS are workflow artifacts.
 #   * with a tag (workflow_call from release-please.yml, or workflow_dispatch to redo an existing release): the same
 #     files are also attached to that GitHub release. release-please.yml calls this one directly rather than relying on
 #     an `on: release` trigger: that would fire only once the release is public, and a release that a workflow
@@ -91,10 +91,17 @@ jobs:
             exit 1
           fi
           draft=$(jq -r .isDraft <<<"$info")
-          existing=$(jq -r '[.assets[].name | select(endswith(".exe") or endswith(".msi") or . == "SHA256SUMS")] | join(", ")' <<<"$info")
+          existing=$(jq -r '[.assets[].name | select(endswith(".exe") or . == "SHA256SUMS")] | join(", ")' <<<"$info")
           echo "draft: $draft; installer assets already attached: ${existing:-none}"
           if [[ "$draft" != true && -n "$existing" && "$REPLACE" != true ]]; then
             echo "::error::$TAG is published and already has $existing. Replacing them changes files people may have downloaded and verified. Run again with 'replace' ticked if you really mean it."
+            exit 1
+          fi
+          # Anything else on the release would not be in the new SHA256SUMS (this workflow attaches the .exe and
+          # SHA256SUMS only), and uploading over the release doesn't remove it.
+          stale=$(jq -r '[.assets[].name | select((endswith(".exe") or . == "SHA256SUMS") | not)] | join(", ")' <<<"$info")
+          if [[ -n "$stale" ]]; then
+            echo "::error::$TAG has assets this workflow does not produce: $stale. SHA256SUMS would not list them. Remove them (gh release delete-asset $TAG <name>) and run again."
             exit 1
           fi
 
@@ -146,16 +153,16 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       # Builds the frontend (beforeBuildCommand) and the app, then bundles it. No tagName/releaseId: the action only
-      # builds, and the files are staged, checksummed and uploaded below so the release assets have predictable names.
-      - name: Build installers
+      # builds, and the file is staged, checksummed and uploaded below so the release assets have predictable names.
+      # The bundle targets come from app/src-tauri/tauri.windows.conf.json (NSIS only); the next step checks that.
+      - name: Build installer
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         with:
           projectPath: app
-          args: --bundles nsis,msi
 
       # Tauri names its bundles after productName ("Repeat That_0.1.0_x64-setup.exe"). GitHub turns the spaces in
-      # release asset names into dots, so rename first and let SHA256SUMS list the names people will download.
-      - name: Stage installers and write SHA256SUMS
+      # release asset names into dots, so rename first and let SHA256SUMS list the name people will download.
+      - name: Stage installer and write SHA256SUMS
         shell: bash
         env:
           TAG: ${{ inputs.tag }}
@@ -164,18 +171,23 @@ jobs:
           shopt -s nullglob
           bundle=target/release/bundle
           nsis=("$bundle"/nsis/*-setup.exe)
-          msi=("$bundle"/msi/*.msi)
-          if [[ ${#nsis[@]} -ne 1 || ${#msi[@]} -ne 1 ]]; then
-            echo "::error::expected exactly one NSIS and one MSI installer under $bundle"
+          if [[ ${#nsis[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one NSIS installer under $bundle"
             find "$bundle" -type f | sort
+            exit 1
+          fi
+          # The NSIS .exe is the only Windows installer. Another installer next to it means the targets in
+          # tauri.windows.conf.json were not applied. Other files (logs, signatures, ...) are none of our business.
+          extra=$(find "$bundle" -type f \( -name '*.msi' -o -name '*.exe' \) -not -path "$bundle/nsis/*")
+          if [[ -n "$extra" ]]; then
+            echo "::error::expected only the NSIS installer under $bundle, found another installer"
+            echo "$extra"
             exit 1
           fi
 
           mkdir installers
-          for file in "${nsis[0]}" "${msi[0]}"; do
-            name=$(basename "$file")
-            cp "$file" "installers/${name// /-}"
-          done
+          name=$(basename "${nsis[0]}")
+          cp "${nsis[0]}" "installers/${name// /-}"
 
           # Name looks like Repeat-That_<version>_x64-setup.exe
           version=$(basename "${nsis[0]}" | cut -d_ -f2)
@@ -185,9 +197,9 @@ jobs:
           fi
 
           cd installers
-          sha256sum --text -- *.exe *.msi | tee SHA256SUMS
+          sha256sum --text -- *.exe | tee SHA256SUMS
           {
-            echo "### Windows installers $version"
+            echo "### Windows installer $version"
             echo
             echo '```'
             ls -l
@@ -196,18 +208,11 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Single files, uploaded as they are (no zip), so each installer is one click away on the run page.
+      # Single files, uploaded as they are (no zip), so the installer is one click away on the run page.
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v7
         with:
           path: installers/*-setup.exe
-          archive: false
-          if-no-files-found: error
-          retention-days: 30
-      - name: Upload MSI installer
-        uses: actions/upload-artifact@v7
-        with:
-          path: installers/*.msi
           archive: false
           if-no-files-found: error
           retention-days: 30
@@ -242,6 +247,19 @@ jobs:
           ls -l
           sha256sum --check SHA256SUMS
 
+          # Every asset on the release must be one of the files uploaded below, so that SHA256SUMS covers all of them.
+          # An asset left over from an earlier run or an older version of this workflow would sit there unchecked, and
+          # --clobber only replaces assets that have the same name as a new one. Delete it by hand to continue.
+          assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          stale=()
+          for asset in $assets; do
+            [[ -f "$asset" ]] || stale+=("$asset")
+          done
+          if [[ ${#stale[@]} -gt 0 ]]; then
+            echo "::error::$TAG has assets that SHA256SUMS would not list: ${stale[*]}. Remove them (gh release delete-asset $TAG <name>) and run again."
+            exit 1
+          fi
+
           # Without --clobber gh refuses to touch an asset that already exists. A draft has no public files to
           # protect, so a re-run may overwrite its own earlier upload; a published release only on request.
           draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
@@ -249,7 +267,7 @@ jobs:
           if [[ "$draft" == true || "$REPLACE" == true ]]; then
             flags=(--clobber)
           fi
-          gh release upload "$TAG" *.exe *.msi SHA256SUMS "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" *.exe SHA256SUMS "${flags[@]}" --repo "$GITHUB_REPOSITORY"
 
           # Only now does the release become public (nothing to do when it already was).
           if [[ "$draft" == true ]]; then
