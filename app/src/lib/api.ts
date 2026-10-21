@@ -28,6 +28,12 @@ export interface Settings {
 
 export type HotkeyName = keyof Settings['hotkeys'];
 export type HotkeyState = 'ok' | 'inUse' | 'invalid' | 'unbound';
+/**
+ * How the global hotkeys reach the app on this desktop. `plugin`: the app registers the combinations itself (Windows,
+ * macOS, X11). `portal`: the desktop owns the keys and says which it assigned (Wayland, through the XDG GlobalShortcuts
+ * portal). `none`: no hotkeys here; the command-line actions are what the user binds.
+ */
+export type HotkeyBackend = 'plugin' | 'portal' | 'none';
 
 export type CaptureState = 'noTarget' | 'waiting' | 'capturing' | 'paused' | 'error' | 'unsupported';
 export type Playback = 'idle' | 'replaying' | 'catchingUp';
@@ -43,7 +49,17 @@ export interface Status {
   vadFallback: boolean;
   /** Why the settings can't be saved, as a sentence for the user; `null` when they can. */
   settingsProblem: string | null;
+  hotkeyBackend: HotkeyBackend;
+  /** The key the desktop assigned to each action, as it describes it; only filled under `portal`. */
+  hotkeyTriggers: Record<HotkeyName, string | null>;
+  /** The shell command that runs each action in the running app; only filled under `none`. */
+  hotkeyCommands: Record<HotkeyName, string> | null;
+  /** Whether a tray host is there to show the tray icon. Always `true` outside Linux. */
+  trayAvailable: boolean;
 }
+
+/** What `configure_shortcuts` did: the desktop shows its shortcut settings, or it can't be asked to. */
+export type ConfigureOutcome = 'opened' | 'unsupported';
 
 export interface AppEntry {
   pid: number;
@@ -117,6 +133,10 @@ export const replay = () => call('replay');
 export const stop = () => call('stop');
 export const catchUp = () => call('catch_up');
 export const suspendHotkeys = (suspended: boolean) => call('suspend_hotkeys', { suspended });
+/** Asks the desktop to show where the keys are changed (Wayland, where it owns them). */
+export const configureShortcuts = () => call<ConfigureOutcome>('configure_shortcuts');
+/** Quits the app, for a desktop with no tray menu to do it from. */
+export const quitApp = () => call('quit_app');
 
 export type Unlisten = () => void;
 

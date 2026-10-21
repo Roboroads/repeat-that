@@ -4,11 +4,29 @@
 // imports it behind `import.meta.env.DEV`, so it is not in the production bundle.
 import { emit } from '@tauri-apps/api/event';
 import { mockIPC } from '@tauri-apps/api/mocks';
-import type { AppEntry, CommandError, HotkeyName, HotkeyState, OutputDevice, Settings, Status } from './api';
+import type {
+  AppEntry,
+  CommandError,
+  ConfigureOutcome,
+  HotkeyName,
+  HotkeyState,
+  OutputDevice,
+  Settings,
+  Status,
+} from './api';
 import { matchesTarget } from './apps';
 import { clamp, defaultSettings, LIMITS } from './defaults';
 
-export const SCENARIOS = ['first-run', 'configured', 'waiting', 'problems', 'empty'] as const;
+export const SCENARIOS = [
+  'first-run',
+  'configured',
+  'waiting',
+  'problems',
+  'empty',
+  'portal',
+  'no-hotkeys',
+  'no-tray',
+] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
 export interface MockBackendInit {
@@ -17,6 +35,8 @@ export interface MockBackendInit {
   devices?: OutputDevice[];
   /** Fields forced onto every status, for states the simulation does not reach (errors, warnings). */
   statusOverrides?: Partial<Status>;
+  /** What `configure_shortcuts` answers: the desktop shows its shortcut settings, or can't be asked to. */
+  configureOutcome?: ConfigureOutcome;
   /** Where `status` and `settings-changed` go. */
   emit?: (event: string, payload: unknown) => void;
 }
@@ -67,6 +87,31 @@ export function scenarioInit(scenario: Scenario): MockBackendInit {
       return { apps: mockApps().slice(1), settings: { target, firstRunDone: true } };
     case 'empty':
       return { apps: [] };
+    case 'portal':
+      // A Wayland desktop that owns the keys: two got one, one did not.
+      return {
+        apps: mockApps(),
+        settings: { target, firstRunDone: true },
+        statusOverrides: {
+          hotkeyBackend: 'portal',
+          hotkeyTriggers: { replay: 'Ctrl+Alt+Space', stop: null, catchUp: 'Meta+Shift+C' },
+        },
+      };
+    case 'no-hotkeys':
+      return {
+        apps: mockApps(),
+        settings: { target, firstRunDone: true },
+        statusOverrides: {
+          hotkeyBackend: 'none',
+          hotkeyCommands: {
+            replay: 'repeat-that --replay',
+            stop: 'repeat-that --stop',
+            catchUp: 'repeat-that --catch-up',
+          },
+        },
+      };
+    case 'no-tray':
+      return { apps: mockApps(), settings: { target, firstRunDone: true }, statusOverrides: { trayAvailable: false } };
     case 'problems':
       return {
         apps: mockApps(),
@@ -90,6 +135,7 @@ export class MockBackend {
   apps: AppEntry[];
   devices: OutputDevice[];
   statusOverrides: Partial<Status>;
+  configureOutcome: ConfigureOutcome;
   /** Every command received, oldest first. */
   readonly calls: Array<{ cmd: string; args: unknown }> = [];
   /** Replaces a command, to make it fail or hang in a test. */
@@ -106,6 +152,7 @@ export class MockBackend {
     this.apps = init.apps ?? mockApps();
     this.devices = init.devices ?? mockDevices();
     this.statusOverrides = init.statusOverrides ?? {};
+    this.configureOutcome = init.configureOutcome ?? 'opened';
     this.send = init.emit ?? (() => {});
   }
 
@@ -144,6 +191,11 @@ export class MockBackend {
         this.playback = 'idle';
         return this.push();
       case 'suspend_hotkeys':
+        return null;
+      case 'configure_shortcuts':
+        return this.configureOutcome;
+      case 'quit_app':
+        // The real app ends; the mock page has nowhere to go.
         return null;
       default:
         return fail('backend', `Unknown command: ${cmd}`);
@@ -191,6 +243,10 @@ export class MockBackend {
       hotkeys,
       vadFallback: false,
       settingsProblem: null,
+      hotkeyBackend: 'plugin',
+      hotkeyTriggers: { replay: null, stop: null, catchUp: null },
+      hotkeyCommands: null,
+      trayAvailable: true,
       ...this.statusOverrides,
     };
   }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Settings } from '../api';
+  import { quitApp, toApiError, type Settings } from '../api';
   import { openExternal } from '../opener';
   import { isWindows } from '../platform';
   import type { SettingsStore } from '../store.svelte';
@@ -21,12 +21,23 @@
   }
 
   const autostartLabel = isWindows() ? 'Start with Windows' : 'Start at login';
+
+  /** Some Linux desktops have nothing to show a tray icon in. Everywhere else this is `true`. */
+  const hasTray = $derived(store.status?.trayAvailable !== false);
+
+  async function quit() {
+    try {
+      await quitApp();
+    } catch (raw) {
+      store.error = toApiError(raw).message;
+    }
+  }
 </script>
 
 <Section title="General" id="general">
   <Switch
     label={autostartLabel}
-    description="Starts in the tray, without opening this window."
+    description={hasTray ? 'Starts in the tray, without opening this window.' : 'Starts without opening this window.'}
     checked={settings.autostart}
     onchange={(autostart) => store.update({ autostart })}
   />
@@ -35,10 +46,28 @@
     and is wiped when you pause, pick another app or quit. Only your settings are saved, including the name and
     location of the app you picked.
   </p>
+  {#if !hasTray}
+    <!-- The tray menu is where Quit lives; without a tray, this is the way out. -->
+    <p class="notice">
+      No tray on this desktop. Open Repeat That from your app menu. On GNOME, install the AppIndicator and
+      KStatusNotifierItem Support extension for a tray icon.
+    </p>
+    <div>
+      <button type="button" onclick={quit}>Quit Repeat That</button>
+    </div>
+  {/if}
 </Section>
 
 <style>
   .privacy {
+    font-size: 0.9rem;
+  }
+
+  .notice {
+    padding: 0.45rem 0.7rem;
+    border-radius: 8px;
+    background: var(--warn-bg);
+    color: var(--warn);
     font-size: 0.9rem;
   }
 </style>

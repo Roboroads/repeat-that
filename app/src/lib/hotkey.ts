@@ -1,5 +1,5 @@
 // Turns what the hotkey recorder sees into the accelerator strings of tauri-plugin-global-shortcut ("Ctrl+Alt+Space").
-import type { Accel } from './api';
+import type { Accel, HotkeyName, Settings, Status } from './api';
 import { currentPlatform, isMac, isWindows } from './platform';
 
 type KeyInput = Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>;
@@ -133,4 +133,22 @@ function superName(platform: string): string {
 export function formatAccel(accel: Accel, platform: string = currentPlatform()): string[] {
   if (accel === null || accel === '') return [];
   return accel.split('+').map((part) => (part === 'Super' ? superName(platform) : (FRIENDLY[part] ?? part)));
+}
+
+/**
+ * The key to name next to an action (on its button, say), or `undefined` when it has none. With the plugin that is the
+ * stored combination; under the portal it is what the desktop assigned, which the stored one only asked for; without
+ * hotkeys there is nothing to name.
+ */
+export function hotkeyHint(name: HotkeyName, settings: Settings, status: Status | null): string | undefined {
+  switch (status?.hotkeyBackend ?? 'plugin') {
+    case 'portal':
+      return status?.hotkeyTriggers[name] ?? undefined;
+    case 'none':
+      return undefined;
+    case 'plugin': {
+      const keys = formatAccel(settings.hotkeys[name]);
+      return keys.length > 0 ? keys.join('+') : undefined;
+    }
+  }
 }

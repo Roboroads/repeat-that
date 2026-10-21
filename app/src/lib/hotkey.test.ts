@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { formatAccel, interpretKey } from './hotkey';
+import type { Settings, Status } from './api';
+import { defaultSettings } from './defaults';
+import { formatAccel, hotkeyHint, interpretKey } from './hotkey';
+import { MockBackend } from './mock-ipc';
 
 type Mods = { ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean; metaKey?: boolean };
 
@@ -98,5 +101,38 @@ describe('formatAccel', () => {
 
   it('gives nothing for an unbound hotkey', () => {
     expect(formatAccel(null, 'Linux')).toEqual([]);
+  });
+});
+
+describe('hotkeyHint', () => {
+  const settings: Settings = {
+    ...defaultSettings(),
+    hotkeys: { replay: 'Ctrl+Alt+Space', stop: null, catchUp: 'Ctrl+Alt+Enter' },
+  };
+  const status = (overrides: Partial<Status>) => new MockBackend({ statusOverrides: overrides }).status();
+  const triggers = { replay: 'Meta+Shift+R', stop: null, catchUp: 'Meta+Escape' };
+
+  it('is the stored combination with the plugin, and nothing for an unbound action', () => {
+    const plugin = status({ hotkeyBackend: 'plugin' });
+    expect(hotkeyHint('replay', settings, plugin)).toBe('Ctrl+Alt+Space');
+    expect(hotkeyHint('catchUp', settings, plugin)).toBe('Ctrl+Alt+Enter');
+    expect(hotkeyHint('stop', settings, plugin)).toBeUndefined();
+  });
+
+  it('is the stored combination before the first status', () => {
+    expect(hotkeyHint('replay', settings, null)).toBe('Ctrl+Alt+Space');
+  });
+
+  it('is the key the desktop assigned under the portal, whatever is stored', () => {
+    const portal = status({ hotkeyBackend: 'portal', hotkeyTriggers: triggers });
+    expect(hotkeyHint('replay', settings, portal)).toBe('Meta+Shift+R');
+    expect(hotkeyHint('catchUp', settings, portal)).toBe('Meta+Escape');
+    expect(hotkeyHint('stop', settings, portal)).toBeUndefined();
+  });
+
+  it('is nothing without hotkeys', () => {
+    const none = status({ hotkeyBackend: 'none', hotkeyTriggers: triggers });
+    expect(hotkeyHint('replay', settings, none)).toBeUndefined();
+    expect(hotkeyHint('catchUp', settings, none)).toBeUndefined();
   });
 });

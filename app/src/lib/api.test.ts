@@ -54,6 +54,8 @@ describe('commands', () => {
     ['replay', () => api.replay(), 'replay', {}],
     ['stop', () => api.stop(), 'stop', {}],
     ['catchUp', () => api.catchUp(), 'catch_up', {}],
+    ['configureShortcuts', () => api.configureShortcuts(), 'configure_shortcuts', {}],
+    ['quitApp', () => api.quitApp(), 'quit_app', {}],
     ['getStatus', () => api.getStatus(), 'get_status', {}],
     ['listApps', () => api.listApps(), 'list_apps', {}],
     ['listOutputDevices', () => api.listOutputDevices(), 'list_output_devices', {}],
@@ -65,6 +67,43 @@ describe('commands', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].cmd).toBe(cmd);
     expect(calls[0].args).toEqual(args);
+  });
+});
+
+describe('desktop commands', () => {
+  it('configureShortcuts resolves with what the desktop did', async () => {
+    mockBackend(() => 'opened');
+    await expect(api.configureShortcuts()).resolves.toBe('opened');
+
+    mockBackend(() => 'unsupported');
+    await expect(api.configureShortcuts()).resolves.toBe('unsupported');
+  });
+
+  it('configureShortcuts rejects with the backend error', async () => {
+    mockBackend(() => {
+      throw { kind: 'backend', message: 'Could not open the shortcut settings: gone' };
+    });
+
+    await expect(api.configureShortcuts()).rejects.toMatchObject({
+      kind: 'backend',
+      message: 'Could not open the shortcut settings: gone',
+    });
+  });
+
+  it('a status carries the desktop fields next to the old ones', async () => {
+    mockBackend();
+    const seen: api.Status[] = [];
+    await api.onStatus((status) => seen.push(status));
+    const status = {
+      hotkeyBackend: 'portal',
+      hotkeyTriggers: { replay: 'Ctrl+Alt+Space', stop: null, catchUp: null },
+      hotkeyCommands: null,
+      trayAvailable: false,
+    };
+
+    await emit('status', status);
+
+    expect(seen).toEqual([status]);
   });
 });
 
