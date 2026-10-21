@@ -22,9 +22,10 @@ Usage: release_assets.py <command> ...
   check-source-run --run-json FILE [--compare-json FILE] --platform P --repo OWNER/NAME --branch B
                                the earlier run whose files are attached: a successful dispatched build workflow of
                                P on branch B of this repository, its commit part of the release
-  select-artifacts --needs FILE --from DIR --to DIR
-                               move the files of the `release-<platform>-<file>` artifacts in DIR whose platform job
-                               succeeded into the other DIR; the rest contributes nothing
+  select-artifacts --needs FILE --artifacts FILE [--github-output FILE]
+                               from the run's artifacts (lines "<id> <name>") pick the `release-<platform>-<file>`
+                               ones whose platform job succeeded and print `ids=<id>,<id>` for download-artifact; the
+                               rest contributes nothing
   check-release --tag TAG --mode full|late [--platform P] [--replace] [--release-json FILE]
                                the early check, before anything is built or downloaded
   gate --needs FILE|- [--release] [--summary FILE]
@@ -522,18 +523,22 @@ def command_check_source_run(args):
 
 def command_select_artifacts(args):
     needs = read_json(args.needs)
-    names = sorted(os.listdir(args.source)) if os.path.isdir(args.source) else []
-    selected, ignored = select_artifacts(names, needs)
-    os.makedirs(args.to, exist_ok=True)
-    moved = {}
-    for artifact in selected:
-        for file in sorted(os.listdir(os.path.join(args.source, artifact))):
-            if file in moved:
-                raise ReleaseError(f"{file} is in both {moved[file]} and {artifact}")
-            moved[file] = artifact
-            os.replace(os.path.join(args.source, artifact, file), os.path.join(args.to, file))
+    ids = {}
+    for line in read_text(args.artifacts).splitlines():
+        artifact_id, _, name = line.partition(" ")
+        if name.startswith("release-"):  # the run may hold other artifacts
+            ids[name] = artifact_id
+    selected, ignored = select_artifacts(sorted(ids), needs)
     for artifact, reason in ignored:
         print(f"::warning::ignoring {artifact}: {reason}")
+    if not selected:
+        raise ReleaseError("no release artifact of a platform that succeeded")
+    line = "ids=" + ",".join(ids[name] for name in selected)
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+    else:
+        print(line)
 
 
 def command_gate(args):
@@ -598,8 +603,8 @@ def build_parser():
 
     sub = commands.add_parser("select-artifacts")
     sub.add_argument("--needs", required=True)
-    sub.add_argument("--from", dest="source", required=True)
-    sub.add_argument("--to", required=True)
+    sub.add_argument("--artifacts", required=True)
+    sub.add_argument("--github-output")
     sub.set_defaults(run=command_select_artifacts)
 
     sub = commands.add_parser("gate")

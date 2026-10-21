@@ -781,25 +781,34 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("::error::", err)
 
-    def test_select_artifacts_moves_only_the_files_of_succeeded_jobs(self):
+    def test_select_artifacts_picks_the_ids_of_succeeded_jobs(self):
+        listing = f"11 release-windows-{EXE}\n12 SHA256SUMS\n"
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
-            artifact = f"release-windows-{EXE}"
-            (folder / "artifacts" / artifact).mkdir(parents=True)
-            (folder / "artifacts" / artifact / EXE).write_bytes(b"x")
+            (folder / "artifacts.txt").write_text(listing)  # SHA256SUMS: a dry run's artifact, not ours
             needs = folder / "needs.json"
-            args = ("select-artifacts", "--needs", str(needs), "--from", str(folder / "artifacts"))
+            output = folder / "output"
+            args = ("select-artifacts", "--needs", str(needs), "--artifacts", str(folder / "artifacts.txt"))
 
             needs.write_text(json.dumps({"windows": {"result": "success"}}))
-            code, out, _ = self.run_main(*args, "--to", str(folder / "assets"))
-            self.assertEqual((code, [p.name for p in (folder / "assets").iterdir()]), (0, [EXE]))
+            code, out, _ = self.run_main(*args, "--github-output", str(output))
+            self.assertEqual((code, output.read_text()), (0, "ids=11\n"))
             self.assertNotIn("::warning::", out)
+            code, out, _ = self.run_main(*args)
+            self.assertEqual((code, out), (0, "ids=11\n"))
 
-            needs.write_text(json.dumps({"windows": {"result": "failure"}}))
-            code, out, _ = self.run_main(*args, "--to", str(folder / "none"))
-            self.assertEqual((code, list((folder / "none").iterdir())), (0, []))
-            self.assertIn("::warning::", out)
-            self.assertIn(EXE, out)
+    def test_select_artifacts_fails_when_no_platform_succeeded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "artifacts.txt").write_text(f"11 release-windows-{EXE}\n")
+            (folder / "needs.json").write_text(json.dumps({"windows": {"result": "failure"}}))
+            code, out, err = self.run_main(
+                "select-artifacts", "--needs", str(folder / "needs.json"), "--artifacts", str(folder / "artifacts.txt")
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("::warning::", out)  # the ignored artifact is named
+        self.assertIn(EXE, out)
+        self.assertIn("::error::", err)
 
 
 if __name__ == "__main__":
