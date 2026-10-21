@@ -4,3 +4,5 @@ dist/
 # Written by tauri-build
 /app/src-tauri/gen/
 .DS_Store
+# Python caches of the scripts under .github/scripts
+__pycache__/
