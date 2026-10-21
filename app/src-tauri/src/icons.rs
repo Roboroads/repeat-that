@@ -1,9 +1,9 @@
-//! App icons for the app list: the icon of each app's executable as a PNG `data:` URL, made once per executable for the
-//! whole session (an app's icon doesn't change while the app runs).
+//! App icons for the app list: the icon of each app's executable as a PNG `data:` URL, made once per executable and
+//! kept for the session (an app's icon doesn't change while the app runs), up to a few hundred executables.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -15,13 +15,20 @@ use crate::locking::lock;
 /// The size icons are made at. The window shows them at up to 36 px, so this stays sharp on a screen at 175%.
 pub const ICON_PX: u32 = 64;
 
+/// The most executables the cache remembers, far more than ever play audio in one session. When it is full it starts
+/// over.
+const MAX_ICONS: usize = 256;
+
 /// Reads an executable's icon; [`rt_capture::app_icon`] in the app, a fake in tests.
 pub type IconReader = Box<dyn Fn(&Path) -> Option<IconImage> + Send + Sync>;
+
+/// The icon of one executable, made once; `None` inside when it has none.
+type IconCell = Arc<OnceLock<Option<String>>>;
 
 /// The icons made so far, by executable. An executable without an icon is remembered too, so it isn't read again.
 pub struct IconCache {
     read: IconReader,
-    by_exe: Mutex<HashMap<PathBuf, Option<String>>>,
+    by_exe: Mutex<HashMap<PathBuf, IconCell>>,
 }
 
 /// The icon cache as managed app state.
@@ -42,15 +49,23 @@ impl IconCache {
     }
 
     /// The icon of `exe` as a `data:` URL, or `None` if it has none. Reads the file the first time, so not on the UI
-    /// thread.
+    /// thread. Lists asking for the same new executable at once wait for one read.
     pub fn data_url(&self, exe: &Path) -> Option<String> {
-        if let Some(known) = lock(&self.by_exe).get(exe) {
-            return known.clone();
-        }
-        // Not locked while reading: another list can use the icons that are there meanwhile.
-        let url = (self.read)(exe).and_then(|icon| png_data_url(&icon));
-        lock(&self.by_exe).insert(exe.to_path_buf(), url.clone());
-        url
+        let cell = {
+            let mut by_exe = lock(&self.by_exe);
+            if by_exe.len() >= MAX_ICONS && !by_exe.contains_key(exe) {
+                by_exe.clear();
+            }
+            Arc::clone(by_exe.entry(exe.to_path_buf()).or_default())
+        };
+        // Not locked while reading: the icons of other executables stay available meanwhile.
+        cell.get_or_init(|| (self.read)(exe).and_then(|icon| png_data_url(&icon)))
+            .clone()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        lock(&self.by_exe).len()
     }
 
     /// `app` as the app list shows it, with its icon.
@@ -141,6 +156,37 @@ mod tests {
         assert_eq!(reads.load(Ordering::SeqCst), 1);
         cache.entry(app(Some("C:\\Teams.exe")));
         assert_eq!(reads.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn lists_at_the_same_time_read_a_new_executable_once() {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&reads);
+        let cache = Arc::new(IconCache::with_reader(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            Some(red_square(2))
+        })));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                std::thread::spawn(move || cache.data_url(Path::new("C:\\Discord.exe")))
+            })
+            .collect();
+        let urls: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        assert!(urls.iter().all(|url| url.is_some() && *url == urls[0]));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_cache_stays_bounded() {
+        let (cache, _) = counting_cache(None);
+        for i in 0..MAX_ICONS + 10 {
+            cache.data_url(Path::new(&format!("C:\\app-{i}.exe")));
+        }
+        assert!(cache.len() <= MAX_ICONS, "{} icons kept", cache.len());
+        // It still works after making room.
+        assert_eq!(cache.data_url(Path::new("C:\\app-0.exe")), None);
     }
 
     #[test]
