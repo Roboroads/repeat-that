@@ -15,7 +15,7 @@ pub struct IconImage {
 const MAX_SIZE_PX: u32 = 1024;
 
 /// The icon of the executable `exe` as a square image of `size_px` pixels, or `None` if there is none: the file is
-/// missing or has no icon, `size_px` is 0 or over 1024, or this OS has no icon support yet (only Windows has).
+/// missing or has no icon, `size_px` is 0 or over 1024, or this OS has no icon support yet (Windows and macOS have).
 ///
 /// Reads the file, so don't call it on a UI thread, and cache the result: the icon of an app doesn't change while it
 /// runs.
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(app_icon(&this_test, MAX_SIZE_PX + 1), None);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     #[test]
     fn other_systems_have_no_icons_yet() {
         let this_test = std::env::current_exe().unwrap();

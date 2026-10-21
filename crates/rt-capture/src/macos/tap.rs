@@ -1,0 +1,696 @@
+//! One app's process tap: a private tap of the app's processes, in a private aggregate device whose main subdevice is
+//! the app's own output device. Its IOProc hands the tapped audio to a capture, and plays the replay while the app is
+//! ducked (see `passthrough`). A watcher thread keeps the tap's process list up to date, and ends the tap when the app
+//! quits, its device goes away, or the user takes back the permission.
+
+use std::ffi::{CStr, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use objc2::AnyThread;
+use objc2::rc::{Retained, autoreleasepool};
+use objc2_core_audio::{
+    AudioDeviceCreateIOProcID, AudioDeviceDestroyIOProcID, AudioDeviceIOProcID, AudioDeviceStart, AudioDeviceStop,
+    AudioHardwareCreateAggregateDevice, AudioHardwareCreateProcessTap, AudioHardwareDestroyAggregateDevice,
+    AudioHardwareDestroyProcessTap, AudioHardwareIOProcStreamUsage, AudioObjectAddPropertyListener, AudioObjectID,
+    AudioObjectPropertyAddress, AudioObjectRemovePropertyListener, CATapDescription, CATapMuteBehavior,
+    kAudioAggregateDeviceIsPrivateKey, kAudioAggregateDeviceIsStackedKey, kAudioAggregateDeviceMainSubDeviceKey,
+    kAudioAggregateDeviceNameKey, kAudioAggregateDeviceSubDeviceListKey, kAudioAggregateDeviceTapAutoStartKey,
+    kAudioAggregateDeviceTapListKey, kAudioAggregateDeviceUIDKey, kAudioDevicePropertyIOProcStreamUsage,
+    kAudioHardwarePropertyProcessObjectList, kAudioObjectPropertyScopeInput, kAudioSubDeviceUIDKey,
+    kAudioSubTapDriftCompensationKey, kAudioSubTapUIDKey, kAudioTapPropertyDescription, kAudioTapPropertyFormat,
+};
+use objc2_core_audio_types::{
+    AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp, kAudioFormatFlagIsFloat,
+    kAudioFormatLinearPCM,
+};
+use objc2_core_foundation::{CFArray, CFBoolean, CFDictionary, CFString, CFType};
+use objc2_foundation::{NSArray, NSNumber, NSString, NSUUID};
+
+use super::passthrough::{self, Buffer, BufferMut, Command, IoStatus, Player, Sequencer, Step};
+use super::{permission, processes, sys};
+use crate::permission::PermissionStatus;
+use crate::{CaptureError, CaptureFormat, CaptureHandle, FrameSink, Result};
+
+/// How often the watcher looks at the app's processes when Core Audio doesn't say they changed.
+const WATCH_EVERY: Duration = Duration::from_millis(500);
+/// How often the watcher checks that the user still allows capture.
+const PERMISSION_EVERY: Duration = Duration::from_secs(2);
+/// A tap whose IOProc hasn't run for this long has stopped: its device is gone or asleep.
+const IO_STALLED: Duration = Duration::from_secs(3);
+/// A duck whose IOProc hasn't moved for this long can't be heard: the app is muted or unmuted without a replay.
+const DUCK_STALLED: Duration = Duration::from_millis(300);
+/// The longest a duck may take before it gives up on the replay the same way. A full fade takes about 200 ms.
+const DUCK_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often a duck looks at the IOProc's progress.
+const DUCK_POLL: Duration = Duration::from_millis(2);
+/// The most frames one IO cycle is expected to have; longer cycles allocate once.
+const MAX_CYCLE: usize = 8192;
+/// The most buffers an IO cycle's buffer list is read from, per direction.
+const MAX_BUFFERS: usize = 32;
+
+/// A running tap. Dropping it stops the IOProc and removes the aggregate device and the tap, and with it any mute.
+pub(crate) struct Tap {
+    /// Only dropped: it removes the IOProc, the aggregate and the tap, before `shared` goes.
+    _parts: Parts,
+    shared: Arc<Shared>,
+    watcher: Option<JoinHandle<()>>,
+    /// The ducking state machine, held for a whole duck so ducks don't interleave.
+    sequencer: Mutex<Sequencer>,
+}
+
+/// What the IOProc, the watcher and the control side share.
+struct Shared {
+    /// The app's PID, whose processes the tap holds.
+    pid: u32,
+    tap: AudioObjectID,
+    /// The app's output device, the aggregate's main subdevice.
+    device: AudioObjectID,
+    format: CaptureFormat,
+    /// The latest [`Command`] for the replay, packed.
+    command: AtomicU64,
+    /// Frames the IOProc has played, and the replay's gain after them, for [`IoStatus`].
+    frames: AtomicU64,
+    gain: AtomicU32,
+    /// Only the IOProc locks this, except while the tap is set up.
+    io: Mutex<Io>,
+    /// The capture's sink and the number it was attached with, see [`Capture`].
+    sink: Mutex<Option<(u64, FrameSink)>>,
+    sinks: AtomicU64,
+    /// The tap ended by itself: the app quit, its device went away, or capture isn't allowed any more.
+    ended: AtomicBool,
+    stop: AtomicBool,
+    /// Wakes the watcher when processes come or go, or when it should stop.
+    wake: Wake,
+    description: Mutex<Description>,
+}
+
+struct Io {
+    player: Player,
+    /// The tapped audio of the current cycle, interleaved.
+    tapped: Vec<f32>,
+}
+
+/// What the tap is made from, so it can be changed: its processes and whether they are muted.
+struct Description {
+    uuid: String,
+    processes: Vec<AudioObjectID>,
+    muted: bool,
+}
+
+impl Description {
+    fn build(&self) -> Retained<CATapDescription> {
+        let numbers: Vec<Retained<NSNumber>> = self.processes.iter().map(|&id| NSNumber::new_u32(id)).collect();
+        let processes = NSArray::from_retained_slice(&numbers);
+        // SAFETY: an array of numbers holding process object IDs, as the initializer wants; the setters take plain
+        // values.
+        unsafe {
+            let description = CATapDescription::initStereoMixdownOfProcesses(CATapDescription::alloc(), &processes);
+            if let Some(uuid) = NSUUID::initWithUUIDString(NSUUID::alloc(), &NSString::from_str(&self.uuid)) {
+                description.setUUID(&uuid);
+            }
+            description.setName(&NSString::from_str("Repeat That"));
+            description.setPrivate(true);
+            description.setMuteBehavior(if self.muted {
+                CATapMuteBehavior::Muted
+            } else {
+                CATapMuteBehavior::Unmuted
+            });
+            description
+        }
+    }
+
+    /// Changes `tap` to this description.
+    fn apply(&self, tap: AudioObjectID) -> Result<()> {
+        autoreleasepool(|_| {
+            let description = self.build();
+            let pointer: *const CATapDescription = &*description;
+            // SAFETY: the property is a CATapDescription reference, which Core Audio retains as it needs.
+            unsafe { sys::set(tap, sys::global(kAudioTapPropertyDescription), &pointer) }
+        })
+    }
+}
+
+/// Sleeps until woken or a timeout, for the watcher.
+#[derive(Default)]
+struct Wake {
+    woken: Mutex<bool>,
+    condvar: Condvar,
+}
+
+impl Wake {
+    fn wake(&self) {
+        *lock(&self.woken) = true;
+        self.condvar.notify_one();
+    }
+
+    fn wait(&self, timeout: Duration) {
+        let woken = lock(&self.woken);
+        let (mut woken, _) = self
+            .condvar
+            .wait_timeout_while(woken, timeout, |woken| !*woken)
+            .unwrap_or_else(|e| e.into_inner());
+        *woken = false;
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The Core Audio objects of a tap, removed in the right order when dropped, also when setting up fails halfway.
+#[derive(Default)]
+struct Parts {
+    tap: Option<AudioObjectID>,
+    aggregate: Option<AudioObjectID>,
+    io_proc: AudioDeviceIOProcID,
+    started: bool,
+    /// The client data of the process list listener, while one is registered.
+    listener: Option<*const Shared>,
+}
+
+// SAFETY: object IDs are numbers, and the listener's pointer is only handed back to Core Audio to remove it.
+unsafe impl Send for Parts {}
+unsafe impl Sync for Parts {}
+
+impl Drop for Parts {
+    fn drop(&mut self) {
+        // SAFETY: each part was made by the call that is undone here, and is undone once.
+        unsafe {
+            if let Some(shared) = self.listener.take() {
+                let address = process_list();
+                AudioObjectRemovePropertyListener(
+                    sys::SYSTEM,
+                    NonNull::from(&address),
+                    Some(processes_changed),
+                    shared.cast_mut().cast(),
+                );
+            }
+            if let Some(aggregate) = self.aggregate {
+                if self.started {
+                    AudioDeviceStop(aggregate, self.io_proc);
+                }
+                if self.io_proc.is_some() {
+                    AudioDeviceDestroyIOProcID(aggregate, self.io_proc);
+                }
+                AudioHardwareDestroyAggregateDevice(aggregate);
+            }
+            if let Some(tap) = self.tap {
+                AudioHardwareDestroyProcessTap(tap);
+            }
+        }
+    }
+}
+
+fn process_list() -> AudioObjectPropertyAddress {
+    sys::global(kAudioHardwarePropertyProcessObjectList)
+}
+
+/// The audio objects of the processes of the app with PID `pid`.
+fn members(pid: u32) -> Result<Vec<AudioObjectID>> {
+    let (ids, processes) = sys::process_objects()?;
+    let groups = processes::group(&processes, std::process::id(), &sys::process_path, &sys::display_name);
+    Ok(processes::members_of(&groups, &processes, pid)
+        .into_iter()
+        .map(|i| ids[i])
+        .collect())
+}
+
+impl Tap {
+    /// Taps the app with PID `pid`, unmuted, and starts its IOProc.
+    pub(crate) fn start(pid: u32) -> Result<Self> {
+        let processes = members(pid)?;
+        if processes.is_empty() {
+            return Err(CaptureError::AppNotFound(pid));
+        }
+        let mut parts = Parts::default();
+        let description = Description {
+            uuid: autoreleasepool(|_| NSUUID::new().UUIDString().to_string()),
+            processes,
+            muted: false,
+        };
+        let mut tap = 0;
+        let status = autoreleasepool(|_| {
+            let built = description.build();
+            // SAFETY: a valid description and a place for the ID.
+            unsafe { AudioHardwareCreateProcessTap(Some(&built), &mut tap) }
+        });
+        sys::check("AudioHardwareCreateProcessTap", status)?;
+        parts.tap = Some(tap);
+
+        // Replays play where the app plays.
+        let device = description
+            .processes
+            .iter()
+            .find_map(|&process| sys::process_output_device(process))
+            .or_else(sys::default_output_device)
+            .ok_or_else(|| CaptureError::Backend("there is no output device".into()))?;
+        let aggregate = create_aggregate(&description.uuid, &*sys::device_uid(device)?)?;
+        parts.aggregate = Some(aggregate);
+
+        // SAFETY: the tap's format is a stream description.
+        let tap_format: AudioStreamBasicDescription = unsafe { sys::get(tap, sys::global(kAudioTapPropertyFormat)) }?;
+        if tap_format.mFormatID != kAudioFormatLinearPCM
+            || tap_format.mFormatFlags & kAudioFormatFlagIsFloat == 0
+            || tap_format.mBitsPerChannel != 32
+            || tap_format.mChannelsPerFrame == 0
+        {
+            return Err(CaptureError::Backend(format!(
+                "the tap delivers an unexpected format: {tap_format:?}"
+            )));
+        }
+        // The aggregate runs at its main device's rate, and the tap is resampled to it.
+        let rate = sys::sample_rate(aggregate).unwrap_or(tap_format.mSampleRate);
+        let format = CaptureFormat {
+            sample_rate: rate.round() as u32,
+            channels: tap_format.mChannelsPerFrame as u16,
+        };
+        let shared = Arc::new(Shared {
+            pid,
+            tap,
+            device,
+            format,
+            command: AtomicU64::new(Command::SILENT.pack()),
+            frames: AtomicU64::new(0),
+            gain: AtomicU32::new(0f32.to_bits()),
+            io: Mutex::new(Io {
+                player: Player::new(format.sample_rate),
+                tapped: Vec::with_capacity(MAX_CYCLE * usize::from(format.channels)),
+            }),
+            sink: Mutex::new(None),
+            sinks: AtomicU64::new(0),
+            ended: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            wake: Wake::default(),
+            description: Mutex::new(description),
+        });
+
+        let client: *const Shared = Arc::as_ptr(&shared);
+        // SAFETY: `shared` outlives the IOProc: `Tap` holds it, and drops `parts` (which destroys the IOProc) first.
+        let status = unsafe {
+            AudioDeviceCreateIOProcID(
+                aggregate,
+                Some(io_proc),
+                client.cast_mut().cast(),
+                NonNull::from(&mut parts.io_proc),
+            )
+        };
+        sys::check("AudioDeviceCreateIOProcID", status)?;
+        use_only_the_tap(aggregate, parts.io_proc);
+        // SAFETY: the IOProc was just made on this device.
+        sys::check("AudioDeviceStart", unsafe {
+            AudioDeviceStart(aggregate, parts.io_proc)
+        })?;
+        parts.started = true;
+
+        // New helper processes join the tap. A listener wakes the watcher when the list changes; it also looks every
+        // `WATCH_EVERY` in case the listener can't be registered.
+        let address = process_list();
+        // SAFETY: as for the IOProc, `shared` outlives the listener, which `parts` removes.
+        let status = unsafe {
+            AudioObjectAddPropertyListener(
+                sys::SYSTEM,
+                NonNull::from(&address),
+                Some(processes_changed),
+                client.cast_mut().cast(),
+            )
+        };
+        if status == 0 {
+            parts.listener = Some(client);
+        }
+        let watched = Arc::clone(&shared);
+        let watcher = thread::Builder::new()
+            .name(format!("tap watcher {pid}"))
+            .spawn(move || watch(&watched))
+            .map_err(|e| CaptureError::Backend(format!("could not start the tap's watcher: {e}")))?;
+        Ok(Self {
+            _parts: parts,
+            shared,
+            watcher: Some(watcher),
+            sequencer: Mutex::new(Sequencer::new(format.sample_rate)),
+        })
+    }
+
+    /// Whether the tap ended by itself, see [`Shared::ended`].
+    pub(crate) fn ended(&self) -> bool {
+        self.shared.ended.load(Ordering::Relaxed)
+    }
+
+    fn io_status(&self) -> IoStatus {
+        let frames = self.shared.frames.load(Ordering::Acquire);
+        IoStatus {
+            frames,
+            gain: f32::from_bits(self.shared.gain.load(Ordering::Relaxed)),
+        }
+    }
+
+    fn set_muted(&self, muted: bool) -> Result<()> {
+        let mut description = lock(&self.shared.description);
+        if description.muted == muted {
+            return Ok(());
+        }
+        description.muted = muted;
+        let applied = description.apply(self.shared.tap);
+        if applied.is_err() {
+            description.muted = !muted;
+        }
+        applied
+    }
+
+    /// Ducks the app to `level` (0–1, 1 restores it) and returns once it's there, see `passthrough`. If the IOProc
+    /// doesn't run, the replay can't be heard, so the app is only muted while ducked.
+    pub(crate) fn duck(&self, level: f32) -> Result<()> {
+        let mut sequencer = lock(&self.sequencer);
+        sequencer.set_target(level);
+        let start = Instant::now();
+        let (mut frames, mut moved) = (self.io_status().frames, Instant::now());
+        loop {
+            let io = self.io_status();
+            if io.frames != frames {
+                (frames, moved) = (io.frames, Instant::now());
+            }
+            if self.ended() || moved.elapsed() > DUCK_STALLED || start.elapsed() > DUCK_TIMEOUT {
+                self.shared.command.store(Command::SILENT.pack(), Ordering::Relaxed);
+                let muted = level < 1.0;
+                self.set_muted(muted)?;
+                sequencer.set_muted(muted, io);
+                return Ok(());
+            }
+            match sequencer.next(io) {
+                Step::Mute(muted) => {
+                    self.set_muted(muted)?;
+                    sequencer.set_muted(muted, self.io_status());
+                }
+                Step::Wait(command) => {
+                    self.shared.command.store(command.pack(), Ordering::Relaxed);
+                    thread::sleep(DUCK_POLL);
+                }
+                Step::Done(command) => {
+                    self.shared.command.store(command.pack(), Ordering::Relaxed);
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Tap {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        self.shared.wake.wake();
+        if let Some(watcher) = self.watcher.take() {
+            let _ = watcher.join();
+        }
+        // `_parts` goes next, before `shared`.
+    }
+}
+
+/// Creates a private aggregate device on the device with UID `device_uid`, with the tap `tap_uuid` as its input.
+fn create_aggregate(tap_uuid: &str, device_uid: &CFString) -> Result<AudioObjectID> {
+    let key = |key: &CStr| CFString::from_str(key.to_str().unwrap_or_default());
+    let yes: &CFType = CFBoolean::new(true);
+    let no: &CFType = CFBoolean::new(false);
+
+    let sub_device = CFDictionary::<CFString, CFType>::from_slices(&[&*key(kAudioSubDeviceUIDKey)], &[device_uid]);
+    let tap_uuid = CFString::from_str(tap_uuid);
+    let sub_tap = CFDictionary::<CFString, CFType>::from_slices(
+        &[&*key(kAudioSubTapUIDKey), &*key(kAudioSubTapDriftCompensationKey)],
+        &[&*tap_uuid, yes],
+    );
+    let sub_devices = CFArray::from_retained_objects(&[sub_device]);
+    let taps = CFArray::from_retained_objects(&[sub_tap]);
+    let name = CFString::from_static_str("Repeat That");
+    let uid = CFString::from_str(&autoreleasepool(|_| NSUUID::new().UUIDString().to_string()));
+
+    let keys = [
+        key(kAudioAggregateDeviceNameKey),
+        key(kAudioAggregateDeviceUIDKey),
+        key(kAudioAggregateDeviceMainSubDeviceKey),
+        key(kAudioAggregateDeviceIsPrivateKey),
+        key(kAudioAggregateDeviceIsStackedKey),
+        key(kAudioAggregateDeviceTapAutoStartKey),
+        key(kAudioAggregateDeviceSubDeviceListKey),
+        key(kAudioAggregateDeviceTapListKey),
+    ];
+    let values: [&CFType; 8] = [&name, &uid, device_uid, yes, no, yes, &sub_devices, &taps];
+    let keys: Vec<&CFString> = keys.iter().map(|k| &**k).collect();
+    let description = CFDictionary::<CFString, CFType>::from_slices(&keys, &values);
+    let mut aggregate = 0;
+    // SAFETY: a description with the keys Core Audio documents, and a place for the ID.
+    let status = unsafe { AudioHardwareCreateAggregateDevice(description.as_opaque(), NonNull::from(&mut aggregate)) };
+    sys::check("AudioHardwareCreateAggregateDevice", status)?;
+    Ok(aggregate)
+}
+
+/// Turns off the aggregate's inputs other than the tap (the last one) for our IOProc: the app's device may have a
+/// microphone, which isn't ours to record. If that fails, the IOProc skips them itself.
+fn use_only_the_tap(aggregate: AudioObjectID, io_proc: AudioDeviceIOProcID) {
+    let streams = sys::input_streams(aggregate);
+    let Some(proc_pointer) = io_proc.map(|f| f as *mut c_void).and_then(NonNull::new) else {
+        return;
+    };
+    if streams < 2 {
+        return;
+    }
+    // The struct ends in an array as long as there are streams.
+    let header = std::mem::offset_of!(AudioHardwareIOProcStreamUsage, mStreamIsOn);
+    let words = (header + streams * 4).div_ceil(8);
+    let mut usage = vec![0u64; words];
+    let base = usage.as_mut_ptr().cast::<u8>();
+    // SAFETY: `usage` is big enough and 8-byte aligned for the header and `streams` flags.
+    unsafe {
+        let header_ptr = base.cast::<AudioHardwareIOProcStreamUsage>();
+        (&raw mut (*header_ptr).mIOProc).write(proc_pointer);
+        (&raw mut (*header_ptr).mNumberStreams).write(streams as u32);
+        let flags = base.add(header).cast::<u32>();
+        for stream in 0..streams {
+            flags.add(stream).write(u32::from(stream + 1 == streams));
+        }
+        let address = sys::address(kAudioDevicePropertyIOProcStreamUsage, kAudioObjectPropertyScopeInput);
+        let _ = objc2_core_audio::AudioObjectSetPropertyData(
+            aggregate,
+            NonNull::from(&address),
+            0,
+            std::ptr::null(),
+            (header + streams * 4) as u32,
+            NonNull::new_unchecked(base.cast()),
+        );
+    }
+}
+
+/// Core Audio's process list changed: wake the watcher.
+unsafe extern "C-unwind" fn processes_changed(
+    _object: AudioObjectID,
+    _count: u32,
+    _addresses: NonNull<AudioObjectPropertyAddress>,
+    client: *mut c_void,
+) -> i32 {
+    // SAFETY: the client data is the tap's `Shared`, which outlives the listener.
+    let shared = unsafe { &*client.cast::<Shared>() };
+    shared.wake.wake();
+    0
+}
+
+/// The IOProc: hands the tapped audio to the capture and plays the replay. Runs on Core Audio's real-time thread, so
+/// it never blocks and never allocates (unless a cycle is longer than `MAX_CYCLE`).
+unsafe extern "C-unwind" fn io_proc(
+    _device: AudioObjectID,
+    _now: NonNull<AudioTimeStamp>,
+    input: NonNull<AudioBufferList>,
+    _input_time: NonNull<AudioTimeStamp>,
+    output: NonNull<AudioBufferList>,
+    _output_time: NonNull<AudioTimeStamp>,
+    client: *mut c_void,
+) -> i32 {
+    // SAFETY: the client data is the tap's `Shared`, which outlives the IOProc.
+    let shared = unsafe { &*client.cast::<Shared>() };
+    // A panic must not unwind into Core Audio.
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: Core Audio's buffer lists for this cycle.
+        unsafe { shared.cycle(input, output) }
+    }));
+    if result.is_err() {
+        shared.ended.store(true, Ordering::Relaxed);
+    }
+    0
+}
+
+/// The buffers of a Core Audio buffer list.
+///
+/// # Safety
+///
+/// `list` must be a valid buffer list for the duration of the returned slice.
+unsafe fn buffers<'a>(list: NonNull<AudioBufferList>) -> &'a [AudioBuffer] {
+    // SAFETY: the list holds `mNumberBuffers` buffers, starting at `mBuffers`.
+    unsafe {
+        let list = list.as_ptr();
+        let count = (*list).mNumberBuffers as usize;
+        std::slice::from_raw_parts((&raw const (*list).mBuffers).cast::<AudioBuffer>(), count)
+    }
+}
+
+impl Shared {
+    /// One IO cycle.
+    ///
+    /// # Safety
+    ///
+    /// `input` and `output` must be the cycle's buffer lists.
+    unsafe fn cycle(&self, input: NonNull<AudioBufferList>, output: NonNull<AudioBufferList>) {
+        let mut io = match self.io.try_lock() {
+            Ok(io) => io,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        let io = &mut *io;
+        let channels = usize::from(self.format.channels);
+
+        // SAFETY: the cycle's buffers, each `mDataByteSize` bytes of f32 samples (or none).
+        let inputs = unsafe { buffers(input) };
+        let mut tapped = [Buffer {
+            channels: 0,
+            samples: &[],
+        }; MAX_BUFFERS];
+        let count = inputs.len().min(MAX_BUFFERS);
+        for (slot, buffer) in tapped.iter_mut().zip(inputs) {
+            *slot = Buffer {
+                channels: buffer.mNumberChannels as usize,
+                samples: if buffer.mData.is_null() {
+                    &[]
+                } else {
+                    // SAFETY: see above.
+                    unsafe { std::slice::from_raw_parts(buffer.mData.cast::<f32>(), buffer.mDataByteSize as usize / 4) }
+                },
+            };
+        }
+        let frames = passthrough::interleave(&tapped[..count], channels, &mut io.tapped);
+        if frames > 0 {
+            match self.sink.try_lock() {
+                Ok(mut sink) => {
+                    if let Some((_, sink)) = sink.as_mut() {
+                        sink(&io.tapped, self.format);
+                    }
+                }
+                Err(TryLockError::Poisoned(e)) => {
+                    if let Some((_, sink)) = e.into_inner().as_mut() {
+                        sink(&io.tapped, self.format);
+                    }
+                }
+                // A capture is being attached or detached; this cycle goes to neither.
+                Err(TryLockError::WouldBlock) => {}
+            }
+        }
+
+        // SAFETY: as for the input, and ours to write.
+        let outputs = unsafe { buffers(output) };
+        let mut out: [BufferMut; MAX_BUFFERS] = std::array::from_fn(|_| BufferMut {
+            channels: 0,
+            samples: &mut [],
+        });
+        let count = outputs.len().min(MAX_BUFFERS);
+        for (slot, buffer) in out.iter_mut().zip(outputs) {
+            if !buffer.mData.is_null() {
+                *slot = BufferMut {
+                    channels: buffer.mNumberChannels as usize,
+                    // SAFETY: see above.
+                    samples: unsafe {
+                        std::slice::from_raw_parts_mut(buffer.mData.cast::<f32>(), buffer.mDataByteSize as usize / 4)
+                    },
+                };
+            }
+        }
+        let command = Command::unpack(self.command.load(Ordering::Relaxed));
+        let played = passthrough::play(&io.tapped, channels, &mut io.player, command, &mut out[..count]);
+        self.gain.store(io.player.gain().to_bits(), Ordering::Relaxed);
+        self.frames.fetch_add(played as u64, Ordering::Release);
+    }
+}
+
+/// The watcher thread: follows the app's processes, and ends the tap when it can't go on.
+fn watch(shared: &Shared) {
+    let mut checked_permission = Instant::now();
+    let (mut frames, mut moved) = (0, Instant::now());
+    while !shared.stop.load(Ordering::Relaxed) {
+        shared.wake.wait(WATCH_EVERY);
+        if shared.stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let ended = |why: &str| {
+            if cfg!(debug_assertions) {
+                eprintln!("tap of PID {} ended: {why}", shared.pid);
+            }
+            shared.ended.store(true, Ordering::Relaxed);
+        };
+        match members(shared.pid) {
+            Ok(processes) if processes.is_empty() => return ended("the app quit"),
+            Ok(processes) => {
+                let mut description = lock(&shared.description);
+                if description.processes != processes {
+                    let old = std::mem::replace(&mut description.processes, processes);
+                    if description.apply(shared.tap).is_err() {
+                        description.processes = old;
+                    }
+                }
+            }
+            // Core Audio is restarting, or busy: next time.
+            Err(_) => {}
+        }
+        if !sys::device_alive(shared.device) {
+            return ended("its device went away");
+        }
+        let now = shared.frames.load(Ordering::Relaxed);
+        if now != frames {
+            (frames, moved) = (now, Instant::now());
+        } else if moved.elapsed() > IO_STALLED {
+            return ended("its device stopped");
+        }
+        if checked_permission.elapsed() >= PERMISSION_EVERY {
+            checked_permission = Instant::now();
+            if permission::status().is_ok_and(|status| status == PermissionStatus::Denied) {
+                return ended("capture isn't allowed any more");
+            }
+        }
+    }
+}
+
+/// A capture of a tap: its sink gets the tapped audio until this is dropped.
+pub(crate) struct Capture {
+    tap: Arc<Tap>,
+    id: u64,
+}
+
+impl Capture {
+    pub(crate) fn new(tap: Arc<Tap>, sink: FrameSink) -> Self {
+        let id = tap.shared.sinks.fetch_add(1, Ordering::Relaxed);
+        *lock(&tap.shared.sink) = Some((id, sink));
+        Self { tap, id }
+    }
+
+    fn attached(&self) -> bool {
+        lock(&self.tap.shared.sink)
+            .as_ref()
+            .is_some_and(|(id, _)| *id == self.id)
+    }
+}
+
+impl CaptureHandle for Capture {
+    fn is_running(&self) -> bool {
+        !self.tap.ended() && self.attached()
+    }
+
+    fn stop(self: Box<Self>) {
+        // Drop does the work.
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        let mut sink = lock(&self.tap.shared.sink);
+        if sink.as_ref().is_some_and(|(id, _)| *id == self.id) {
+            *sink = None;
+        }
+    }
+}
