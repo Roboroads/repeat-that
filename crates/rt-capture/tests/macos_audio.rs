@@ -308,9 +308,8 @@ fn transition(samples: &[f32], loopback: &Loopback, full: f64, full_step: f32, l
     }
 }
 
-/// The click check on a recording of the device: no gap, a bump of at most +6 dB (plus a little for the noise) that
-/// doesn't last long, and no step between samples much larger than the noise makes by itself.
-fn assert_smooth(what: &str, t: &Transition) {
+/// Prints the figures of the click check, and the levels the transition went through.
+fn report(what: &str, t: &Transition) {
     let first: Vec<String> = t.levels.iter().take(80).map(|l| format!("{:.0}", l * 100.0)).collect();
     println!("{what}: levels in % of full, every {WINDOW_MS} ms: {}", first.join(" "));
     println!(
@@ -323,6 +322,11 @@ fn assert_smooth(what: &str, t: &Transition) {
         t.bump_ms,
         t.step
     );
+}
+
+/// The click check on a recording of the device: no gap, a bump of at most +6 dB (plus a little for the noise) that
+/// doesn't last long, and no step between samples much larger than the noise makes by itself.
+fn assert_smooth(what: &str, t: &Transition) {
     assert_eq!(t.gap_ms, 0.0, "{what}: a gap");
     assert!(db(t.loudest) <= 7.0, "{what}: a bump of {:+.1} dB", db(t.loudest));
     assert!(t.bump_ms <= 100.0, "{what}: louder for {} ms", t.bump_ms);
@@ -378,6 +382,16 @@ fn ducking_replays_the_app_at_the_level_while_capture_keeps_full_level() {
         (tap_ducked / tap_full - 1.0).abs() < LEVEL_TOLERANCE,
         "capture keeps its level"
     );
+    // Without a dropout while the app is muted.
+    let window = format.sample_rate as usize * WINDOW_MS / 1000 * channels;
+    let captured: Vec<f64> = tap.chunks_exact(window).map(|w| rms(w) / tap_full).collect();
+    let quietest = captured.iter().copied().fold(f64::INFINITY, f64::min);
+    let first: Vec<String> = captured.iter().take(80).map(|l| format!("{:.0}", l * 100.0)).collect();
+    println!(
+        "capture: levels in % of full, every {WINDOW_MS} ms: {}",
+        first.join(" ")
+    );
+    println!("summary: capture while ducking: quietest {WINDOW_MS} ms at {quietest:.2}x");
     let engaged = transition(&engage, &loopback, device_full, full_step, (1.0, 0.2));
 
     let started = Instant::now();
@@ -393,8 +407,11 @@ fn ducking_replays_the_app_at_the_level_while_capture_keeps_full_level() {
     ));
     println!("summary: restored: device at {:.2}x", device_restored / device_full);
     let restored = transition(&restore, &loopback, device_full, full_step, (0.2, 1.0));
+    report("engage", &engaged);
+    report("restore", &restored);
     assert_smooth("engage", &engaged);
     assert_smooth("restore", &restored);
+    assert!(quietest >= 0.5, "the capture drops out while ducking ({quietest:.2}x)");
     assert!((device_restored / device_full - 1.0).abs() < LEVEL_TOLERANCE);
     assert!(recording.handle.is_running());
 }
