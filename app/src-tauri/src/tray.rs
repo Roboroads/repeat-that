@@ -34,8 +34,10 @@ pub enum CaptureView {
     Waiting(String),
     Capturing(String),
     Paused,
-    /// Capture failed or isn't possible: what to tell the user.
+    /// Capture failed (and is tried again): what to tell the user.
     Error(String),
+    /// Capturing isn't possible here: why.
+    Unsupported(String),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,7 +84,7 @@ impl TrayStatus {
             // The tooltip is short; the settings window has the details.
             CaptureStateName::Error => CaptureView::Error(format!("Can't capture {}", name())),
             CaptureStateName::Unsupported => {
-                CaptureView::Error(status.capture.message.clone().unwrap_or_else(|| UNSUPPORTED.into()))
+                CaptureView::Unsupported(status.capture.message.clone().unwrap_or_else(|| UNSUPPORTED.into()))
             }
         };
         TrayStatus {
@@ -101,11 +103,19 @@ impl TrayStatus {
         self.capture == CaptureView::Paused
     }
 
+    /// Whether there is an app to pause, as for the window's Pause button. Pausing nothing would only pause the next
+    /// app picked, without anything showing it.
+    pub fn can_pause(&self) -> bool {
+        !matches!(self.capture, CaptureView::NoTarget | CaptureView::Unsupported(_))
+    }
+
     pub fn icon(&self) -> TrayIconKind {
         match self.capture {
             CaptureView::Capturing(_) => TrayIconKind::Capturing,
             CaptureView::Paused => TrayIconKind::Paused,
-            CaptureView::NoTarget | CaptureView::Waiting(_) | CaptureView::Error(_) => TrayIconKind::Idle,
+            CaptureView::NoTarget | CaptureView::Waiting(_) | CaptureView::Error(_) | CaptureView::Unsupported(_) => {
+                TrayIconKind::Idle
+            }
         }
     }
 
@@ -127,7 +137,7 @@ impl TrayStatus {
             CaptureView::Waiting(name) => format!("Waiting for {name}"),
             CaptureView::Capturing(name) => format!("Capturing {name} · {} s of speech", whole_seconds(self.buffered)),
             CaptureView::Paused => "Paused".to_string(),
-            CaptureView::Error(message) => message.clone(),
+            CaptureView::Error(message) | CaptureView::Unsupported(message) => message.clone(),
         }
     }
 }
@@ -227,7 +237,7 @@ pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
         MenuEntry::Item(MenuItemModel {
             id: AppAction::TogglePause.id(),
             label: "Pause capture".into(),
-            enabled: true,
+            enabled: status.can_pause(),
             checked: Some(status.is_paused()),
         }),
         action(AppAction::OpenSettings, "Settings…", None),
@@ -565,6 +575,7 @@ mod tests {
         assert_eq!(icon(NoTarget), TrayIconKind::Idle);
         assert_eq!(icon(Waiting("Discord".into())), TrayIconKind::Idle);
         assert_eq!(icon(Error("boom".into())), TrayIconKind::Idle);
+        assert_eq!(icon(Unsupported("no backend".into())), TrayIconKind::Idle);
         assert_eq!(icon(Capturing("Discord".into())), TrayIconKind::Capturing);
         assert_eq!(icon(Paused), TrayIconKind::Paused);
     }
@@ -631,10 +642,32 @@ mod tests {
 
     #[test]
     fn status_line_item_is_disabled_and_the_rest_are_enabled() {
-        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        let model = build_model(&capturing("Discord", 1), &HotkeyLabels::default());
         for i in items(&model) {
             assert_eq!(i.enabled, i.id != STATUS_ID, "{}", i.id);
         }
+    }
+
+    #[test]
+    fn pause_is_disabled_while_there_is_no_app_to_capture() {
+        // Like the window's Pause button: pausing nothing would only pause the next app picked, unseen.
+        let pause_enabled = |capture| {
+            let status = TrayStatus {
+                capture,
+                ..TrayStatus::default()
+            };
+            item(
+                &build_model(&status, &HotkeyLabels::default()),
+                AppAction::TogglePause.id(),
+            )
+            .enabled
+        };
+        assert!(!pause_enabled(CaptureView::NoTarget));
+        assert!(!pause_enabled(CaptureView::Unsupported(UNSUPPORTED.into())));
+        assert!(pause_enabled(CaptureView::Waiting("Discord".into())));
+        assert!(pause_enabled(CaptureView::Capturing("Discord".into())));
+        assert!(pause_enabled(CaptureView::Paused), "resuming stays possible");
+        assert!(pause_enabled(CaptureView::Error("Can't capture Discord".into())));
     }
 
     #[test]
@@ -719,9 +752,13 @@ mod tests {
     #[test]
     fn an_unsupported_system_says_why() {
         let status = wire(CaptureStateName::Unsupported, Some("No capture on this OS"), None);
-        assert_eq!(view(&status), CaptureView::Error("No capture on this OS".into()));
+        assert_eq!(view(&status), CaptureView::Unsupported("No capture on this OS".into()));
+        assert_eq!(
+            TrayStatus::from_status(&status, false).status_line(),
+            "No capture on this OS"
+        );
         let status = wire(CaptureStateName::Unsupported, None, None);
-        assert_eq!(view(&status), CaptureView::Error(UNSUPPORTED.into()));
+        assert_eq!(view(&status), CaptureView::Unsupported(UNSUPPORTED.into()));
     }
 
     #[test]
