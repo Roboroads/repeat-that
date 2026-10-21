@@ -305,7 +305,8 @@ impl EngineHandle {
         let _ = self.playback.send(PlayCmd::Stop);
     }
 
-    /// While idle, replays at catch-up speed. During a replay, switches between catch-up and replay speed at once.
+    /// While idle, replays at catch-up speed. During a replay, switches between catch-up and replay speed at once. A
+    /// catch-up ends as soon as it has caught up with live, where a replay follows someone still talking.
     pub fn toggle_catch_up(&self) {
         let _ = self.playback.send(PlayCmd::ToggleCatchUp);
     }

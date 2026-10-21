@@ -702,6 +702,26 @@ fn catch_up_from_idle_plays_faster() {
 }
 
 #[test]
+fn a_catch_up_ends_once_it_has_caught_up() {
+    let output = TestOutput::new(RATE);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    // Someone has been talking for 1.6 s when the catch-up starts, and goes on for 4.4 s more.
+    source.play_live(&[tone(6.0), silence(2.0)].concat());
+    thread::sleep(secs(1.6));
+    let start = Instant::now();
+    handle.toggle_catch_up();
+    wait_for(&handle, secs(1.0), "catching up", |s| {
+        s.playback == PlaybackState::CatchingUp
+    });
+
+    // At 1.5x it reaches them after about 3.6 s. Then it ends, and they are heard live again, rather than followed.
+    wait_idle(&handle, secs(6.0));
+    let took = start.elapsed().as_secs_f32();
+    assert!(took > 3.0, "the catch-up ended {took} s in, before it caught up");
+    assert!(took < 4.4, "the catch-up ended {took} s in, after they stopped talking");
+}
+
+#[test]
 fn catch_up_applies_mid_replay() {
     let output = TestOutput::new(RATE).speed(2.0);
     let (source, _engine, handle) = capturing(&output, EngineConfig::default());

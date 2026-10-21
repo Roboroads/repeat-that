@@ -131,10 +131,7 @@ impl PlayerThread {
             PlayCmd::ToggleCatchUp => self.toggle_catch_up(),
             PlayCmd::SetConfig(config) => {
                 self.config = config;
-                let speed = self.speed();
-                if let Some((player, _)) = &mut self.player {
-                    player.set_speed(speed);
-                }
+                self.apply_mode();
             }
             PlayCmd::Wipe => {
                 // The duck thread restores the volume on its own when the target changes or capture pauses.
@@ -152,6 +149,15 @@ impl PlayerThread {
             self.config.catch_up_speed
         } else {
             self.config.replay_speed
+        }
+    }
+
+    /// Gives the player the speed of a replay or a catch-up. A catch-up also ends once it has caught up with live.
+    fn apply_mode(&mut self) {
+        let (speed, catching_up) = (self.speed(), self.catching_up);
+        if let Some((player, _)) = &mut self.player {
+            player.set_speed(speed);
+            player.set_end_at_live(catching_up);
         }
     }
 
@@ -175,7 +181,7 @@ impl PlayerThread {
     }
 
     fn replay(&mut self) {
-        let speed = self.speed();
+        let (speed, catching_up) = (self.speed(), self.catching_up);
         let core = lock(&self.core);
         let had_player = self.player.as_ref().map(|(_, g)| *g);
         Self::sync_player(&mut self.player, &core);
@@ -189,6 +195,7 @@ impl PlayerThread {
             return;
         }
         player.set_speed(speed);
+        player.set_end_at_live(catching_up);
         if !player.replay(recorder.buffer()) {
             drop(core);
             return self.beep();
@@ -239,10 +246,7 @@ impl PlayerThread {
             return;
         }
         self.catching_up = !self.catching_up;
-        let speed = self.speed();
-        if let Some((player, _)) = &mut self.player {
-            player.set_speed(speed);
-        }
+        self.apply_mode();
         self.report_behind(false);
     }
 
