@@ -4,6 +4,7 @@ import {
   backendStatus,
   bufferedSeconds,
   headline,
+  invoke,
   pauseButton,
   pickFakeApp,
   playbackLine,
@@ -26,21 +27,29 @@ describe('capturing and replaying', () => {
     expect((await backendStatus()).bufferedMs).toBeGreaterThan(0);
   });
 
-  it('replays what was buffered, then goes back to idle', async () => {
+  // A replay at normal speed plays on into the speech that keeps coming in, so when it ends on its own depends on the
+  // fixture and the machine. Stopping it is what makes this one deterministic.
+  it('replays what was buffered, until Stop ends it at once', async () => {
     await expect(playbackLine()).not.toBeExisting();
     await replayButton().click();
     await expect(playbackLine()).toHaveText(expect.stringContaining('Replaying'));
     expect((await backendStatus()).playback).toBe('replaying');
-    // The replay runs in real time and plays on into the speech that comes in meanwhile, so it takes a while.
-    await playbackLine().waitForExist({ reverse: true, timeout: 45_000, timeoutMsg: 'the replay never ended' });
+
+    await stopButton().click();
+    await playbackLine().waitForExist({ reverse: true, timeout: 5_000, timeoutMsg: 'the replay went on after Stop' });
     expect((await backendStatus()).playback).toBe('idle');
   });
 
-  it('stops a replay at once', async () => {
-    await replayButton().click();
-    await expect(playbackLine()).toBeExisting();
-    await stopButton().click();
-    await playbackLine().waitForExist({ reverse: true, timeout: 5_000, timeoutMsg: 'the replay went on after Stop' });
+  // A catch-up replay is the one that ends by itself: it stops as soon as it has reached live. It has no button, only a
+  // hotkey and a tray item, so the test calls the command they both end up in.
+  it('catches up with live and ends by itself', async () => {
+    await browser.waitUntil(async () => (await bufferedSeconds()) >= 3, {
+      timeout: 20_000,
+      timeoutMsg: 'less than 3 s of speech was buffered after 20 s',
+    });
+    await invoke('catch_up');
+    await expect(playbackLine()).toHaveText(expect.stringContaining('Catching up'));
+    await playbackLine().waitForExist({ reverse: true, timeout: 60_000, timeoutMsg: 'catch-up never reached live' });
     expect((await backendStatus()).playback).toBe('idle');
   });
 
