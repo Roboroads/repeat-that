@@ -174,7 +174,8 @@ duck thread:    the blocking set_app_volume fades, latest level wins
 
 ## Releases
 GitHub Actions builds:
-- Windows: NSIS `.exe` + `.msi`, x64 only for v0.1 (ARM64 later: `ort` has no CPU build for it yet)
+- Windows: NSIS `.exe` (per-user install, no admin rights), x64 only for v0.1 (ARM64 later: `ort` has no CPU build for
+  it yet)
 - Linux: `.deb` (+ AppImage later)
 - macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
   ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
@@ -204,5 +205,5 @@ has to notarize and staple the `.dmg` in the release workflow (`xcrun notarytool
 There is no auto-updater yet (it is on the roadmap under later ideas). When it arrives, the Tauri updater will verify
 updates with its own key pair, stored as a GitHub Actions secret and separate from any code signing.
 
-The Windows installers are not code signed yet, so Windows shows a SmartScreen warning. Open-source code signing on
+The Windows installer is not code signed yet, so Windows shows a SmartScreen warning. Open-source code signing on
 Windows: apply to [SignPath Foundation](https://signpath.org).
