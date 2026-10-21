@@ -249,7 +249,7 @@ pub fn install_with<R: Runtime>(app: &AppHandle<R>, source: Arc<dyn AppAudioSour
 }
 
 /// Where the Windows capture backend notes the volumes it lowered: `duck.journal` in the app's local data directory.
-/// It holds volumes and audio session names only, never audio.
+/// It holds volumes and audio session identifiers only, never audio.
 fn duck_journal<R: Runtime>(app: &AppHandle<R>) -> Option<PathBuf> {
     let dir = match app.path().app_local_data_dir() {
         Ok(dir) => dir,
