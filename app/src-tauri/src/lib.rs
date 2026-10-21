@@ -24,6 +24,8 @@ mod store;
 #[cfg(test)]
 mod test_app;
 mod tray;
+#[cfg(target_os = "linux")]
+mod webkit;
 mod window;
 
 use std::sync::{Arc, Mutex};
@@ -42,6 +44,10 @@ const EMBEDS_PLACEHOLDER_FRONTEND: bool = option_env!("REPEAT_THAT_FRONTEND_PLAC
 /// Starts the app. `rt_capture::duck_guard::run_if_requested()` has already run in `main`, so this is never a duck
 /// guard process.
 pub fn run() {
+    // First of all, while the process has only its main thread and before any webview exists: WebKitGTK reads these when
+    // the first one starts.
+    #[cfg(target_os = "linux")]
+    webkit::apply_defaults();
     // `tauri dev` loads the dev server and never shows the embedded page.
     if EMBEDS_PLACEHOLDER_FRONTEND && !cfg!(dev) {
         eprintln!(
