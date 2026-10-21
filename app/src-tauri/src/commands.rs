@@ -18,6 +18,7 @@ use crate::engine::{self, SharedAppEngine};
 use crate::icons::SharedIcons;
 use crate::ipc::{AppEntry, CommandError, ConfigureOutcome, OutputDevice, Settings, Status};
 use crate::service::{self, SettingsService};
+use crate::shortcut_page::PageOpener;
 
 /// Every command, for the app and its tests alike.
 pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
@@ -127,7 +128,17 @@ pub fn catch_up<R: Runtime>(app: AppHandle<R>) {
 #[tauri::command]
 pub async fn configure_shortcuts<R: Runtime>(app: AppHandle<R>) -> Result<ConfigureOutcome, CommandError> {
     // The desktop answers over D-Bus, which can take a moment: not on the main thread.
-    off_the_main_thread(move || app.state::<SettingsService>().configure_shortcuts()).await
+    off_the_main_thread(move || {
+        let outcome = app.state::<SettingsService>().configure_shortcuts()?;
+        // A portal that can't open its own settings page (version 1) would leave the window with only words: the
+        // desktop's own shortcut page is the next best thing.
+        let opener = app.try_state::<PageOpener>().map(|opener| Arc::clone(&opener));
+        if outcome == ConfigureOutcome::Unsupported && opener.is_some_and(|open| open()) {
+            return Ok(ConfigureOutcome::Opened);
+        }
+        Ok(outcome)
+    })
+    .await
 }
 
 /// Quits the app, for a desktop with no tray, where the tray menu's Quit isn't there.
@@ -327,6 +338,48 @@ mod tests {
     fn configure_shortcuts_says_so_when_the_desktop_cannot_show_its_settings() {
         let h = harness();
         assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "unsupported");
+    }
+
+    #[test]
+    fn a_portal_that_cannot_open_its_page_gets_the_desktops_own_shortcut_page_instead() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "opened");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn with_no_page_to_open_either_it_says_so_after_trying() {
+        let h = harness();
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "unsupported");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_desktops_page_is_not_opened_on_top_of_the_portals_own() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        *h.backend.configure_answer.lock().unwrap() = Some(Ok(crate::ipc::ConfigureOutcome::Opened));
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "opened");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_desktops_page_is_not_opened_while_a_dialog_is_open() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        *h.backend.configure_answer.lock().unwrap() = Some(Ok(crate::ipc::ConfigureOutcome::Busy));
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "busy");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_failing_portal_is_an_error_and_the_desktops_page_stays_closed() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        *h.backend.configure_answer.lock().unwrap() = Some(Err("the portal went away".into()));
+        assert!(invoke(&h, "configure_shortcuts", json!({})).is_err());
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]

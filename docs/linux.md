@@ -13,9 +13,12 @@ How the hotkeys work depends on the session you are logged in to.
   first start a system dialog asks you to confirm the three shortcuts. Repeat That suggests Ctrl+Alt+Space,
   Ctrl+Alt+Backspace and Ctrl+Alt+Enter, and the desktop may offer something else. The Hotkeys section shows the keys
   you ended up with, or "Not assigned" for an action that has none, and has no recorder. To change a key, press
-  **Change in system settings**. Depending on the version of the portal that opens the desktop's own shortcut page, or
-  tells you where to look: in KDE it is System Settings → Shortcuts → Repeat That, in GNOME it is Settings → Keyboard →
-  View and Customize Shortcuts → Apps. If you closed the first dialog without choosing, no action has a key and the
+  **Change in system settings**. A version 2 portal opens the desktop's shortcut page itself. Plasma's portal is
+  version 1, so there Repeat That starts the shortcuts module of System Settings (`systemsettings kcm_keys`, or
+  `kcmshell6 kcm_keys`), and on GNOME it starts `gnome-control-center keyboard`. In a Flatpak that needs permission to
+  start programs on the host (`flatpak-spawn --host`). When none of this is possible, the window only says where to
+  look: in KDE it is System Settings → Shortcuts → Repeat That, in GNOME it is Settings → Keyboard → View and Customize
+  Shortcuts → Apps. If you closed the first dialog without choosing, no action has a key and the
   button reads **Set up shortcuts**: it opens the dialog again. Other Wayland desktops that provide the portal work the
   same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets the
   shortcuts up as soon as it is there.

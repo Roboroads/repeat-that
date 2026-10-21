@@ -22,6 +22,7 @@ pub mod self_check;
 mod service;
 mod session;
 mod settings;
+mod shortcut_page;
 mod source;
 mod store;
 #[cfg(test)]
@@ -81,6 +82,7 @@ pub fn run() {
         // Opens the privacy policy in the browser; the capability limits it to this project's pages.
         .plugin(tauri_plugin_opener::init())
         .manage::<SharedStatus>(Mutex::default())
+        .manage::<shortcut_page::PageOpener>(shortcut_page::real_opener())
         .manage::<SharedEngine>(engine.clone())
         .manage::<SharedAppEngine>(engine)
         .manage::<SharedIcons>(Arc::new(IconCache::default()))

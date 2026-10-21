@@ -2,6 +2,7 @@
 //! the real audio engine capturing the rt-core speech fixture as a fake app, playing into memory. Nothing is written to
 //! disk; the only file read is the fixture.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,6 +22,7 @@ use crate::hotkeys::fake::FakeBackend;
 use crate::icons::{IconCache, SharedIcons};
 use crate::service::fake::MemoryPersistence;
 use crate::service::{SETTINGS_CHANGED_EVENT, install_with};
+use crate::shortcut_page::PageOpener;
 use crate::tray::SharedStatus;
 
 /// The speech fixture, which plays as the fake app "speech_8s".
@@ -36,6 +38,9 @@ pub struct TestApp {
     pub backend: Arc<FakeBackend>,
     /// What replays played, when the engine runs.
     pub output: TestOutput,
+    /// How often the desktop's own shortcut page was asked for, and whether that works (it doesn't, to begin with).
+    pub page_opens: Arc<AtomicUsize>,
+    pub page_works: Arc<AtomicBool>,
     events: Arc<Mutex<Vec<(String, Value)>>>,
 }
 
@@ -56,8 +61,16 @@ impl TestApp {
     }
 
     fn build(with_engine: bool, stored: Option<Value>) -> Self {
+        let page_opens = Arc::new(AtomicUsize::new(0));
+        let page_works = Arc::new(AtomicBool::new(false));
+        let (opens, works) = (Arc::clone(&page_opens), Arc::clone(&page_works));
+        let opener: PageOpener = Arc::new(move || {
+            opens.fetch_add(1, Ordering::SeqCst);
+            works.load(Ordering::SeqCst)
+        });
         let app = mock_builder()
             .invoke_handler(commands::handler())
+            .manage::<PageOpener>(opener)
             .manage::<SharedStatus>(Mutex::default())
             .manage::<SharedIcons>(Arc::new(IconCache::default()))
             .build(mock_context(noop_assets()))
@@ -98,6 +111,8 @@ impl TestApp {
             persistence,
             backend,
             output,
+            page_opens,
+            page_works,
             events,
         }
     }
