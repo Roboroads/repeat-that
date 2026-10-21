@@ -1,0 +1,389 @@
+name: Publish release
+
+# Owns every release: builds each platform, checks the builds, writes one SHA256SUMS over all assets, attaches them to
+# the GitHub release and publishes it. The build workflows (build-windows.yml, ...) only build and upload their files
+# as `release-<platform>-<file>` artifacts. .github/scripts/release_assets.py is the one place that knows the platforms
+# (which files each has, which are required) and makes the decisions; its unit tests run in every full run.
+#
+# Two modes:
+#   * full (the default). `workflow_call` from release-please.yml, or `workflow_dispatch` with a tag to redo a release.
+#     Builds every platform, then publishes only if every required platform succeeded. An optional platform (macOS)
+#     that failed or was skipped only warns: the release goes out without it and the late attach adds it later.
+#     With no tag (a pull request, or a dispatch without a tag) it is a dry run: the same checks over the built files,
+#     and the combined SHA256SUMS is a workflow artifact. No release is touched.
+#   * late-attach. Adds one optional platform's files (the macOS .dmg) to a release that already has its SHA256SUMS,
+#     published or not. The new SHA256SUMS is the old one plus the new lines; lines already in it never change.
+#     Two ways in: `workflow_call` from a build workflow that has just built the files (they are artifacts of that
+#     same run), or `workflow_dispatch` with `artifacts_run_id` naming an earlier successful build run. A caller needs
+#     `contents: write` and `actions: read` (the latter to read another run's artifacts).
+#
+# release-please creates releases as drafts (`"draft": true` in its config), so nobody sees a release without its
+# files: the publish job attaches them and only then publishes the draft. A draft's tag doesn't exist until it is
+# published, so a run for a draft gets the commit to build in `sha`. release-please.yml calls this workflow directly
+# rather than relying on an `on: release` trigger: that would fire only once the release is public, and a release that
+# a workflow publishes with GITHUB_TOKEN doesn't start workflows at all.
+#
+# To add a platform: add a job named like the platform in release_assets.py that `uses:` its build workflow, add it to
+# the `needs` of `publish`, and set `build=True` in release_assets.py. `gate` fails when the three are out of step.
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: full, or late-attach (add an optional platform's files to a release that has SHA256SUMS)
+        type: string
+        default: full
+      tag:
+        description: Release tag, for example v0.1.0. Empty for a dry run (full mode only).
+        type: string
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        default: ""
+      platform:
+        description: late-attach only. The optional platform to attach.
+        type: string
+        default: macos
+      replace:
+        description: Replace files that are already attached. Their hashes change, so only when you must.
+        type: boolean
+        default: false
+      artifacts_run_id:
+        description: late-attach only. Take the files from this earlier run instead of the current one.
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: full builds and publishes a release (no tag, no release is touched); late-attach adds macOS later
+        type: choice
+        options: [full, late-attach]
+        default: full
+      tag:
+        description: Existing release tag, for example v0.1.0. Empty for a dry run (full mode only).
+        type: string
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        default: ""
+      platform:
+        description: late-attach only. The optional platform to attach.
+        type: choice
+        options: [macos]
+        default: macos
+      replace:
+        description: Replace files that are already attached. Their hashes change, so only when you must.
+        type: boolean
+        default: false
+      artifacts_run_id:
+        description: late-attach only. Id of the successful build run (the number in its URL) whose files to attach.
+        type: string
+        default: ""
+  # Dry runs for changes to the publishing itself. A change to the app runs each build workflow's own dry run.
+  pull_request:
+    paths:
+      - .github/workflows/publish-release.yml
+      - .github/workflows/build-*.yml
+      - .github/scripts/release_assets.py
+      - .github/scripts/test_release_assets.py
+
+permissions:
+  contents: read
+
+# One run per release at a time (a full run and a late attach for the same tag wait for each other). A pull request's
+# older run is cancelled; a run that publishes never is.
+concurrency:
+  group: publish-release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Fails in seconds, before the long builds, when there is no release to attach to, when it is public and already has
+  # its files (replacing those would change files people may have downloaded and verified), or when it holds a file no
+  # build here produces.
+  check-release:
+    name: Check release
+    if: ${{ inputs.mode != 'late-attach' && inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # drafts are only visible with write access; this job only reads
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Look at the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REPLACE: ${{ inputs.replace }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > release.json; then
+            echo "::error::There is no release (published or draft) for $TAG. release-please creates it; create it first when running by hand."
+            exit 1
+          fi
+          flags=()
+          if [[ "$REPLACE" == true ]]; then flags+=(--replace); fi
+          python3 .github/scripts/release_assets.py check-release --tag "$TAG" --mode full \
+            --release-json release.json "${flags[@]}"
+
+  # One job per platform, named like the platform in release_assets.py, each calling that platform's build workflow.
+  # They upload `release-<platform>-*` artifacts and check that the version they built matches the tag.
+  windows:
+    name: Windows
+    needs: check-release
+    # check-release is skipped on pull requests and dry runs, so don't wait for it to succeed, only not to fail.
+    if: ${{ !cancelled() && inputs.mode != 'late-attach' && needs.check-release.result != 'failure' }}
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      tag: ${{ inputs.tag }}
+      sha: ${{ inputs.sha }}
+
+  publish:
+    name: Publish
+    needs: [check-release, windows]
+    # Runs even when a build failed: its first step says which one and why nothing is published.
+    if: ${{ !cancelled() && inputs.mode != 'late-attach' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      REPLACE: ${{ inputs.replace }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Test the release script
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      # Required platforms must have succeeded; an optional one (macOS) that did not only warns. Jobs that call a
+      # reusable workflow can't set continue-on-error, so this is how an optional platform stays optional.
+      - name: Check the builds
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          flags=()
+          if [[ -n "$TAG" ]]; then flags+=(--release); fi
+          printf '%s' "$NEEDS" | python3 .github/scripts/release_assets.py gate --needs - \
+            --summary "$GITHUB_STEP_SUMMARY" "${flags[@]}"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: assets
+
+      # SHA256SUMS lists what this run produced, plus the files it keeps from the release: an optional platform's
+      # file attached late earlier, which this run did not rebuild. Its line is carried over from the release's current
+      # SHA256SUMS and checked against the downloaded file below, before anything is uploaded.
+      - name: Write and check SHA256SUMS
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          script=.github/scripts/release_assets.py
+          ls -l assets
+          python3 "$script" classify assets/*
+
+          release=()
+          if [[ -n "$TAG" ]]; then
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > release.json
+            release=(--release-json release.json)
+          fi
+          kept_names=$(python3 "$script" check-assets --mode full "${release[@]}" --produced assets/*)
+          kept=()
+          if [[ -n "$kept_names" ]]; then mapfile -t kept <<<"$kept_names"; fi
+          : > kept.txt
+          for name in "${kept[@]}"; do echo "$name" >> kept.txt; done
+
+          mkdir kept previous
+          carry=()
+          if (( ${#kept[@]} > 0 )); then
+            echo "Keeping from the release: ${kept[*]}"
+            if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir previous --pattern SHA256SUMS; then
+              echo "::error::$TAG has ${kept[*]} but no SHA256SUMS to take its checksum from. Delete the file and attach it again with the late attach (docs/MAINTAINING.md)."
+              exit 1
+            fi
+            for name in "${kept[@]}"; do
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir kept --pattern "$name"
+            done
+            carry=(--existing previous/SHA256SUMS --keep "${kept[@]}")
+          fi
+          python3 "$script" sums "${carry[@]}" --add assets/* --output SHA256SUMS
+
+          # Every line must hold for the file next to it: the produced ones and the kept ones.
+          mkdir verify
+          for file in assets/* kept/*; do
+            ln -s "$PWD/$file" "verify/${file##*/}"
+          done
+          (cd verify && sha256sum --check ../SHA256SUMS)
+
+          {
+            echo "### Release files"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Only a dry run keeps the file: a release has it as an asset.
+      - name: Upload SHA256SUMS (dry run)
+        if: ${{ inputs.tag == '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          path: SHA256SUMS
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Attach to the release
+        if: ${{ inputs.tag != '' }}
+        run: |
+          set -euo pipefail
+          draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+
+          # Without --clobber gh refuses to touch an asset that already exists. A draft has no public files to
+          # protect, so a re-run may overwrite its own earlier upload; a published release only on request.
+          flags=()
+          if [[ "$draft" == true || "$REPLACE" == true ]]; then flags+=(--clobber); fi
+          gh release upload "$TAG" assets/* SHA256SUMS "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+
+          # The release must now hold exactly the files SHA256SUMS lists, plus SHA256SUMS.
+          { ls assets; cat kept.txt; echo SHA256SUMS; } | LC_ALL=C sort > expected.txt
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | LC_ALL=C sort > actual.txt
+          if ! diff expected.txt actual.txt; then
+            echo "::error::The assets on $TAG are not the ones that were uploaded (expected on the left, found on the right)."
+            exit 1
+          fi
+
+          # Only now does the release become public (nothing to do when it already was).
+          if [[ "$draft" == true ]]; then
+            gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+          fi
+
+  # Adds an optional platform's files to a release that already has its SHA256SUMS. Never changes whether the release
+  # is a draft or published; on a draft, a full run does the publishing. SHA256SUMS is the only file it may replace,
+  # and only by adding lines (the files it replaces with `replace` change their own line).
+  late-attach:
+    name: Late attach
+    if: ${{ inputs.mode == 'late-attach' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read # the files of another run (artifacts_run_id)
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      PLATFORM: ${{ inputs.platform }}
+      REPLACE: ${{ inputs.replace }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Look at the release
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > release.json; then
+            echo "::error::There is no release (published or draft) for $TAG."
+            exit 1
+          fi
+          flags=()
+          if [[ "$REPLACE" == true ]]; then flags+=(--replace); fi
+          python3 .github/scripts/release_assets.py check-release --tag "$TAG" --mode late \
+            --platform "$PLATFORM" --release-json release.json "${flags[@]}"
+
+      # The files built earlier in this run (a build workflow called this one) ...
+      - name: Download the files (this run)
+        if: ${{ inputs.artifacts_run_id == '' }}
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-${{ inputs.platform }}-*
+          merge-multiple: true
+          path: new
+      # ... or those of an earlier successful run.
+      - name: Download the files (earlier run)
+        if: ${{ inputs.artifacts_run_id != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-${{ inputs.platform }}-*
+          merge-multiple: true
+          path: new
+          run-id: ${{ inputs.artifacts_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Check the files against the release
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          script=.github/scripts/release_assets.py
+          ls -l new
+          python3 "$script" classify new/*
+
+          # Without SHA256SUMS the check below says so; an empty file lets it get that far.
+          mkdir sums
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir sums --pattern SHA256SUMS; then
+            : > sums/SHA256SUMS
+          fi
+          flags=()
+          if [[ "$REPLACE" == true ]]; then flags+=(--replace); fi
+          python3 "$script" check-assets --mode late --release-json release.json --produced new/* \
+            --platform "$PLATFORM" --sums sums/SHA256SUMS "${flags[@]}"
+
+      # The base must be consistent before it is extended: every file on the release matches its line.
+      - name: Check the release's current files
+        run: |
+          set -euo pipefail
+          mkdir base
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir base --pattern '*'
+          ls -l base
+          (cd base && sha256sum --check SHA256SUMS)
+
+      - name: Write and check the new SHA256SUMS
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          flags=()
+          if [[ "$REPLACE" == true ]]; then flags+=(--replace); fi
+          python3 .github/scripts/release_assets.py sums --existing base/SHA256SUMS --add new/* \
+            "${flags[@]}" --output SHA256SUMS
+
+          # Every line must hold for the file next to it, the new files taking the place of replaced ones.
+          mkdir verify
+          for file in new/* base/*; do
+            name=${file##*/}
+            if [[ "$name" != SHA256SUMS && ! -e "verify/$name" ]]; then ln -s "$PWD/$file" "verify/$name"; fi
+          done
+          (cd verify && sha256sum --check ../SHA256SUMS)
+
+          {
+            echo "### Late attach: ${PLATFORM} to ${TAG}"
+            echo
+            echo 'Lines added or changed in SHA256SUMS:'
+            echo
+            echo '```diff'
+            diff base/SHA256SUMS SHA256SUMS || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The files first, then SHA256SUMS, so it never lists a file that isn't there yet.
+      - name: Attach to the release
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "$REPLACE" == true ]]; then flags+=(--clobber); fi
+          gh release upload "$TAG" new/* "${flags[@]}" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+
+          { ls base; ls new; } | LC_ALL=C sort -u > expected.txt
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | LC_ALL=C sort > actual.txt
+          if ! diff expected.txt actual.txt; then
+            echo "::error::The assets on $TAG are not the ones that were uploaded (expected on the left, found on the right)."
+            exit 1
+          fi
