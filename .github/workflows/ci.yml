@@ -159,3 +159,48 @@ jobs:
         if: needs.changes.outputs.code != 'false'
       - run: npm test
         if: needs.changes.outputs.code != 'false'
+
+  # Drives the real desktop app (WebdriverIO and tauri-driver, on a virtual display) the way a person would: it picks the
+  # fake app that debug builds play on Linux, replays, pauses and changes settings. See app/e2e/wdio.conf.ts. Like the
+  # other jobs it runs unless the run is cancelled, and a docs-only change skips every step, not the job.
+  e2e:
+    name: E2E (Linux)
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+        if: needs.changes.outputs.code != 'false'
+      # The Tauri libraries, the display (xvfb), the WebDriver of WebKitGTK and the D-Bus daemon that each test app gets
+      # for itself.
+      - name: Install system packages
+        if: needs.changes.outputs.code != 'false'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev \
+            xvfb webkit2gtk-driver dbus-daemon
+      - uses: actions/setup-node@v7
+        if: needs.changes.outputs.code != 'false'
+        with:
+          node-version: 22 # the oldest Node the docs ask for (README, CONTRIBUTING)
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        if: needs.changes.outputs.code != 'false'
+      - uses: dtolnay/rust-toolchain@stable
+        if: needs.changes.outputs.code != 'false'
+      - uses: Swatinem/rust-cache@v2
+        if: needs.changes.outputs.code != 'false'
+      # The cache above also holds ~/.cargo/bin, so after the first run this finds tauri-driver installed.
+      - name: Install tauri-driver
+        if: needs.changes.outputs.code != 'false'
+        run: cargo install tauri-driver --locked --version 2.1.0
+      # `npm run test:e2e` builds the frontend and the debug app first (the `pretest:e2e` script), then runs the specs.
+      - name: Run the end-to-end test
+        if: needs.changes.outputs.code != 'false'
+        run: xvfb-run -a npm run test:e2e
