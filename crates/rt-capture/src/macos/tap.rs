@@ -294,7 +294,8 @@ fn process_list() -> AudioObjectPropertyAddress {
 /// The audio objects of the processes of the app with PID `pid`.
 fn members(pid: u32) -> Result<Vec<AudioObjectID>> {
     let (ids, processes) = sys::process_objects()?;
-    let groups = processes::group(&processes, std::process::id(), &sys::process_path, &sys::display_name);
+    // The watcher calls this twice a second: the apps' names and paths aren't needed to tell their processes apart.
+    let groups = processes::group(&processes, std::process::id(), &|_| None, &|_| String::new());
     let mut members: Vec<AudioObjectID> = processes::members_of(&groups, &processes, pid)
         .into_iter()
         .map(|i| ids[i])
