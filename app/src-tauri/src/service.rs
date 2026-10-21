@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime};
 
 use crate::actions;
 use crate::autostart::{Autostart, OsAutostart, reconcile};
+use crate::engine;
 use crate::hotkeys::{HotkeyManager, PluginBackend, ShortcutBackend};
 use crate::ipc::{CommandError, HotkeyStates, Settings, SettingsPatch};
 use crate::locking::lock;
@@ -137,22 +138,18 @@ impl SettingsService {
         }
     }
 
-    /// See [`HotkeyManager::set_suspended`].
-    pub fn suspend_hotkeys(&self, suspended: bool) {
-        self.hotkeys.set_suspended(suspended);
+    /// See [`HotkeyManager::set_suspended`]. The app calls [`suspend_hotkeys`], which also tells the status.
+    pub fn suspend_hotkeys(&self, suspended: bool) -> bool {
+        self.hotkeys.set_suspended(suspended)
     }
 
     /// Why the settings can't be saved, if they can't (no usable settings file, a file written by a newer version): the
     /// changes made in this run are then lost when the app ends, and the first-run window will come back next time.
-    // The status shows this once the audio engine fills in the rest of it; tested until then.
-    #[allow(dead_code)]
     pub fn storage_problem(&self) -> Option<String> {
         self.persistence.problem()
     }
 
     /// Where each hotkey stands, for `Status.hotkeys`.
-    // Read by the status once the audio engine fills in the rest of it; tested until then.
-    #[allow(dead_code)]
     pub fn hotkey_states(&self) -> HotkeyStates {
         self.hotkeys.states()
     }
@@ -200,6 +197,7 @@ pub fn install_with<R: Runtime>(
             if let Err(err) = emitter.emit(SETTINGS_CHANGED_EVENT, settings) {
                 eprintln!("could not announce the new settings: {err}");
             }
+            engine::settings_changed(&emitter, settings);
         }),
     );
     app.manage(service);
@@ -216,12 +214,22 @@ pub fn install_with<R: Runtime>(
     }
 }
 
+/// Unregisters the hotkeys while the window records a combination (`true`) and registers them again afterwards
+/// (`false`). Coming back can change what the status says about them (another app may have taken one meanwhile), so
+/// then the status goes out again.
+pub fn suspend_hotkeys<R: Runtime>(app: &AppHandle<R>, suspended: bool) {
+    let Some(settings) = app.try_state::<SettingsService>() else {
+        return;
+    };
+    if settings.suspend_hotkeys(suspended) && !suspended {
+        engine::publish_status(app);
+    }
+}
+
 /// A page that starts loading has lost whatever it was recording, so the hotkeys are registered again.
 fn resume_hotkeys_on_page_load<R: Runtime>(webview: &tauri::Webview<R>, payload: &tauri::webview::PageLoadPayload<'_>) {
-    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
-        && let Some(settings) = webview.app_handle().try_state::<SettingsService>()
-    {
-        settings.suspend_hotkeys(false);
+    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+        suspend_hotkeys(webview.app_handle(), false);
     }
 }
 

@@ -55,7 +55,7 @@ export function describeStatus(status: Status | null, target: Settings['target']
   }
 }
 
-/** Problems with the output or the speech detector, one sentence each. */
+/** Problems with the output, the speech detector or the settings file, one sentence each. */
 export function outputWarnings(status: Status): string[] {
   const warnings: string[] = [];
   if (status.output.error !== null) {
@@ -67,5 +67,7 @@ export function outputWarnings(status: Status): string[] {
   if (status.vadFallback) {
     warnings.push('The speech detection model did not load. A simpler detector is used, so some speech may be missed.');
   }
+  // Already a sentence from the backend.
+  if (status.settingsProblem !== null) warnings.push(status.settingsProblem);
   return warnings;
 }

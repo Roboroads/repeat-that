@@ -79,6 +79,7 @@ export function scenarioInit(scenario: Scenario): MockBackendInit {
         statusOverrides: {
           output: { deviceName: 'Speakers (Realtek Audio)', fellBack: true, error: null },
           vadFallback: true,
+          settingsProblem: "The settings file couldn't be set up, so changes are lost when the app closes: access denied",
         },
       };
   }
@@ -189,6 +190,7 @@ export class MockBackend {
       output: { deviceName: this.devices.find((d) => d.isDefault)?.name ?? null, fellBack: false, error: null },
       hotkeys,
       vadFallback: false,
+      settingsProblem: null,
       ...this.statusOverrides,
     };
   }

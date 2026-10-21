@@ -2,40 +2,46 @@
 //! (see `build.rs`); without it the executable doesn't even start (`STATUS_ENTRYPOINT_NOT_FOUND`) as soon as it links
 //! code that uses `TaskDialogIndirect`.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
-use tauri::test::{mock_builder, mock_context, noop_assets};
+use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 
 use tauri::Manager;
 
 use crate::actions::{AppAction, dispatch};
-use crate::tray::{SharedStatus, TrayStatus, lock_status};
+use crate::engine::{AppEngine, SharedAppEngine};
+use crate::tray::{SharedStatus, lock_status};
+
+/// A mock app with the tray state and an engine that isn't running, which is all pausing needs.
+fn app() -> tauri::App<MockRuntime> {
+    mock_builder()
+        .manage::<SharedStatus>(Mutex::default())
+        .manage::<SharedAppEngine>(Arc::new(AppEngine::default()))
+        .build(mock_context(noop_assets()))
+        .expect("the mock app builds")
+}
 
 #[test]
 fn toggle_pause_works_on_the_mock_runtime() {
-    let app = mock_builder()
-        .manage::<SharedStatus>(Mutex::new(TrayStatus::default()))
-        .build(mock_context(noop_assets()))
-        .expect("the mock app builds");
+    let app = app();
     let handle = app.handle();
-    let is_paused = || lock_status(&handle.state::<SharedStatus>()).is_paused();
+    let is_paused = || handle.state::<SharedAppEngine>().is_paused();
+    let tray_paused = || lock_status(&handle.state::<SharedStatus>()).status.is_paused();
 
     assert!(!is_paused());
     dispatch(AppAction::TogglePause, handle);
     assert!(is_paused());
+    assert!(tray_paused(), "the tray's Pause checkbox follows");
     dispatch(AppAction::TogglePause, handle);
     assert!(!is_paused());
+    assert!(!tray_paused());
 }
 
 /// Pause toggles from the tray and the hotkeys can arrive at the same time; an even number of toggles must always end
 /// where it started, which a read followed by a separate write would not guarantee.
 #[test]
 fn simultaneous_pause_toggles_do_not_get_lost() {
-    let app = mock_builder()
-        .manage::<SharedStatus>(Mutex::new(TrayStatus::default()))
-        .build(mock_context(noop_assets()))
-        .expect("the mock app builds");
-
+    let app = app();
     let threads: Vec<_> = (0..4)
         .map(|_| {
             let handle = app.handle().clone();
@@ -50,7 +56,8 @@ fn simultaneous_pause_toggles_do_not_get_lost() {
         thread.join().expect("the toggling thread finishes");
     }
 
-    assert!(!lock_status(&app.handle().state::<SharedStatus>()).is_paused());
+    assert!(!app.handle().state::<SharedAppEngine>().is_paused());
+    assert!(!lock_status(&app.handle().state::<SharedStatus>()).status.is_paused());
 }
 
 /// The manifest is what makes Windows load Common Controls v6, the only version that has `TaskDialogIndirect`

@@ -62,7 +62,8 @@ npm run tauri dev
 ```
 
 The app starts in the tray. The first launch also opens the settings window; closing it keeps the app running in the
-tray, and Quit in the tray menu ends it. Capture and replay are not wired up yet.
+tray, and Quit in the tray menu ends it. On Linux and macOS there is no capture backend yet, so a debug build plays a
+speech recording as a fake app, `speech_8s`. Add `REPEAT_THAT_NULL_OUTPUT=1` on a machine without an audio device.
 
 System packages (the [Tauri prerequisites](https://tauri.app/start/prerequisites/) cover Windows and macOS):
 

@@ -131,11 +131,19 @@ fixture plays as a mock app) and replays on Enter.
 Models are downloaded on demand; transcripts follow the same memory-only rule.
 
 ### `app` — Tauri 2 desktop shell
-- Tray icon with menu: *Replay*, *Stop*, *Catch-up*, *Pause capture*, *Settings*, *Quit*.
+- Tray icon with menu: *Replay*, *Stop*, *Catch-up*, *Pause capture*, *Settings*, *Quit*. The status line, tooltip
+  (with "N s behind live" during a replay), icon and the hotkeys next to the items follow the engine's status.
 - Global hotkeys via `tauri-plugin-global-shortcut` (the tray menu is the fallback where global shortcuts are
   unavailable, e.g. some Wayland compositors).
 - Settings via `tauri-plugin-store`: target app, buffer length, VAD sensitivity, output device, hotkeys, speed, duck
-  level, autostart.
+  level, autostart. Every change goes to the engine at once; pausing isn't stored, so every launch captures.
+- The engine starts at launch with the stored settings. Its source is `WasapiSource` on Windows (with a duck journal
+  of volumes in the app's local data directory, and a duck guard). Elsewhere debug builds play the rt-core speech
+  fixture as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` plays another WAV on any OS, and in debug
+  builds `REPEAT_THAT_NULL_OUTPUT=1` plays replays into nothing. Quit stops the engine, which wipes the buffer and gives
+  the app its volume back.
+- The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
+  (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
 - Svelte + TypeScript UI in `app/src`, built with Vite.
 
 ## Threading

@@ -1,14 +1,22 @@
-//! The commands of the settings contract (`get_settings`, `update_settings`, `suspend_hotkeys`). They are thin: the
-//! rules live in [`SettingsService`](crate::service::SettingsService).
+//! The commands of the contract with the settings window (`app/src/lib/api.ts`). They are thin: the rules live in
+//! [`SettingsService`](crate::service::SettingsService) and the audio engine.
 //!
-//! They are plain (not `async`) commands on purpose: those run on the main thread, which is where registering hotkeys
-//! happens anyway, so an update never waits on the main thread from another thread.
+//! Most are plain (not `async`) commands on purpose: those run on the main thread, which is where registering hotkeys
+//! happens anyway, so an update never waits on the main thread from another thread. The two that ask the OS for its
+//! apps or devices can take a while, so they are `async` and do that on a thread of their own.
 
-use serde_json::Value;
-use tauri::State;
+use std::sync::Arc;
 
-use crate::ipc::{CommandError, Settings};
-use crate::service::SettingsService;
+use rt_capture::CaptureError;
+use rt_engine::EngineHandle;
+use serde_json::{Value, json};
+use tauri::{AppHandle, Manager, Runtime, State};
+
+use crate::actions::{self, AppAction};
+use crate::engine::{self, SharedAppEngine};
+use crate::icons::SharedIcons;
+use crate::ipc::{AppEntry, CommandError, OutputDevice, Settings, Status};
+use crate::service::{self, SettingsService};
 
 #[tauri::command]
 pub fn get_settings(settings: State<'_, SettingsService>) -> Settings {
@@ -24,90 +32,121 @@ pub fn update_settings(settings: State<'_, SettingsService>, patch: Value) -> Re
 
 /// Unregisters the hotkeys while the window records a combination (`true`) and registers them again afterwards.
 #[tauri::command]
-pub fn suspend_hotkeys(settings: State<'_, SettingsService>, suspended: bool) {
-    settings.suspend_hotkeys(suspended);
+pub fn suspend_hotkeys<R: Runtime>(app: AppHandle<R>, suspended: bool) {
+    service::suspend_hotkeys(&app, suspended);
+}
+
+#[tauri::command]
+pub fn get_status<R: Runtime>(app: AppHandle<R>) -> Status {
+    engine::current_status(&app)
+}
+
+/// The apps playing audio, with their icons.
+#[tauri::command]
+pub async fn list_apps<R: Runtime>(app: AppHandle<R>) -> Result<Vec<AppEntry>, CommandError> {
+    let engine = running_engine(&app)?;
+    let icons = Arc::clone(&app.state::<SharedIcons>());
+    off_the_main_thread(move || {
+        let apps = engine.list_apps().map_err(capture_error)?;
+        Ok(apps.into_iter().map(|app| icons.entry(app)).collect())
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn list_output_devices<R: Runtime>(app: AppHandle<R>) -> Result<Vec<OutputDevice>, CommandError> {
+    let engine = running_engine(&app)?;
+    off_the_main_thread(move || {
+        let devices = engine
+            .list_output_devices()
+            .map_err(|err| CommandError::backend(format!("Could not list the output devices: {err}")))?;
+        Ok(devices
+            .into_iter()
+            .map(|device| OutputDevice {
+                id: device.id,
+                name: device.name,
+                is_default: device.is_default,
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Makes `app` the target: it is captured from now on (once it plays audio), and what was buffered of another app is
+/// wiped. Also ends the first run. The window sends it without its icon.
+#[tauri::command]
+pub fn select_app(settings: State<'_, SettingsService>, app: AppEntry) -> Result<(), CommandError> {
+    settings
+        .update(json!({ "target": { "exePath": app.exe_path, "name": app.name } }))
+        .map(drop)
+}
+
+/// Pausing stops capture and wipes the buffer; resuming captures again.
+#[tauri::command]
+pub fn set_paused<R: Runtime>(app: AppHandle<R>, paused: bool) {
+    if let Some(engine) = app.try_state::<SharedAppEngine>() {
+        engine.set_paused(paused);
+    }
+    // Without a target the engine's status doesn't change, but the tray's Pause checkbox does.
+    engine::publish_status(&app);
+}
+
+#[tauri::command]
+pub fn replay<R: Runtime>(app: AppHandle<R>) {
+    actions::dispatch(AppAction::Replay, &app);
+}
+
+#[tauri::command]
+pub fn stop<R: Runtime>(app: AppHandle<R>) {
+    actions::dispatch(AppAction::Stop, &app);
+}
+
+#[tauri::command]
+pub fn catch_up<R: Runtime>(app: AppHandle<R>) {
+    actions::dispatch(AppAction::CatchUp, &app);
+}
+
+fn running_engine<R: Runtime>(app: &AppHandle<R>) -> Result<EngineHandle, CommandError> {
+    app.try_state::<SharedAppEngine>()
+        .and_then(|engine| engine.handle())
+        .ok_or_else(|| CommandError::backend("The audio engine isn't running"))
+}
+
+fn capture_error(err: CaptureError) -> CommandError {
+    match err {
+        // Already a sentence for the user.
+        CaptureError::Unsupported(why) => CommandError::backend(why),
+        other => CommandError::backend(format!("Could not list the apps: {other}")),
+    }
+}
+
+/// Runs `work` on a thread for blocking work and waits for it without holding up a command thread.
+async fn off_the_main_thread<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, CommandError> + Send + 'static,
+) -> Result<T, CommandError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .unwrap_or_else(|err| Err(CommandError::backend(format!("The request failed: {err}"))))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use serde_json::json;
-    use tauri::ipc::{CallbackFn, InvokeBody};
-    use tauri::test::{INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder, mock_context, noop_assets};
-    use tauri::webview::InvokeRequest;
-    use tauri::{Listener, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
     use super::*;
-    use crate::autostart::fake::FakeAutostart;
-    use crate::hotkeys::fake::FakeBackend;
-    use crate::service::fake::MemoryPersistence;
-    use crate::service::{SETTINGS_CHANGED_EVENT, install_with};
+    use crate::engine::STATUS_EVENT;
+    use crate::service::SETTINGS_CHANGED_EVENT;
+    use crate::test_app::TestApp;
+    use crate::tray::{self, CaptureView, SharedStatus, TrayState};
 
-    /// A mock app with the settings commands, fake storage, autostart and shortcuts, and a window to invoke from.
-    struct Harness {
-        // Kept alive: dropping the app tears the window down.
-        _app: tauri::App<MockRuntime>,
-        window: WebviewWindow<MockRuntime>,
-        persistence: Arc<MemoryPersistence>,
-        backend: Arc<FakeBackend>,
-        events: Arc<Mutex<Vec<serde_json::Value>>>,
+    fn harness() -> TestApp {
+        TestApp::without_engine()
     }
 
-    fn harness() -> Harness {
-        let app = mock_builder()
-            .invoke_handler(tauri::generate_handler![get_settings, update_settings, suspend_hotkeys])
-            .build(mock_context(noop_assets()))
-            .expect("mock app builds");
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&events);
-        app.listen(SETTINGS_CHANGED_EVENT, move |event| {
-            sink.lock()
-                .unwrap()
-                .push(serde_json::from_str(event.payload()).expect("the event carries JSON"));
-        });
-        let persistence = Arc::new(MemoryPersistence::default());
-        let backend = Arc::new(FakeBackend::default());
-        install_with(
-            app.handle(),
-            persistence.clone(),
-            Arc::new(FakeAutostart::default()),
-            Box::new(Arc::clone(&backend)),
-        );
-        let window = WebviewWindowBuilder::new(&app, "settings", WebviewUrl::default())
-            .build()
-            .expect("mock window builds");
-        Harness {
-            _app: app,
-            window,
-            persistence,
-            backend,
-            events,
-        }
-    }
-
-    /// Invokes `cmd` the way the frontend does and returns what the promise would resolve or reject with.
-    fn invoke(h: &Harness, cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
-        // The origin of the app's own pages, which is what lets a command through without a capability.
-        // The origin of the app's own pages, which is what lets a command through without a capability.
-        let origin = if cfg!(windows) {
-            "http://tauri.localhost"
-        } else {
-            "tauri://localhost"
-        };
-        get_ipc_response(
-            &h.window,
-            InvokeRequest {
-                cmd: cmd.into(),
-                callback: CallbackFn(0),
-                error: CallbackFn(1),
-                url: origin.parse().unwrap(),
-                body: InvokeBody::Json(args),
-                headers: Default::default(),
-                invoke_key: INVOKE_KEY.to_string(),
-            },
-        )
-        .map(|body| body.deserialize().expect("the response is JSON"))
+    fn invoke(h: &TestApp, cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {
+        h.invoke(cmd, args)
     }
 
     #[test]
@@ -139,12 +178,12 @@ mod tests {
     #[test]
     fn update_settings_announces_the_new_settings() {
         let h = harness();
-        assert!(h.events.lock().unwrap().is_empty());
+        assert!(h.events(SETTINGS_CHANGED_EVENT).is_empty());
         let updated = invoke(&h, "update_settings", json!({ "patch": { "bufferSeconds": 45 } })).unwrap();
-        assert_eq!(*h.events.lock().unwrap(), [updated]);
+        assert_eq!(h.events(SETTINGS_CHANGED_EVENT), [updated]);
         // Setting what is already set announces nothing.
         invoke(&h, "update_settings", json!({ "patch": { "bufferSeconds": 45 } })).unwrap();
-        assert_eq!(h.events.lock().unwrap().len(), 1);
+        assert_eq!(h.events(SETTINGS_CHANGED_EVENT).len(), 1);
     }
 
     #[test]
@@ -174,7 +213,7 @@ mod tests {
         assert_eq!(error["kind"], "conflict");
         assert!(error["message"].as_str().unwrap().contains("Stop"), "{error}");
         assert_eq!(invoke(&h, "get_settings", json!({})).unwrap()["bufferSeconds"], 30);
-        assert!(h.events.lock().unwrap().is_empty());
+        assert!(h.events(SETTINGS_CHANGED_EVENT).is_empty());
         assert!(h.persistence.saves().is_empty());
     }
 
@@ -216,5 +255,226 @@ mod tests {
         assert!(h.backend.registered().is_empty());
         invoke(&h, "suspend_hotkeys", json!({ "suspended": false })).unwrap();
         assert_eq!(h.backend.registered().len(), 3);
+    }
+
+    // The status, and the commands of the audio engine, on the real engine capturing the fixture.
+
+    /// Plenty for the engine to find the fake app (it looks at once) and its first speech (within a second or two).
+    const PATIENCE: Duration = Duration::from_secs(15);
+
+    fn state(status: &Value) -> &str {
+        status["capture"]["state"].as_str().expect("a capture state")
+    }
+
+    fn buffered_ms(status: &Value) -> u64 {
+        status["bufferedMs"].as_u64().expect("bufferedMs")
+    }
+
+    fn the_mock_app(h: &TestApp) -> Value {
+        let apps = invoke(h, "list_apps", json!({})).unwrap();
+        apps[0].clone()
+    }
+
+    /// Picks `app` the way the window does: without its icon.
+    fn select(h: &TestApp, app: &Value) {
+        let mut app = app.clone();
+        app["icon"] = Value::Null;
+        invoke(h, "select_app", json!({ "app": app })).unwrap();
+    }
+
+    fn capturing_with_speech(h: &TestApp) -> Value {
+        select(h, &the_mock_app(h));
+        h.wait_for_status(PATIENCE, "speech in the buffer", |s| {
+            state(s) == "capturing" && buffered_ms(s) > 0
+        })
+    }
+
+    fn tray(h: &TestApp) -> TrayState {
+        tray::lock_status(&h.app.state::<SharedStatus>()).clone()
+    }
+
+    #[test]
+    fn list_apps_returns_the_mock_app_without_an_icon() {
+        let h = TestApp::with_engine();
+        assert_eq!(
+            invoke(&h, "list_apps", json!({})).unwrap(),
+            json!([{ "pid": u32::MAX, "name": "speech_8s", "exePath": null, "icon": null }])
+        );
+    }
+
+    #[test]
+    fn list_output_devices_lists_the_outputs() {
+        let h = TestApp::with_engine();
+        assert_eq!(
+            invoke(&h, "list_output_devices", json!({})).unwrap(),
+            json!([{ "id": "speakers", "name": "speakers", "isDefault": true }])
+        );
+    }
+
+    #[test]
+    fn without_the_engine_the_lists_are_a_backend_error() {
+        let h = harness();
+        for cmd in ["list_apps", "list_output_devices"] {
+            let error = invoke(&h, cmd, json!({})).unwrap_err();
+            assert_eq!(error["kind"], "backend", "{cmd}");
+            assert!(error["message"].as_str().unwrap().contains("engine"), "{cmd}: {error}");
+        }
+    }
+
+    #[test]
+    fn get_status_starts_with_no_target_and_the_hotkeys_registered() {
+        let h = TestApp::with_engine();
+        let status = invoke(&h, "get_status", json!({})).unwrap();
+        assert_eq!(status["capture"], json!({ "state": "noTarget", "message": null }));
+        assert_eq!(status["playback"], "idle");
+        assert_eq!(status["behindMs"], Value::Null);
+        assert_eq!(
+            status["hotkeys"],
+            json!({ "replay": "ok", "stop": "ok", "catchUp": "ok" })
+        );
+        assert_eq!(status["settingsProblem"], Value::Null);
+    }
+
+    #[test]
+    fn select_app_captures_it_and_keeps_it_as_the_target() {
+        let h = TestApp::with_engine();
+        select(&h, &the_mock_app(&h));
+        let status = h.wait_for_status(PATIENCE, "capturing", |s| state(s) == "capturing");
+        assert_eq!(status["targetName"], "speech_8s");
+        let settings = invoke(&h, "get_settings", json!({})).unwrap();
+        assert_eq!(settings["target"], json!({ "exePath": null, "name": "speech_8s" }));
+        assert_eq!(settings["firstRunDone"], true, "picking an app ends the first run");
+    }
+
+    #[test]
+    fn select_app_needs_a_name() {
+        let h = TestApp::with_engine();
+        let error = invoke(
+            &h,
+            "select_app",
+            json!({ "app": { "pid": 1, "name": " ", "exePath": null, "icon": null } }),
+        )
+        .unwrap_err();
+        assert_eq!(error["kind"], "invalid");
+    }
+
+    #[test]
+    fn the_stored_target_is_captured_from_the_start() {
+        let h = TestApp::with_engine_and_settings(json!({ "target": { "exePath": null, "name": "speech_8s" } }));
+        h.wait_for_status(PATIENCE, "capturing", |s| state(s) == "capturing");
+    }
+
+    #[test]
+    fn the_engine_status_goes_to_the_window_and_the_tray() {
+        let h = TestApp::with_engine();
+        select(&h, &the_mock_app(&h));
+        h.wait_for_event(PATIENCE, "capturing", |s| state(s) == "capturing");
+        h.wait_until(PATIENCE, "the tray to show the capture", || {
+            tray(&h).status.capture == CaptureView::Capturing("speech_8s".into())
+        });
+        assert_eq!(tray(&h).hotkeys.replay.as_deref(), Some("Ctrl+Alt+Space"));
+    }
+
+    #[test]
+    fn replay_and_stop_change_the_playback() {
+        let h = TestApp::with_engine();
+        capturing_with_speech(&h);
+        invoke(&h, "replay", json!({})).unwrap();
+        h.wait_for_status(PATIENCE, "replaying", |s| s["playback"] == "replaying");
+        invoke(&h, "stop", json!({})).unwrap();
+        h.wait_for_status(PATIENCE, "idle again", |s| s["playback"] == "idle");
+        assert!(!h.output.is_empty(), "the replay played");
+    }
+
+    #[test]
+    fn catch_up_replays_at_catch_up_speed() {
+        let h = TestApp::with_engine();
+        capturing_with_speech(&h);
+        invoke(&h, "catch_up", json!({})).unwrap();
+        h.wait_for_status(PATIENCE, "catching up", |s| s["playback"] == "catchingUp");
+        invoke(&h, "stop", json!({})).unwrap();
+    }
+
+    #[test]
+    fn set_paused_wipes_the_buffer_and_resuming_captures_again() {
+        let h = TestApp::with_engine();
+        capturing_with_speech(&h);
+        invoke(&h, "set_paused", json!({ "paused": true })).unwrap();
+        h.wait_for_status(PATIENCE, "paused with an empty buffer", |s| {
+            state(s) == "paused" && buffered_ms(s) == 0
+        });
+        assert!(tray(&h).status.is_paused(), "the tray's Pause checkbox is ticked");
+        invoke(&h, "set_paused", json!({ "paused": false })).unwrap();
+        h.wait_for_status(PATIENCE, "capturing again", |s| state(s) == "capturing");
+    }
+
+    #[test]
+    fn pausing_without_a_target_ticks_the_tray_checkbox() {
+        let h = TestApp::with_engine();
+        invoke(&h, "set_paused", json!({ "paused": true })).unwrap();
+        assert!(tray(&h).status.is_paused());
+        invoke(&h, "set_paused", json!({ "paused": false })).unwrap();
+        assert!(!tray(&h).status.is_paused());
+    }
+
+    #[test]
+    fn settings_changes_reach_the_engine() {
+        let h = TestApp::with_engine();
+        invoke(
+            &h,
+            "update_settings",
+            json!({ "patch": { "bufferSeconds": 60, "outputDevice": "speakers", "duck": { "enabled": false } } }),
+        )
+        .unwrap();
+        let config = h.app.state::<SharedAppEngine>().config().expect("the engine runs");
+        assert_eq!(config.buffer, Duration::from_secs(60));
+        assert_eq!(config.output_device.as_deref(), Some("speakers"));
+        assert_eq!(config.duck, None);
+    }
+
+    #[test]
+    fn update_settings_sends_the_status_again() {
+        let h = harness();
+        h.backend.refuse("Ctrl+Shift+R");
+        h.clear_events();
+        invoke(
+            &h,
+            "update_settings",
+            json!({ "patch": { "hotkeys": { "replay": "Ctrl+Shift+R" } } }),
+        )
+        .unwrap();
+        let statuses = h.events(STATUS_EVENT);
+        assert_eq!(statuses.last().expect("a status event")["hotkeys"]["replay"], "inUse");
+        assert_eq!(
+            tray(&h).hotkeys.replay,
+            None,
+            "the tray names no hotkey that doesn't work"
+        );
+        assert_eq!(tray(&h).hotkeys.stop.as_deref(), Some("Ctrl+Alt+Backspace"));
+    }
+
+    #[test]
+    fn hotkeys_coming_back_send_the_status_again() {
+        let h = harness();
+        invoke(&h, "suspend_hotkeys", json!({ "suspended": true })).unwrap();
+        h.backend.refuse("Ctrl+Alt+Space");
+        h.clear_events();
+        invoke(&h, "suspend_hotkeys", json!({ "suspended": false })).unwrap();
+        let statuses = h.events(STATUS_EVENT);
+        assert_eq!(statuses.len(), 1, "{statuses:?}");
+        assert_eq!(statuses[0]["hotkeys"]["replay"], "inUse");
+        // Asking again changes nothing, so nothing is sent.
+        invoke(&h, "suspend_hotkeys", json!({ "suspended": false })).unwrap();
+        assert_eq!(h.events(STATUS_EVENT).len(), 1);
+    }
+
+    #[test]
+    fn a_settings_problem_shows_in_the_status() {
+        let h = harness();
+        h.persistence.set_problem(Some("The settings file is read-only"));
+        assert_eq!(
+            invoke(&h, "get_status", json!({})).unwrap()["settingsProblem"],
+            "The settings file is read-only"
+        );
     }
 }

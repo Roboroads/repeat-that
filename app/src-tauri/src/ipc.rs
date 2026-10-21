@@ -1,5 +1,5 @@
-//! Wire types of the settings contract (`app/src/lib/api.ts` has the TypeScript side). Everything is serde `camelCase`.
-//! The status types join these with the audio engine.
+//! Wire types of the contract with the settings window (`app/src/lib/api.ts` has the TypeScript side): settings,
+//! status, apps and output devices. Everything is serde `camelCase`.
 
 use std::fmt;
 
@@ -100,9 +100,99 @@ pub struct HotkeyStates {
 }
 
 impl HotkeyStates {
+    pub fn slots(&self) -> [HotkeyState; HOTKEY_COUNT] {
+        [self.replay, self.stop, self.catch_up]
+    }
+
     pub fn slots_mut(&mut self) -> [&mut HotkeyState; HOTKEY_COUNT] {
         [&mut self.replay, &mut self.stop, &mut self.catch_up]
     }
+}
+
+/// What capture is doing, `Status.capture.state`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureStateName {
+    #[default]
+    NoTarget,
+    /// The target isn't running; looked for every 2 s.
+    Waiting,
+    Capturing,
+    Paused,
+    /// Capture failed to start; tried again every 2 s.
+    Error,
+    /// Capturing isn't possible here.
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct CaptureStatus {
+    pub state: CaptureStateName,
+    /// Why, for `error` and `unsupported`.
+    pub message: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Playback {
+    #[default]
+    Idle,
+    Replaying,
+    CatchingUp,
+}
+
+/// The output of the latest replay.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputStatus {
+    pub device_name: Option<String>,
+    /// The chosen device was missing or failed, so the system default played.
+    pub fell_back: bool,
+    /// Nothing could play.
+    pub error: Option<String>,
+}
+
+/// Everything the settings window and the tray show about what the app is doing. Sent with the `status` event on every
+/// change, and every 500 ms during a replay.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub capture: CaptureStatus,
+    /// The target's name, also while it isn't running.
+    pub target_name: Option<String>,
+    pub playback: Playback,
+    /// How far the replay is from live; `None` while idle.
+    pub behind_ms: Option<u64>,
+    /// Speech in the buffer.
+    pub buffered_ms: u64,
+    pub output: OutputStatus,
+    pub hotkeys: HotkeyStates,
+    /// The speech detection model didn't load, so a simpler detector is used.
+    pub vad_fallback: bool,
+    /// Why the settings can't be saved, in words for the user; `None` when they can.
+    pub settings_problem: Option<String>,
+}
+
+/// An app that plays audio, for the app list. `select_app` gets one back, usually without its icon.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppEntry {
+    pub pid: u32,
+    pub name: String,
+    #[serde(default)]
+    pub exe_path: Option<String>,
+    /// A `data:` URL of a PNG; `None` for the generic icon.
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputDevice {
+    /// What `Settings.outputDevice` stores.
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
 }
 
 /// Why a command failed. Serialized as `{ kind, message }`.

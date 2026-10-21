@@ -218,6 +218,15 @@ describe('status bar', () => {
 
     expect(await screen.findByText(/replays use the system default/)).toBeInTheDocument();
     expect(screen.getByText(/speech detection model did not load/)).toBeInTheDocument();
+    expect(screen.getByText(/changes are lost when the app closes/)).toBeInTheDocument();
+  });
+
+  it('warns when the settings cannot be saved', async () => {
+    const { backend } = await statusBar({ apps: [discord], settings: { target } });
+
+    const settingsProblem = 'The settings file is from a newer version of Repeat That, so changes are not saved.';
+    await emit('status', { ...backend.status(), settingsProblem } satisfies Status);
+    expect(await screen.findByText(settingsProblem)).toBeInTheDocument();
   });
 });
 

@@ -2,7 +2,7 @@
 
 use tauri::{AppHandle, Manager, Runtime, Window, WindowEvent};
 
-use crate::service::SettingsService;
+use crate::service::{self, SettingsService};
 
 /// Label of the one window, as in `tauri.conf.json`.
 pub const SETTINGS_LABEL: &str = "settings";
@@ -73,16 +73,13 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if window.label() != SETTINGS_LABEL {
         return;
     }
-    let settings = window.app_handle().try_state::<SettingsService>();
-    if ends_hotkey_recording(event)
-        && let Some(settings) = &settings
-    {
-        settings.suspend_hotkeys(false);
+    if ends_hotkey_recording(event) {
+        service::suspend_hotkeys(window.app_handle(), false);
     }
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
         let _ = window.hide();
-        if let Some(settings) = &settings {
+        if let Some(settings) = window.app_handle().try_state::<SettingsService>() {
             settings.mark_first_run_done();
         }
     }

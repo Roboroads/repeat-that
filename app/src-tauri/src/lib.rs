@@ -1,16 +1,21 @@
-//! Repeat That desktop shell: tray icon, hidden settings window and the plugins the rest of the app builds on.
+//! Repeat That desktop app: the audio engine, the tray icon, the hidden settings window and the global hotkeys.
 
 mod actions;
 mod autostart;
 mod commands;
+mod engine;
 mod hotkeys;
+mod icons;
 mod ipc;
 mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
 mod service;
 mod settings;
+mod source;
 mod store;
+#[cfg(test)]
+mod test_app;
 mod tray;
 mod window;
 
@@ -19,8 +24,10 @@ use std::sync::{Arc, Mutex};
 use tauri::{Manager, RunEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
-use crate::actions::{NoEngine, SharedEngine};
-use crate::tray::{SharedStatus, TrayStatus};
+use crate::actions::SharedEngine;
+use crate::engine::{AppEngine, SharedAppEngine};
+use crate::icons::{IconCache, SharedIcons};
+use crate::tray::SharedStatus;
 
 /// Set by `build.rs` when the frontend was never built and the app embeds a placeholder page instead of it.
 const EMBEDS_PLACEHOLDER_FRONTEND: bool = option_env!("REPEAT_THAT_FRONTEND_PLACEHOLDER").is_some();
@@ -35,10 +42,11 @@ pub fn run() {
              in app/ and build the app again."
         );
     }
+    // Hotkeys, the tray and the window drive the engine; it runs from `setup` on.
+    let engine: SharedAppEngine = Arc::new(AppEngine::default());
     let app = tauri::Builder::default()
         // Start order: single instance first, so a second launch exits before it sets anything up, then the plugins the
-        // rest of the app uses, then the settings with the hotkeys, then the tray (both in `setup`). The audio engine
-        // follows once it exists.
+        // rest of the app uses, then the settings with the hotkeys, the tray and the audio engine (all in `setup`).
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             window::on_second_launch(app, &args)
         }))
@@ -49,13 +57,24 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec![window::HIDDEN_ARG]),
         ))
-        .manage::<SharedStatus>(Mutex::new(TrayStatus::default()))
-        // Hotkeys and the tray drive this; the real engine takes its place once it exists.
-        .manage::<SharedEngine>(Arc::new(NoEngine))
+        // Opens the privacy policy in the browser; the capability limits it to this project's pages.
+        .plugin(tauri_plugin_opener::init())
+        .manage::<SharedStatus>(Mutex::default())
+        .manage::<SharedEngine>(engine.clone())
+        .manage::<SharedAppEngine>(engine)
+        .manage::<SharedIcons>(Arc::new(IconCache::default()))
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
             commands::update_settings,
-            commands::suspend_hotkeys
+            commands::suspend_hotkeys,
+            commands::get_status,
+            commands::list_apps,
+            commands::list_output_devices,
+            commands::select_app,
+            commands::set_paused,
+            commands::replay,
+            commands::stop,
+            commands::catch_up,
         ])
         .on_window_event(window::on_window_event)
         .setup(|app| {
@@ -67,6 +86,8 @@ pub fn run() {
             // The settings decide whether this is the first run and which hotkeys to register, so they come first.
             service::install(handle);
             tray::setup(handle)?;
+            // Captures the stored target from the start; pausing isn't stored.
+            engine::install(handle);
             let args: Vec<String> = std::env::args().collect();
             window::apply_startup_visibility(handle, &args);
             Ok(())
@@ -84,6 +105,9 @@ pub fn run() {
         // on the other systems.
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => window::show_settings(app),
+        // The process ends right after this without dropping the managed state, so the engine is stopped here: that
+        // stops a replay, wipes the buffer and gives the captured app its volume back.
+        RunEvent::Exit => engine::shutdown(app),
         _ => {}
     });
 }
@@ -115,6 +139,46 @@ mod tests {
     fn a_request_while_the_window_exists_gets_through() {
         // The OS asking the app to quit (Cmd+Q, Dock Quit, logoff) must not be vetoed.
         assert!(!keep_running_after_exit_request(None, 1));
+    }
+
+    /// The links the settings window opens in the browser.
+    fn links_in_the_window() -> Vec<String> {
+        let page = std::fs::read_to_string("../src/lib/components/GeneralSection.svelte").expect("the General section");
+        page.split(['\'', '"'])
+            .filter(|part| part.starts_with("https://"))
+            .map(String::from)
+            .collect()
+    }
+
+    #[test]
+    fn the_window_may_open_its_links_and_nothing_else() {
+        let capability: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string("capabilities/default.json").unwrap()).unwrap();
+        let open_url = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|permission| permission["identifier"] == "opener:allow-open-url")
+            .expect("the window may open URLs");
+        let allowed: Vec<&str> = open_url["allow"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["url"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            allowed,
+            ["https://github.com/Roboroads/repeat-that/*"],
+            "only this project's pages"
+        );
+        let links = links_in_the_window();
+        assert!(!links.is_empty(), "the privacy policy link");
+        for link in links {
+            assert!(
+                link.starts_with("https://github.com/Roboroads/repeat-that/"),
+                "{link} is not allowed"
+            );
+        }
     }
 
     #[test]
