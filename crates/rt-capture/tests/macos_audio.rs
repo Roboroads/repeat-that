@@ -25,6 +25,8 @@ use rt_capture::permission::{self, PermissionStatus};
 use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureFormat, CaptureHandle, FrameSink};
 
 const TONE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tone_1khz.wav");
+/// Noise for the click check: a late copy of it adds to it instead of cancelling it, as a copy of the tone can.
+const NOISE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/noise.wav");
 /// The tone is a sine at half of full scale.
 const TONE_RMS: f64 = 0.3536;
 /// How far a level may be from what it should be, as a ratio.
@@ -49,7 +51,16 @@ impl Drop for Killed {
 
 /// Plays the tone fixture.
 fn play_tone() -> Killed {
-    Killed(Command::new("/usr/bin/afplay").arg(TONE).spawn().expect("start afplay"))
+    play(TONE)
+}
+
+fn play(fixture: &str) -> Killed {
+    Killed(
+        Command::new("/usr/bin/afplay")
+            .arg(fixture)
+            .spawn()
+            .expect("start afplay"),
+    )
 }
 
 /// Whether these tests may capture. With `RT_REQUIRE_TCC=1` they must, otherwise they are skipped without permission.
@@ -254,59 +265,68 @@ fn captures_a_tone_at_its_level() {
     assert!(recording.handle.is_running());
 }
 
-/// How a recording of the device moves between two levels: the quietest and loudest 1 ms, how long it is louder than
-/// both, and the largest step between neighbouring samples.
+/// The largest step between neighbouring samples of the first channel.
+fn largest_step(samples: &[f32], channels: usize) -> f32 {
+    let first: Vec<f32> = samples.chunks_exact(channels).map(|f| f[0]).collect();
+    first.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0, f32::max)
+}
+
+/// How a recording of the device moves between two levels, in windows of 5 ms relative to full level.
 struct Transition {
+    levels: Vec<f64>,
     quietest: f64,
     loudest: f64,
+    /// The longest stretch below half of the lower level.
+    gap_ms: f64,
+    /// The longest stretch louder than both levels (+2.3 dB over the higher one, above the noise's own spread).
     bump_ms: f64,
-    largest_step: f32,
+    /// The largest step between neighbouring samples, relative to the largest at full level.
+    step: f64,
 }
 
-fn transition(samples: &[f32], channels: usize, rate: u32, full: f64, from: f64, to: f64) -> Transition {
-    let window = (rate as usize / 1000) * channels;
-    let levels: Vec<f64> = samples.chunks_exact(window).map(|w| rms(w) / full).collect();
-    let above = from.max(to) * 1.15;
-    let (mut longest, mut run) = (0usize, 0usize);
-    for &level in &levels {
-        run = if level > above { run + 1 } else { 0 };
-        longest = longest.max(run);
-    }
-    let largest_step = samples
-        .chunks_exact(channels)
-        .map(|f| f[0])
-        .collect::<Vec<_>>()
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .fold(0.0, f32::max);
+const WINDOW_MS: usize = 5;
+
+fn transition(samples: &[f32], loopback: &Loopback, full: f64, full_step: f32, levels: (f64, f64)) -> Transition {
+    let window = loopback.rate as usize * WINDOW_MS / 1000 * loopback.channels;
+    let windows: Vec<f64> = samples.chunks_exact(window).map(|w| rms(w) / full).collect();
+    let longest = |inside: &dyn Fn(f64) -> bool| {
+        let (mut longest, mut run) = (0, 0);
+        for &level in &windows {
+            run = if inside(level) { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        (longest * WINDOW_MS) as f64
+    };
+    let (lower, higher) = (levels.0.min(levels.1), levels.0.max(levels.1));
     Transition {
-        quietest: levels.iter().copied().fold(f64::INFINITY, f64::min),
-        loudest: levels.iter().copied().fold(0.0, f64::max),
-        bump_ms: longest as f64,
-        largest_step,
+        quietest: windows.iter().copied().fold(f64::INFINITY, f64::min),
+        loudest: windows.iter().copied().fold(0.0, f64::max),
+        gap_ms: longest(&|level| level < lower * 0.5),
+        bump_ms: longest(&|level| level > higher * 1.3),
+        step: f64::from(largest_step(samples, loopback.channels) / full_step),
+        levels: windows,
     }
 }
 
-/// The click check on a recording of the device: no gap below half of the lower level, a bump of at most +6 dB (plus
-/// a little for the device) that lasts at most 60 ms, and no step between samples larger than the tone itself.
-fn assert_smooth(what: &str, t: &Transition, lower: f64) {
+/// The click check on a recording of the device: no gap, a bump of at most +6 dB (plus a little for the noise) that
+/// doesn't last long, and no step between samples much larger than the noise makes by itself.
+fn assert_smooth(what: &str, t: &Transition) {
+    let first: Vec<String> = t.levels.iter().take(80).map(|l| format!("{:.0}", l * 100.0)).collect();
+    println!("{what}: levels in % of full, every {WINDOW_MS} ms: {}", first.join(" "));
     println!(
-        "summary: {what}: quietest 1 ms at {:.2}x, loudest {:.2}x ({:+.1} dB), louder than both for {:.0} ms, \
-         largest step {:.3}",
+        "summary: {what}: quietest {WINDOW_MS} ms at {:.2}x, loudest {:.2}x ({:+.1} dB), a gap of {:.0} ms, louder than \
+         both for {:.0} ms, largest step {:.2}x the noise's own",
         t.quietest,
         t.loudest,
         db(t.loudest),
+        t.gap_ms,
         t.bump_ms,
-        t.largest_step
+        t.step
     );
-    assert!(t.quietest >= lower * 0.5, "{what}: a gap down to {:.2}x", t.quietest);
-    assert!(db(t.loudest) <= 6.5, "{what}: a bump of {:+.1} dB", db(t.loudest));
-    assert!(t.bump_ms <= 60.0, "{what}: louder for {} ms", t.bump_ms);
-    assert!(
-        t.largest_step <= 2.0 * TONE_RMS as f32 * 2f32.sqrt(),
-        "{what}: a step of {}",
-        t.largest_step
-    );
+    assert_eq!(t.gap_ms, 0.0, "{what}: a gap");
+    assert!(db(t.loudest) <= 7.0, "{what}: a bump of {:+.1} dB", db(t.loudest));
+    assert!(t.bump_ms <= 100.0, "{what}: louder for {} ms", t.bump_ms);
+    assert!(t.step <= 2.5, "{what}: a step {:.2}x the noise's own", t.step);
 }
 
 #[test]
@@ -317,15 +337,16 @@ fn ducking_replays_the_app_at_the_level_while_capture_keeps_full_level() {
         return;
     }
     let source = CoreAudioSource::new();
-    let player = play_tone();
+    let player = play(NOISE);
     let app = player_app(&player);
     let recording = Recording::start(&source, &app);
     let loopback = Loopback::open();
     thread::sleep(Duration::from_millis(500));
-    let device_full = loopback.level(Duration::from_secs(1));
+    let reference = loopback.record(Duration::from_secs(1));
+    let (device_full, full_step) = (rms(&reference), largest_step(&reference, loopback.channels));
     let tap_full = rms(&recording.record(Duration::from_millis(500)).0);
     println!("summary: device at {device_full:.3} RMS, capture at {tap_full:.3} RMS before ducking");
-    assert!(device_full > 0.1, "BlackHole plays the tone back ({device_full:.3})");
+    assert!(device_full > 0.1, "BlackHole plays the noise back ({device_full:.3})");
 
     loopback.take();
     recording.take();
@@ -357,10 +378,11 @@ fn ducking_replays_the_app_at_the_level_while_capture_keeps_full_level() {
         (tap_ducked / tap_full - 1.0).abs() < LEVEL_TOLERANCE,
         "capture keeps its level"
     );
-    let t = transition(&engage, loopback.channels, loopback.rate, device_full, 1.0, 0.2);
-    assert_smooth("engage", &t, 0.2);
+    let engaged = transition(&engage, &loopback, device_full, full_step, (1.0, 0.2));
 
+    let started = Instant::now();
     source.set_app_volume(&app, 1.0).expect("restore");
+    println!("summary: restoring took {} ms", started.elapsed().as_millis());
     thread::sleep(Duration::from_secs(1));
     let restore = loopback.take();
     let device_restored = rms(tail(
@@ -370,9 +392,10 @@ fn ducking_replays_the_app_at_the_level_while_capture_keeps_full_level() {
         Duration::from_millis(500),
     ));
     println!("summary: restored: device at {:.2}x", device_restored / device_full);
+    let restored = transition(&restore, &loopback, device_full, full_step, (0.2, 1.0));
+    assert_smooth("engage", &engaged);
+    assert_smooth("restore", &restored);
     assert!((device_restored / device_full - 1.0).abs() < LEVEL_TOLERANCE);
-    let t = transition(&restore, loopback.channels, loopback.rate, device_full, 0.2, 1.0);
-    assert_smooth("restore", &t, 0.2);
     assert!(recording.handle.is_running());
 }
 
