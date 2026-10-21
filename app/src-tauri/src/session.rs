@@ -83,7 +83,11 @@ pub struct Session {
 /// Looks at the session. The portal is only asked on Wayland: that is the only place it is used, and asking costs a
 /// round trip that may have to start the portal service.
 pub fn detect(env: &dyn Env, bus: &dyn DesktopBus) -> Session {
-    let display = os_display(env);
+    detect_for(os_display(env), bus)
+}
+
+/// [`detect`] for a session that is known to run on `display`.
+fn detect_for(display: DisplayServer, bus: &dyn DesktopBus) -> Session {
     let portal_version = if display == DisplayServer::Wayland {
         bus.global_shortcuts_version()
     } else {
@@ -515,14 +519,14 @@ mod tests {
     #[test]
     fn wayland_asks_the_bus_for_the_portal_and_keeps_its_version() {
         let bus = FakeBus::with_portal(2);
-        let session = detect(&FakeEnv::with(WAYLAND), &bus);
+        let session = detect_for(display_server(&FakeEnv::with(WAYLAND)), &bus);
         assert_eq!(session.portal_version, Some(2));
         assert_eq!(bus.portal_asked.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn wayland_without_a_portal_has_no_version() {
-        let session = detect(&FakeEnv::with(WAYLAND), &FakeBus::default());
+        let session = detect_for(display_server(&FakeEnv::with(WAYLAND)), &FakeBus::default());
         assert_eq!(session.display, DisplayServer::Wayland);
         assert_eq!(session.portal_version, None);
     }
@@ -531,9 +535,24 @@ mod tests {
     fn x11_and_a_missing_display_never_ask_for_the_portal() {
         for vars in [&[("DISPLAY", ":0")][..], &[][..]] {
             let bus = FakeBus::with_portal(2);
-            let session = detect(&FakeEnv::with(vars), &bus);
+            let session = detect_for(display_server(&FakeEnv::with(vars)), &bus);
             assert_eq!(session.portal_version, None, "{vars:?}");
             assert_eq!(bus.portal_asked.load(Ordering::SeqCst), 0, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn this_os_decides_whether_there_is_a_session_to_look_at() {
+        // Wayland variables on a Mac or a Windows machine mean nothing: no portal is asked, the plugin is used.
+        let bus = FakeBus::with_portal(2);
+        let session = detect(&FakeEnv::with(WAYLAND), &bus);
+        if cfg!(target_os = "linux") {
+            assert_eq!(session.display, DisplayServer::Wayland);
+        } else {
+            assert_eq!(session.display, DisplayServer::Native);
+            assert_eq!(session.portal_version, None);
+            assert_eq!(bus.portal_asked.load(Ordering::SeqCst), 0);
+            assert_eq!(choose_backend(&session), HotkeyBackendKind::Plugin);
         }
     }
 
