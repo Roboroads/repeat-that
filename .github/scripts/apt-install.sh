@@ -15,8 +15,8 @@
 # APT_INSTALL_TIMEOUT (180 seconds for one `apt-get install`), APT_ATTEMPTS (3), APT_RETRY_PAUSE (10 seconds) and
 # APT_LOCK_POLL (5 seconds between two tries while another apt holds a lock).
 #
-# One hang that a second attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case is
-# about 17 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
+# One hang that a second attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case
+# is about 17 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
 set -euo pipefail
 
 usage() {
@@ -50,7 +50,15 @@ lock_poll=${APT_LOCK_POLL:-5}
 
 # Network stalls give up after 30 seconds and a download is tried three times before apt fails; a held dpkg lock is
 # waited for instead of refused (the lock on the package lists is handled in apt_call).
-apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120)
+apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+  -o DPkg::Lock::Timeout=120)
+
+# What apt prints (grep -E patterns): a lock another process holds, an error that asking again won't change, and an
+# update that lost a package index.
+lock_pattern='Could not get lock|Unable to acquire the dpkg frontend lock'
+permanent_pattern="Unable to locate package|has no installation candidate|^E: Couldn.t find any package"
+permanent_pattern+="|^E: Version .* was not found"
+incomplete_pattern='^[WE]: (Failed to fetch|Some index files failed|Hash Sum mismatch)'
 
 sudo=()
 if [[ $(id -u) -ne 0 ]]; then sudo=(sudo); fi
@@ -74,6 +82,10 @@ describe() {
 }
 
 failure=""
+# True when the failure is one a new attempt cannot fix, see apt_call.
+permanent=false
+# True when this attempt's `apt-get update` lost an index (a mirror half-way through a sync, say).
+update_incomplete=false
 log=$(mktemp "${TMPDIR:-/tmp}/apt-install.XXXXXX")
 trap 'rm -f "$log"' EXIT
 
@@ -81,9 +93,11 @@ trap 'rm -f "$log"' EXIT
 # holds a lock (the runner's own updater, say) makes apt-get refuse at once, and DPkg::Lock::Timeout covers only dpkg's
 # lock, not the one `apt-get update` takes on the package lists. So a refusal because of a lock is not a failed attempt:
 # the call is made again every few seconds until the lock is free or SECONDS are up. The output goes to the step's log
-# and to $log. On failure, `failure` says what went wrong.
+# and to $log. On failure, `failure` says what went wrong, with the last error line apt printed, and `permanent` is
+# true for a package that doesn't exist or can't be installed: asking again gets the same answer, so there is no retry.
+# Not after an update that lost an index, though: then the package may only be missing from the lists.
 apt_call() {
-  local name=$1 seconds=$2 deadline remaining status
+  local name=$1 seconds=$2 deadline remaining status detail
   shift 2
   deadline=$((SECONDS + seconds))
   while :; do
@@ -99,11 +113,18 @@ apt_call() {
     if ((status == 0)); then
       return 0
     fi
-    if ((status != 124 && status != 137)) && grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock' "$log"; then
+    if ((status != 124 && status != 137)) && grep -qE "$lock_pattern" "$log"; then
       sleep "$lock_poll"
       continue
     fi
     failure=$(describe "$name" "$status" "$seconds")
+    if ((status != 124 && status != 137)); then
+      detail=$(grep -E '^E: ' "$log" | tail -n 1 || true)
+      if [[ -n $detail ]]; then failure="$failure ($detail)"; fi
+      if [[ $update_incomplete == false ]] && grep -qE "$permanent_pattern" "$log"; then
+        permanent=true
+      fi
+    fi
     return 1
   done
 }
@@ -113,7 +134,10 @@ installing=false
 # One attempt. On failure, `failure` says what went wrong, and `installing` whether it got as far as the install.
 attempt_install() {
   installing=false
+  permanent=false
+  update_incomplete=false
   apt_call "apt-get update" "$update_timeout" update || return 1
+  if grep -qE "$incomplete_pattern" "$log"; then update_incomplete=true; fi
   installing=true
   apt_call "apt-get install" "$install_timeout" install -y --no-install-recommends "$@"
 }
@@ -139,6 +163,10 @@ for ((attempt = 1; attempt <= attempts; attempt++)); do
   fi
   if attempt_install "$@"; then
     exit 0
+  fi
+  if [[ $permanent == true ]]; then
+    echo "::error::$step: $failure; not retried, because it would fail the same way"
+    exit 1
   fi
 done
 

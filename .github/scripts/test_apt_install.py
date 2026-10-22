@@ -1,9 +1,10 @@
 """Tests for apt-install.sh. Run with: python3 -m unittest discover -s .github/scripts
 
 The script runs against fake `apt-get`, `dpkg` and `sudo` commands on a PATH of its own, so nothing is installed and the
-network is never touched. A fake apt-get acts out a plan per subcommand (`update`, `install`): `ok`, `fail`, `lock`
-(another apt holds the lock) or `hang`, one word per call, the last one repeating. Timeouts are shrunk to a second so a
-hung call costs the test no more.
+network is never touched. A fake apt-get acts out a plan per subcommand (`update`, `install`, and `-f install` as
+`fix`), one word per call, the last one repeating: `ok`, `fail`, `lock` (another apt holds the lock), `permanent` (a
+package that doesn't exist), `warn` (a warning, exit 0) or `hang`. Timeouts are shrunk to a second so a hung call costs
+the test no more.
 """
 
 import os
@@ -33,7 +34,9 @@ step=${steps[$((count < ${#steps[@]} ? count : ${#steps[@]} - 1))]}
 case $step in
   ok) exit 0 ;;
   fail) echo "E: Failed to fetch http://mirror.invalid/pool/x.deb" >&2; exit 100 ;;
-  lock) echo "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 42 (apt.systemd.dai)" >&2; exit 100 ;;
+  lock) echo "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 42 (apt-get)" >&2; exit 100 ;;
+  permanent) echo "E: Unable to locate package no-such-package" >&2; exit 100 ;;
+  warn) echo "W: Some index files failed to download. They have been ignored, or old ones used instead." >&2; exit 0 ;;
   hang) sleep 60; exit 0 ;;
 esac
 """
@@ -198,6 +201,30 @@ class AptInstallTest(unittest.TestCase):
         self.assertIn(STEP, errors[0])
         self.assertIn("apt-get install exited with status 100", errors[0])
         self.assertIn("3 attempts", errors[0])
+
+    def test_a_package_that_does_not_exist_fails_at_once_with_apts_own_error(self):
+        done, _ = self.run_script("--step", STEP, "no-such-package", install="permanent")
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(self.sequence(), ["update", "install"], "no retry, no repair")
+        self.assertNotIn("::warning::", done.stdout)
+        errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+        self.assertEqual(len(errors), 1, done.stdout)
+        self.assertIn(STEP, errors[0])
+        self.assertIn("E: Unable to locate package no-such-package", errors[0])
+        self.assertIn("not retried", errors[0])
+        self.assertNotIn("attempts", errors[0])
+
+    def test_a_missing_package_after_an_update_that_lost_an_index_is_retried(self):
+        # The lists may just lack the index the package is in, which a new update can fix.
+        done, _ = self.run_script("--step", STEP, "libgtk-3-dev", update="warn", install="permanent ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.sequence(), ["update", "install", "dpkg", "repair", "update", "install"])
+        self.assertIn("attempt 2 of 3", done.stdout)
+
+    def test_a_failure_that_may_pass_names_the_error_apt_gave(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail", APT_ATTEMPTS="1")
+        errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+        self.assertIn("E: Failed to fetch http://mirror.invalid/pool/x.deb", errors[0])
 
     def test_gives_up_on_an_update_that_always_hangs(self):
         done, took = self.run_script("--step", STEP, *PACKAGES, update="hang")
