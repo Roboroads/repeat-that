@@ -157,10 +157,12 @@ else
   exit 1
 fi
 
-if [[ "$(command -v repeat-that)" == /usr/bin/repeat-that ]]; then
-  ok "repeat-that is /usr/bin/repeat-that"
+# The same file, not the same name: since Fedora 42 /usr/sbin is a link to /usr/bin, and it comes first on the PATH.
+found=$(command -v repeat-that || true)
+if [[ -x /usr/bin/repeat-that && -n "$found" && "$found" -ef /usr/bin/repeat-that ]]; then
+  ok "repeat-that on the PATH is /usr/bin/repeat-that"
 else
-  fail "repeat-that is not on the PATH as /usr/bin/repeat-that"
+  fail "repeat-that on the PATH (${found:-none}) is not /usr/bin/repeat-that"
 fi
 missing=$(ldd /usr/bin/repeat-that | grep 'not found' || true)
 if [[ -z "$missing" ]]; then
