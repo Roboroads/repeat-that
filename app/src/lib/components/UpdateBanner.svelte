@@ -56,7 +56,10 @@
       .join(' '),
   );
 
-  const percent = $derived(update.progress === null ? null : Math.round(update.progress * 100));
+  /** 0..1, or `null` when the size of the download is not known. */
+  const progress = $derived(
+    update.progress === null || Number.isNaN(update.progress) ? null : Math.min(1, Math.max(0, update.progress)),
+  );
 
   // A plain link does nothing inside the app window; see openExternal.
   function openRelease(event: MouseEvent, url: string) {
@@ -117,8 +120,13 @@
       </div>
     {:else if form === 'downloading'}
       <div class="download">
-        <progress aria-label="Download progress" max="1" value={update.progress ?? undefined}></progress>
-        {#if percent !== null}<span class="muted">{percent}%</span>{/if}
+        <!-- Two elements: a progress bar can't go from a value back to none by setting the attribute to nothing. -->
+        {#if progress === null}
+          <progress aria-label="Download progress" max="1"></progress>
+        {:else}
+          <progress aria-label="Download progress" max="1" value={progress}></progress>
+          <span class="muted">{Math.round(progress * 100)}%</span>
+        {/if}
       </div>
     {:else if form === 'installing'}
       <p class="muted">Repeat That restarts when it's done.</p>

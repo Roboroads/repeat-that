@@ -190,6 +190,32 @@ describe('an update that was found', () => {
     expect(screen.getByRole('complementary', { name: 'Downloading version 0.2.0' })).not.toHaveTextContent('%');
   });
 
+  it('goes from a known progress to an unknown one and back, as a bar each time', async () => {
+    await renderApp(ANSWERED);
+    const bar = () => screen.getByRole('progressbar', { name: 'Download progress' }) as HTMLProgressElement;
+
+    await receive({ state: 'downloading', available: offer, progress: 0.4 });
+    await screen.findByText('40%');
+    expect(bar().value).toBe(0.4);
+
+    await receive({ state: 'downloading', available: offer, progress: null });
+    await waitFor(() => expect(screen.queryByText('40%')).not.toBeInTheDocument());
+    expect(bar()).not.toHaveAttribute('value');
+
+    await receive({ state: 'downloading', available: offer, progress: 0.6 });
+    await screen.findByText('60%');
+    expect(bar().value).toBe(0.6);
+  });
+
+  it('keeps a progress outside 0 to 1 on the bar', async () => {
+    await renderApp(ANSWERED);
+
+    await receive({ state: 'downloading', available: offer, progress: 1.5 });
+
+    expect(await screen.findByText('100%')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Download progress' })).toHaveProperty('value', 1);
+  });
+
   it('keeps showing a download when the user had pressed "Later" on that version', async () => {
     await renderApp(ANSWERED);
     await receive({ state: 'available', available: offer });
