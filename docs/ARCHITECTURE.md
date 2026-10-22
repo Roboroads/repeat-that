@@ -326,8 +326,8 @@ GitHub Actions builds:
   notarized, with the ticket stapled to the `.app` and to the `.dmg`, so Gatekeeper opens it without extra steps.
   `build-macos.yml` builds it, with the certificate and notarization credentials from the `apple-signing` Environment,
   listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization). macOS is an optional platform of
-  `publish-release.yml`: a failed macOS job doesn't hold back Windows and Linux, and the `.dmg` is attached later (the
-  [late attach](MAINTAINING.md#late-macos-attach)).
+  `publish-release.yml`: a failed macOS job doesn't hold back the required platforms, and the `.dmg` is attached later
+  (the [late attach](MAINTAINING.md#late-macos-attach)).
 - Every release publishes a `SHA256SUMS` file so users can verify downloads
   ([verify-downloads.md](verify-downloads.md)).
 

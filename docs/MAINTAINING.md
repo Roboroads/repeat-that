@@ -200,8 +200,8 @@ are in:
 
 `grep -rniE "untested|on a real Mac"` finds them (the comment in `Entitlements.plist` matches too; it is not a notice).
 
-**When the macOS job fails in a release.** Windows and Linux still publish, without a `.dmg` and without its line in
-`SHA256SUMS`. Fix the cause (usually the Apple side: a lapsed membership, a revoked key, or the notary service being
+**When the macOS job fails in a release.** The required platforms still publish, without a `.dmg` and without its line
+in `SHA256SUMS`. Fix the cause (usually the Apple side: a lapsed membership, a revoked key, or the notary service being
 down), then run Build macOS installers on `main` with the tag, and attach the result with the
 [late attach](#late-macos-attach) below.
 
@@ -222,8 +222,8 @@ new file name, which `release_assets.py` would have to know.
 
 ### Late macOS attach
 
-macOS is optional, so a macOS build or notarization that fails doesn't hold back Windows and Linux. The late attach adds
-the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. It is the
+macOS is optional, so a macOS build or notarization that fails doesn't hold back the required platforms. The late attach
+adds the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. It is the
 `late-attach` mode of `publish-release.yml`, and it takes the `.dmg` from a macOS build run, in two steps:
 
 1. Actions → Build macOS installers → Run workflow on `main`, with the release `tag` (for a draft, also its commit as
