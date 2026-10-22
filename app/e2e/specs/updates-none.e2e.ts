@@ -40,6 +40,10 @@ describe('updates, with nothing newer', () => {
   it('says "You have the latest version." when asked, and shows no banner', async () => {
     await expect(checkResult()).toHaveText('');
     await checkNowButton().click();
+    // Absence can only be checked once the check is over: before that there is nothing yet that could show a banner.
+    await browser.waitUntil(async () => (await backendUpdateStatus()).state === 'upToDate', {
+      timeoutMsg: 'the check never finished',
+    });
     await expect(checkResult()).toHaveText('You have the latest version.');
     await expect(offerBanner()).not.toBeExisting();
     await expect(consentQuestion()).not.toBeExisting();

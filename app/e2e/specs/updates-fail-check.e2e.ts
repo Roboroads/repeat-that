@@ -1,4 +1,4 @@
-import { expect } from '@wdio/globals';
+import { browser, expect } from '@wdio/globals';
 import { waitForPage } from '../support/app.js';
 import {
   backendUpdateStatus,
@@ -17,6 +17,10 @@ describe('updates, when the check fails', () => {
 
   it('says that it could not check, and why, next to "Check now", and shows no banner', async () => {
     await checkNowButton().click();
+    // Absence can only be checked once the check is over: before that there is nothing yet that could show a banner.
+    await browser.waitUntil(async () => (await backendUpdateStatus()).state === 'error', {
+      timeoutMsg: 'the check never failed',
+    });
     await expect(checkResult()).toHaveText(expect.stringContaining("Couldn't check for updates."));
     await expect(checkResult()).toHaveText(
       expect.stringContaining("Couldn't check for updates: the update server can't be reached."),
