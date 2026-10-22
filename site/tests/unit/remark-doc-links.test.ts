@@ -44,15 +44,24 @@ describe("rewriteHref from a file in docs/", () => {
     expect(rewrite("../crates/")).toBe("https://github.com/Roboroads/repeat-that/tree/main/crates/");
   });
 
-  it("leaves external links, mail links, absolute paths and plain anchors alone", () => {
+  it("leaves external links, mail links, protocol-relative links and plain anchors alone", () => {
     expect(rewrite("https://signpath.org")).toBe("https://signpath.org");
     expect(rewrite("https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml")).toBe(
       "https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml",
     );
     expect(rewrite("mailto:someone@example.org")).toBe("mailto:someone@example.org");
     expect(rewrite("//example.org/x")).toBe("//example.org/x");
-    expect(rewrite("/releases")).toBe("/releases");
     expect(rewrite("#audio-capture-permission")).toBe("#audio-capture-permission");
+  });
+
+  it("reads a link that starts with a slash from the repository root, as GitHub does", () => {
+    expect(rewrite("/docs/linux.md")).toBe("/linux/");
+    expect(rewrite("/docs/macos.md#build-from-source")).toBe("/macos/#build-from-source");
+    expect(rewrite("/PRIVACY.md")).toBe("/privacy/");
+    expect(rewrite("/LICENSE")).toBe(`${BLOB}LICENSE`);
+    expect(rewrite("/crates/")).toBe("https://github.com/Roboroads/repeat-that/tree/main/crates/");
+    expect(rewrite("/")).toBe("https://github.com/Roboroads/repeat-that/tree/main/");
+    expect(rewrite("../")).toBe("https://github.com/Roboroads/repeat-that/tree/main/");
   });
 
   it("leaves a link that climbs out of the repository alone", () => {

@@ -75,17 +75,22 @@ export function isRepoPath(href: string): boolean {
 /**
  * Turns a link from a Markdown file into one that works on the site. `from` is the file the link is in, relative to
  * the repository root. A relative link to a doc on the site becomes its route, anchor kept. Any other relative link
- * becomes the matching page on GitHub, so a link never ends on a page this site doesn't have.
+ * (and a link that starts with a slash, which GitHub reads from the repository root) becomes the matching page on
+ * GitHub, so a link never ends on a page this site doesn't have.
  */
 export function rewriteHref(href: string, from: string, routes: ReadonlyMap<string, string>): string {
-  if (href === "" || href.startsWith("#") || href.startsWith("/") || /^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
+  if (!isRepoPath(href)) return href;
 
+  // GitHub reads a link that starts with a slash from the root of the repository, so the site does too.
+  const rooted = href.startsWith("/");
   const [path, ...rest] = href.split("#");
   const hash = rest.length > 0 ? `#${rest.join("#")}` : "";
-  const target = posix.normalize(posix.join(posix.dirname(from), path.split("?")[0]));
+  const file = path.split("?")[0].replace(/^\/+/, "");
+  const target = posix.normalize(posix.join(rooted ? "" : posix.dirname(from), file));
   if (target === ".." || target.startsWith("../")) return href;
 
   const route = routes.get(target);
   if (route) return route + hash;
+  if (target === "." || target === "./") return REPO_TREE_URL + hash;
   return (target.endsWith("/") ? REPO_TREE_URL : REPO_BLOB_URL) + target + hash;
 }
