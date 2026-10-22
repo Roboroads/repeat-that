@@ -8,7 +8,7 @@
 //! `me.roboroads.repeat-that`. Plasma 6.4 reads the name from the desktop file in both places (xdg-desktop-portal-kde
 //! commit 2fd2d093, "Improve the global shortcuts workflow").
 //!
-//! So after each bind the app gives the component its name back through kglobalaccel's own `doRegister`, which updates
+//! So after the first bind of each session the app gives the component its name back through kglobalaccel's own `doRegister`, which updates
 //! the display name of an action that exists. It only touches a component that has actions, so it never adds one, and
 //! does nothing where kglobalaccel isn't running (GNOME and the rest) or the name is right already (Plasma 6.4 on).
 

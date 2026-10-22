@@ -677,7 +677,13 @@ mod worker {
         // Asked while there was no session, and out of date now: what to bind is in the state.
         while requests.try_recv().is_ok() {}
         *established = true;
-        bind(connection, &portal, &session, link, &link.session_up(version)).await;
+        bind(&portal, &session, link, &link.session_up(version)).await;
+        // Plasma 6.3's portal lists the shortcuts under the app ID once a session starts, see `kglobalaccel`. Done after
+        // the first answer, when the portal has registered them, whether the dialog was accepted or not. Later binds in
+        // the session leave the name alone.
+        if let Err(err) = kglobalaccel::name_component(connection, HOST_APP_ID, kglobalaccel::APP_NAME).await {
+            eprintln!("could not give the shortcuts their name in KDE: {err}");
+        }
 
         loop {
             let request = std::pin::pin!(requests.recv());
@@ -685,9 +691,7 @@ mod worker {
             match select(request, signal).await {
                 Either::Left((None, _)) => return Ok(()),
                 // Waits for the user if the desktop asks them.
-                Either::Left((Some(Request::Bind(shortcuts)), _)) => {
-                    bind(connection, &portal, &session, link, &shortcuts).await
-                }
+                Either::Left((Some(Request::Bind(shortcuts)), _)) => bind(&portal, &session, link, &shortcuts).await,
                 Either::Left((Some(Request::Configure { reply, deadline }), _)) => {
                     // The asker gave up waiting, and the page would open unasked.
                     if Instant::now() >= deadline {
@@ -716,7 +720,6 @@ mod worker {
     /// Binds `shortcuts` and tells the link how it went. Only the session ending turns the hotkeys off: a bind that fails
     /// leaves the session, and the keys it already has, as they were.
     async fn bind(
-        connection: &zbus::Connection,
         portal: &GlobalShortcuts,
         session: &Session<GlobalShortcuts>,
         link: &PortalLink,
@@ -737,11 +740,6 @@ mod worker {
             Ok(bound) => link.bound(&assigned(bound.shortcuts())),
             Err(Error::Response(ResponseError::Cancelled)) => link.bind_dismissed(),
             Err(err) => link.bind_failed(&format!("could not bind the shortcuts: {err}")),
-        }
-        // Plasma 6.3's portal lists the shortcuts under the app ID, see `kglobalaccel`. Done after the answer, when the
-        // portal has registered them, whether the dialog was accepted or not.
-        if let Err(err) = kglobalaccel::name_component(connection, HOST_APP_ID, kglobalaccel::APP_NAME).await {
-            eprintln!("could not give the shortcuts their name in KDE: {err}");
         }
     }
 }
