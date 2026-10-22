@@ -37,7 +37,7 @@
 ## Milestone 6 — macOS (built, not yet tested on real hardware)
 Nobody on the team has a Mac, so macOS is released as untested: GitHub's macOS runners are the only test so far, and the
 release notes, README, settings window and [install guide](docs/install-macos.md) say so and link to a
-[macOS report form](.github/ISSUE_TEMPLATE/macos.yml).
+[macOS report form](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml).
 
 - [x] Core Audio process tap backend (macOS 14.2+), tested on a macOS runner with a virtual sound card
 - [x] Apple Silicon `.dmg`, signed with a Developer ID Application certificate and notarized (Apple Silicon only: Microsoft
