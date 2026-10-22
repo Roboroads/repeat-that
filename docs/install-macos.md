@@ -14,8 +14,9 @@ isn't in the App Store.
 
 ## Download
 
-Get the disk image from the [Releases page](https://github.com/Roboroads/repeat-that/releases). A release with macOS
-support has:
+Get the disk image from the [website](https://repeat-that.roboroads.me), which links the latest one and shows its
+checksum, or from the [Releases page](https://github.com/Roboroads/repeat-that/releases), which has every version. A
+release with macOS support has:
 
 - `Repeat-That_<version>_aarch64.dmg` is the disk image with the app in it.
 - `SHA256SUMS` holds the checksum of the image, to [verify your download](verify-downloads.md).
@@ -59,8 +60,8 @@ The default hotkeys are the ones from Windows. The settings window calls the Opt
 
 If you have more than one input source (keyboard layout), macOS may already use Control+Option+Space to switch between
 them, and then the replay hotkey does nothing. Change the hotkey in the Hotkeys section, or turn the macOS shortcut off
-in System Settings → Keyboard → Keyboard Shortcuts → Input Sources. How replays work is in the
-[README](../README.md#using-it).
+in System Settings → Keyboard → Keyboard Shortcuts → Input Sources. How replays work, and what the other settings do,
+is in the [guide](guide.md).
 
 ## Volume during replay
 

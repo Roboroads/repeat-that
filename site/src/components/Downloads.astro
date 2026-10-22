@@ -1,0 +1,54 @@
+---
+import { REPO_URL } from "../lib/docs";
+import { formatDate, type ReleaseData } from "../lib/release";
+import type { Requirements } from "../lib/requirements";
+import { summaryLine } from "../lib/requirements";
+import DownloadCard from "./DownloadCard.astro";
+
+interface Props {
+  data: ReleaseData;
+  requirements: Requirements | null;
+}
+
+const { data, requirements } = Astro.props;
+const release = data.release;
+const releasesUrl = `${REPO_URL}/releases`;
+
+// The macOS card quotes its requirements from the README, the section further down has them for every platform.
+const macosLine = requirements?.platforms.find((p) => p.id === "macos");
+---
+
+<section class="section" id="downloads" aria-labelledby="downloads-heading">
+  <div class="wrap">
+    <h2 id="downloads-heading">Download</h2>
+    {release ? (
+      <>
+        <p>
+          Version {release.version}, released {formatDate(release.published_at)}.
+          <a href={release.url}>Release notes on GitHub</a>.
+        </p>
+        <div class="cards">
+          {release.platforms.map((platform) => (
+            <DownloadCard
+              platform={platform}
+              release={release}
+              requirements={platform.name === "macos" && macosLine ? summaryLine(macosLine) : undefined}
+            />
+          ))}
+        </div>
+      </>
+    ) : (
+      <div class="cards">
+        <article class="card" data-empty>
+          <h3>No release yet</h3>
+          <p class="card-meta">There is nothing to download yet. The first release will show up here and on the Releases page.</p>
+          <p class="card-links"><a href={releasesUrl}>Releases on GitHub</a></p>
+        </article>
+      </div>
+    )}
+    <p class="card-links releases-line">
+      <a href={releasesUrl}>All releases</a>
+      {release && <a href="/verify/">How to check a download</a>}
+    </p>
+  </div>
+</section>

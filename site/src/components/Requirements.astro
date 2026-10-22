@@ -1,0 +1,32 @@
+---
+import type { Requirements } from "../lib/requirements";
+
+interface Props {
+  requirements: Requirements;
+}
+
+const { requirements } = Astro.props;
+---
+
+<section class="section" id="requirements" aria-labelledby="requirements-heading">
+  <div class="wrap">
+    <h2 id="requirements-heading">Minimum system requirements</h2>
+    <div class="cards">
+      {requirements.platforms.map((platform) => (
+        <article class="card" data-requirements={platform.id}>
+          <h3>{platform.title}</h3>
+          <dl class="req">
+            {platform.rows.map((row) => (
+              <div>
+                <dt>{row.label}</dt>
+                <dd set:html={row.html} />
+              </div>
+            ))}
+          </dl>
+          {platform.notesHtml && <div class="note" set:html={platform.notesHtml} />}
+        </article>
+      ))}
+    </div>
+    {requirements.footerHtml && <div class="req-footer" set:html={requirements.footerHtml} />}
+  </div>
+</section>

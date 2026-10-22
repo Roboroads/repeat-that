@@ -1,0 +1,62 @@
+---
+import { hasRoute, REPO_URL } from "../lib/docs";
+import { formatSize, kindLabel, type Release, type ReleasePlatform } from "../lib/release";
+
+interface Props {
+  platform: ReleasePlatform;
+  release: Release;
+  /** One sentence of requirements, taken from the README. */
+  requirements?: string;
+}
+
+const { platform, release, requirements } = Astro.props;
+const headingId = `card-${platform.name}`;
+const macosReport = `${REPO_URL}/issues/new?template=macos.yml`;
+const linuxInstall = hasRoute("/install/linux/") ? "/install/linux/" : undefined;
+---
+
+<article class="card" data-platform={platform.name} aria-labelledby={headingId}>
+  <h3 id={headingId}>
+    {platform.label}
+    <span class="badge" data-badge hidden>Your system</span>
+  </h3>
+
+  {platform.name === "windows" && (
+    <div class="notice">
+      <p>
+        Not code-signed yet, so Windows SmartScreen warns the first time you run the installer. Click <strong>More info</strong>, then
+        <strong>Run anyway</strong>.
+      </p>
+    </div>
+  )}
+  {platform.name === "macos" && (
+    <div class="notice" data-notice="untested">
+      <p>
+        Built, but not tested on a real Mac yet. If something doesn't work, please
+        <a href={macosReport}>file a macOS report</a>.
+      </p>
+    </div>
+  )}
+  {requirements && <p class="card-meta">{requirements}</p>}
+
+  <ul class="files">
+    {platform.files.map((file) => (
+      <li>
+        <span class="file-kind">{kindLabel(file.kind)}</span>
+        <a class="file-link" href={file.url}>{file.name}</a>
+        <span class="file-size">({formatSize(file.size)})</span>
+        <span class="sha-label">SHA-256</span>
+        <code class="sha">{file.sha256}</code>
+      </li>
+    ))}
+  </ul>
+
+  <p class="card-links">
+    <a href={release.sums_url}>SHA256SUMS for {release.tag}</a>
+    <a href="/verify/">How to verify</a>
+    {platform.name === "windows" && <a href="/install/windows/">Install steps</a>}
+    {platform.name === "macos" && <a href="/install/macos/">Install steps</a>}
+    {platform.name === "linux" && linuxInstall && <a href={linuxInstall}>Install steps</a>}
+    {platform.name === "linux" && <a href="/linux/">Hotkeys on Linux</a>}
+  </p>
+</article>

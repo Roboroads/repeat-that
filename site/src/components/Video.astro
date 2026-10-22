@@ -1,0 +1,23 @@
+---
+import type { Media } from "../lib/media";
+
+interface Props {
+  media: Media;
+}
+
+const { media } = Astro.props;
+---
+
+<section class="section" id="demo" aria-labelledby="demo-heading">
+  <div class="wrap">
+    <h2 id="demo-heading">Watch the introduction</h2>
+    <figure class="demo">
+      <!-- preload="none": the browser fetches nothing until someone presses play -->
+      <video controls preload="none" playsinline src={media.video} poster={media.poster}>
+        {media.captions && <track kind="captions" src={media.captions} srclang="en" label="English" default />}
+        <p>Your browser can't play this video. <a href={media.video}>Download it</a> instead.</p>
+      </video>
+      <figcaption>A short introduction to Repeat That. The app never records to disk.</figcaption>
+    </figure>
+  </div>
+</section>
