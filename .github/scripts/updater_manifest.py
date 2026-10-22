@@ -24,6 +24,11 @@ latest-linux-x86_64.json), prints its path and has this content:
 and darwin-aarch64-app, linux-x86_64 and linux-x86_64-appimage). `url` is the download URL of the payload on the release
 of the tag and `signature` the content of the .sig file without its line end.
 
+The plain `<target>-<arch>` key is there on purpose. The app looks up `<target>-<arch>-<installer>` first and falls back
+to it, and a Linux .deb or .rpm install (installers `deb` and `rpm`) has no key of its own: with the fallback, its check
+finds the new version, which it only announces. Such an install must never download the entry: it is the AppImage, and
+the plugin refuses those bytes as "not a valid deb package" after fetching them.
+
 `notes` is plain text for the app to show as text: line ends become \\n, control characters (not tab and newline) and
 HTML comments (`<!-- macos-untested -->`) are removed, except in code (a fenced block or `inline code`) and when never
 closed, runs of blank lines shrink to one, and the result is cut to 4000 characters, the last of which is an ellipsis
@@ -77,6 +82,7 @@ class Target:
 
     @property
     def keys(self):
+        # The plain key is the fallback of installs without a key of their own (the module docstring says why).
         return (self.key, f"{self.key}-{self.installer}")
 
     @property

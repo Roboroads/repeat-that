@@ -103,6 +103,11 @@ class ManifestFormatTests(unittest.TestCase):
             },
         )
 
+    def test_a_linux_deb_or_rpm_install_finds_the_plain_key_to_fall_back_to(self):
+        # The app tries linux-x86_64-deb or -rpm first, then linux-x86_64; only the AppImage has a key of its own.
+        keys = set(build("linux")[1]["platforms"])
+        self.assertEqual(keys, {"linux-x86_64", "linux-x86_64-appimage"})
+
     def test_the_version_is_the_tag_without_the_v(self):
         for tag, version in (("v0.2.0", "0.2.0"), ("v10.20.30", "10.20.30")):
             payload = f"Repeat-That_{version}_x64-setup.exe"
