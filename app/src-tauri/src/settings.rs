@@ -14,10 +14,11 @@ const BUFFER_SECONDS_DEFAULT: u32 = 30;
 const REPLAY_SPEED: (f64, f64, f64) = (0.75, 1.5, 1.0);
 const CATCH_UP_SPEED: (f64, f64, f64) = (1.25, 2.0, 1.5);
 const DUCK_LEVEL: (f64, f64, f64) = (DUCK_LEVEL_MIN, 1.0, 0.2);
-/// The lowest duck level, [`rt_capture::PLATFORM_MIN_DUCK_LEVEL`] as the window gets it: macOS can mute the app during
+/// The lowest duck level, the capture backend's [`rt_capture::PLATFORM_MIN_DUCK_LEVEL`]: macOS can mute the app during
 /// a replay (0), Windows and Linux go down to 5%, because their capture can't hear a muted app. A file from a Mac that
-/// holds 0 is clamped to 5% here.
-const DUCK_LEVEL_MIN: f64 = if cfg!(target_os = "macos") { 0.0 } else { 0.05 };
+/// holds 0 is clamped to 5% here. Rounded to whole thousandths, so the window gets 0.05 and not the `f32` that is
+/// closest to it, 0.0500000007.
+const DUCK_LEVEL_MIN: f64 = (rt_capture::PLATFORM_MIN_DUCK_LEVEL as f64 * 1000.0).round() / 1000.0;
 
 /// One action that has a hotkey: everything the settings code needs to know about it.
 pub struct HotkeyDef {
@@ -597,6 +598,11 @@ mod tests {
     #[test]
     fn the_duck_minimum_is_the_one_of_the_capture_backend() {
         assert_eq!(DUCK_LEVEL_MIN as f32, rt_capture::PLATFORM_MIN_DUCK_LEVEL);
+        let expected = if cfg!(target_os = "macos") { 0.0 } else { 0.05 };
+        assert_eq!(
+            DUCK_LEVEL_MIN, expected,
+            "exactly what the window shows as a whole percent"
+        );
     }
 
     #[cfg(target_os = "macos")]
