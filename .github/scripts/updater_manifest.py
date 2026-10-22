@@ -36,7 +36,8 @@ units or bytes, whichever way the app counts), ending in an ellipsis when someth
 
 It fails (exit 1, `::error::` annotations, nothing written) when a file is missing, the tag isn't v0.1.0-shaped, the
 payload doesn't carry the version of the tag or doesn't look like an update file of the platform, the .sig isn't named
-after the payload or isn't a base64 minisign signature, or the repository or the timestamp is malformed.
+after the payload or isn't a base64 minisign signature made for that file, or the repository or the timestamp is
+malformed.
 """
 
 import argparse
@@ -115,10 +116,12 @@ def clean_notes(text):
     return text
 
 
-def read_signature(text):
+def read_signature(text, name):
     """The signature of a .sig file: its one line of base64 without the line end. Raises ReleaseError when the text is
-    something else, so a wrong file can't end up in a manifest. `tauri signer sign` writes the base64 of a minisign
-    signature file ("untrusted comment: ...", signature, "trusted comment: ...", global signature)."""
+    something else, or was made for another file than `name`, so a wrong file can't end up in a manifest (the app would
+    only find out once it has downloaded the update). `tauri signer sign` writes the base64 of a minisign signature
+    file: "untrusted comment: ...", signature, "trusted comment: timestamp:<seconds><tab>file:<name>", global signature.
+    """
     line = text.strip()
     if not line:
         raise ReleaseError("the signature file is empty")
@@ -126,8 +129,15 @@ def read_signature(text):
         decoded = base64.b64decode(line, validate=True).decode("utf-8")
     except ValueError:  # not base64 (also a line break inside), or not text
         decoded = ""
-    if not decoded.startswith("untrusted comment:") or "\ntrusted comment:" not in decoded:
+    _, found, trusted = decoded.partition("\ntrusted comment:")
+    if not decoded.startswith("untrusted comment:") or not found:
         raise ReleaseError("the signature file is not the base64 of a minisign signature, as `tauri signer sign` makes")
+    fields = trusted.split("\n", 1)[0].strip().split("\t")
+    files = [field[len("file:") :] for field in fields if field.startswith("file:")]
+    if not files:
+        raise ReleaseError("the signature does not say which file it was made for (no file: in its trusted comment)")
+    if files != [name]:
+        raise ReleaseError(f"the signature was made for {files[0]!r}, not for {name}")
     return line
 
 
@@ -166,7 +176,7 @@ def build_manifest(*, tag, platform, payload, signature, notes, repo, pub_date):
             errors += error.errors
 
     try:
-        signature = read_signature(signature)
+        signature = read_signature(signature, name)
     except ReleaseError as error:
         errors += error.errors
     if not REPO.fullmatch(repo):

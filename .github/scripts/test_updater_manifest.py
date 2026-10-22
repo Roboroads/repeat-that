@@ -9,6 +9,7 @@ import contextlib
 import errno
 import io
 import json
+import os
 import tempfile
 import unittest
 import unittest.mock
@@ -31,26 +32,42 @@ DEB = "Repeat-That_0.2.0_amd64.deb"
 PAYLOADS = {"windows": EXE, "macos": APP, "linux": APPIMAGE}
 
 
-def signature(label="signature from tauri secret key"):
-    """What `tauri signer sign` writes to the .sig file: a minisign signature file, base64 encoded, on one line."""
+def signature(file=EXE, label="signature from tauri secret key"):
+    """What `tauri signer sign` writes to the .sig file: a minisign signature file, base64 encoded, on one line. Its
+    trusted comment names the file it was made for (None: leaves that out)."""
+    comment = "timestamp:1761054634" + (f"\tfile:{file}" if file else "")
     minisign = (
         f"untrusted comment: {label}\n"
         "RUQqzR3dX1h0eVSyY2dGZUVqYy9FZ2pPdTJ0cHRVbWFuZGl2ZXJzaXR5VGF1cmlTaWduYXR1cmU=\n"
-        "trusted comment: timestamp:1761054634\tfile:Repeat-That_0.2.0_x64-setup.exe\tprehashed\n"
+        f"trusted comment: {comment}\n"
         "d2VsbCB0aGlzIGlzIG5vdCBhIHJlYWwgc2lnbmF0dXJlIGJ1dCBpdCBpcyBiYXNlNjQ=\n"
     )
     return base64.b64encode(minisign.encode()).decode()
 
 
+# A real one: `tauri signer sign` of 5 bytes of text called Repeat-That_0.2.0_amd64.AppImage, with a throwaway key.
+REAL_SIGNATURE = (
+    "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSMm5BSTZhR3FhVjNCNUEza0xFMFdF"
+    "RGxPMFJkdGczb3Q2UHVuM3pzd0tRSURHN21uc0o1bnIweVV0TklZWE5uZFd1ay83ZnZUUEwzWlZ4ZXlwc3lMNC83d3FGSGVmOXdn"
+    "PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNjY0MDgzCWZpbGU6UmVwZWF0LVRoYXRfMC4yLjBfYW1kNjQuQXBwSW1h"
+    "Z2UKcWF3RUZua0xGWDE5TEhqRk9nM29BbVlZbW90dloxYXVHeUo5RUxYWml4N3hKZjN3VFcvOFBJMFY1ZjdZR0Rwam5laWFTaHJF"
+    "amh1eCtuWVVBTjlkQ0E9PQo="
+)
+
+
 SIG = signature()
+SIGS = {name: signature(name) for name in PAYLOADS.values()}
 
 
-def build(platform="windows", payload=None, sig=SIG + "\n", notes="", tag=TAG, repo=REPO, pub_date=PUB_DATE):
-    """(manifest file name, data) with the usual input, any part of which a test can change."""
+def build(platform="windows", payload=None, sig=None, notes="", tag=TAG, repo=REPO, pub_date=PUB_DATE):
+    """(manifest file name, data) with the usual input, any part of which a test can change. Without a sig it is the
+    usual one for the payload."""
+    payload = payload or PAYLOADS[platform]
+    if sig is None:
+        sig = signature(os.path.basename(payload)) + "\n"
     return um.build_manifest(
-        tag=tag, platform=platform, payload=payload or PAYLOADS[platform], signature=sig, notes=notes, repo=repo,
-        pub_date=pub_date,
-    )  # fmt: skip
+        tag=tag, platform=platform, payload=payload, signature=sig, notes=notes, repo=repo, pub_date=pub_date
+    )
 
 
 def errors_of(*args, **kwargs):
@@ -87,8 +104,8 @@ class ManifestFormatTests(unittest.TestCase):
         self.assertEqual(
             data["platforms"],
             {
-                "darwin-aarch64": {"url": f"{BASE}/{APP}", "signature": SIG},
-                "darwin-aarch64-app": {"url": f"{BASE}/{APP}", "signature": SIG},
+                "darwin-aarch64": {"url": f"{BASE}/{APP}", "signature": SIGS[APP]},
+                "darwin-aarch64-app": {"url": f"{BASE}/{APP}", "signature": SIGS[APP]},
             },
         )
 
@@ -98,8 +115,8 @@ class ManifestFormatTests(unittest.TestCase):
         self.assertEqual(
             data["platforms"],
             {
-                "linux-x86_64": {"url": f"{BASE}/{APPIMAGE}", "signature": SIG},
-                "linux-x86_64-appimage": {"url": f"{BASE}/{APPIMAGE}", "signature": SIG},
+                "linux-x86_64": {"url": f"{BASE}/{APPIMAGE}", "signature": SIGS[APPIMAGE]},
+                "linux-x86_64-appimage": {"url": f"{BASE}/{APPIMAGE}", "signature": SIGS[APPIMAGE]},
             },
         )
 
@@ -127,6 +144,11 @@ class ManifestFormatTests(unittest.TestCase):
     def test_characters_that_do_not_belong_in_a_url_are_escaped(self):
         _, data = build("windows", payload="Repeat That_0.2.0_x64-setup.exe")
         self.assertEqual(data["platforms"]["windows-x86_64"]["url"], f"{BASE}/Repeat%20That_0.2.0_x64-setup.exe")
+
+    def test_a_signature_as_tauri_signer_writes_it_is_taken(self):
+        _, data = build("linux", payload=APPIMAGE, sig=REAL_SIGNATURE)
+        self.assertEqual(data["platforms"]["linux-x86_64-appimage"]["signature"], REAL_SIGNATURE)
+        self.assertIn(f"made for {APPIMAGE!r}, not for {EXE}", errors_of("windows", payload=EXE, sig=REAL_SIGNATURE)[0])
 
     def test_the_signature_is_the_sig_file_without_the_line_end(self):
         for text in (SIG, SIG + "\n", SIG + "\r\n", SIG + "\n\n", f"  {SIG}  \n"):
@@ -207,6 +229,17 @@ class ErrorTests(unittest.TestCase):
         first_lines = "\n".join(base64.b64decode(SIG).decode().split("\n")[:2])
         errors = errors_of(sig=base64.b64encode(first_lines.encode()).decode())
         self.assertEqual(len(errors), 1, errors)
+
+    def test_a_signature_made_for_another_file_fails(self):
+        for other in (APPIMAGE, f"x{EXE}", EXE[1:], f"{EXE}.sig"):
+            errors = errors_of(sig=signature(other))
+            self.assertEqual(len(errors), 1, (other, errors))
+            self.assertIn(f"made for {other!r}, not for {EXE}", errors[0])
+
+    def test_a_signature_that_does_not_name_its_file_fails(self):
+        errors = errors_of(sig=signature(None))
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("does not say which file", errors[0])
 
     def test_a_signature_with_a_line_break_inside_fails(self):
         half = len(SIG) // 2
@@ -375,6 +408,9 @@ class DeterminismTests(unittest.TestCase):
         self.assertEqual(json.loads(um.render(data)), data)
 
 
+USUAL = object()  # the signature that goes with the payload
+
+
 class CommandLineTests(unittest.TestCase):
     def run_main(self, *argv):
         out, err = io.StringIO(), io.StringIO()
@@ -385,7 +421,7 @@ class CommandLineTests(unittest.TestCase):
                 code = stop.code
         return code, out.getvalue(), err.getvalue()
 
-    def files(self, folder, payload=EXE, sig=SIG + "\n", notes="Release notes\n", sig_name=None):
+    def files(self, folder, payload=EXE, sig=USUAL, notes="Release notes\n", sig_name=None):
         """Write the input files into `folder`; a sig or notes of None leaves that file out. Returns the paths."""
         folder = Path(folder)
         paths = {
@@ -394,6 +430,8 @@ class CommandLineTests(unittest.TestCase):
             "notes": folder / "notes.md",
         }
         paths["payload"].write_bytes(b"not really an installer")
+        if sig is USUAL:
+            sig = signature(payload) + "\n"
         if sig is not None:
             paths["sig"].write_text(sig, encoding="utf-8")
         if notes is not None:
@@ -511,6 +549,14 @@ class CommandLineTests(unittest.TestCase):
             code, _, err = self.run_main(*self.args(folder, paths))
             self.assertEqual(code, 1)
             self.assertIn(f"{APPIMAGE}.sig is not the signature of {EXE}: expected {EXE}.sig", err)
+            self.assertFalse((Path(folder) / "out").exists())
+
+    def test_a_sig_file_made_for_another_file_is_an_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            paths = self.files(folder, sig=signature(APPIMAGE) + "\n")
+            code, out, err = self.run_main(*self.args(folder, paths))
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn(f"made for {APPIMAGE!r}, not for {EXE}", err)
             self.assertFalse((Path(folder) / "out").exists())
 
     def test_a_bad_signature_is_an_error_and_the_old_manifest_stays(self):
