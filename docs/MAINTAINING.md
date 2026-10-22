@@ -902,9 +902,8 @@ every installed copy accepts. The key is a minisign key pair made by `tauri sign
 Apple certificate and from any Windows code signing: those make the operating system trust a file, this one makes the
 app trust an update.
 
-Where things stand on 2026-10-22: the key pair exists, the Environment `updater-signing` holds both secrets, and the
-repository variable `TAURI_UPDATER_PUBKEY` isn't set yet (step 4 below), so no build has an updater. Delete this
-paragraph once step 4 is done.
+The key is in use: the Environment `updater-signing` holds both secrets, and the repository variable
+`TAURI_UPDATER_PUBKEY` has been set since 2026-10-22 (step 4 below), so every build since then has the updater.
 
 ### Where the parts live
 
