@@ -137,7 +137,10 @@ for index in "${!payloads[@]}"; do
     echo "::error::The Tauri CLI did not write $name.sig"
     exit 1
   fi
-  base64 -d <"$payload.sig" >"$work/signature"
+  if ! base64 -d <"$payload.sig" >"$work/signature" 2>/dev/null; then
+    echo "::error::$name.sig is not base64, so the Tauri CLI did not write a signature"
+    exit 1
+  fi
   if out=$(minisign -V -p "$work/pub" -x "$work/signature" -m "$payload" 2>&1); then
     echo "    signed, and the signature holds for TAURI_UPDATER_PUBKEY"
   else
