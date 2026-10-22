@@ -150,12 +150,15 @@ jobs:
         run: python3 -I -m unittest discover -s packaging/flatpak -p 'test_*.py' -v
 
       # Also the files for Flathub: the same manifest with the release's tag and commit in place of this folder, which the
-      # lint below checks as Flathub's reviewers will. (Nothing is fetched from that tag here.)
+      # lint below checks as Flathub's reviewers will. The commit is the one that was checked out, which is the release
+      # commit for a release (the given `sha` of a draft, else the tag's), so the pair is right for what is built. A pull
+      # request or a dry run has no tag yet, and `v<version>` stands in: nothing is fetched from it here.
       - name: Generate the sources
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          COMMIT: ${{ inputs.sha || github.sha }}
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          COMMIT=$(git rev-parse HEAD)
           # The node generator's progress bar is one line per package, redrawn with carriage returns.
           if ! packaging/flatpak/generate-sources.sh --flathub "v$VERSION" "$COMMIT" > generate.log 2>&1; then
             tr '\r' '\n' < generate.log | grep -v 'Generating packages' | tail -n 60
