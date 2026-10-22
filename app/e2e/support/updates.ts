@@ -1,0 +1,90 @@
+// What the update specs know about the update banner and the Updates block of General. A debug build gets a pretend
+// update source from `REPEAT_THAT_MOCK_UPDATE` (see src-tauri/src/updater/source.rs): `available` offers 99.0.0, and
+// the app has one source for its whole run, so each answer of it has a spec file of its own (SPEC_ENV in wdio.conf.ts).
+import { $, browser } from '@wdio/globals';
+import { invoke } from './app.js';
+
+/** The version every mock but `none` and `fail-check` announces. */
+export const MOCK_VERSION = '99.0.0';
+
+/** `get_update_status`, as far as the specs look at it. */
+export interface BackendUpdateStatus {
+  mode: 'install' | 'notify' | 'external' | 'off';
+  modeReason: string | null;
+  currentVersion: string;
+  state: 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'error';
+  available: { version: string; date: string | null; notes: string; releaseUrl: string } | null;
+  progress: number | null;
+  /** In state `error`. */
+  error: string | null;
+  errorKind: 'check' | 'install' | null;
+  lastCheckedAt: number | null;
+  manual: boolean;
+}
+
+/** The backend's own view of the updater, for what the page does not show. */
+export const backendUpdateStatus = () => invoke<BackendUpdateStatus>('get_update_status');
+
+/**
+ * Fails with a clear message when the app wasn't started the way the spec needs. Without it a wrong entry in `SPEC_ENV`
+ * would show up as timeouts that say nothing about the cause. `mock` is the value of `REPEAT_THAT_MOCK_UPDATE` the spec
+ * is written for, or `null` for an app with no update source.
+ */
+export async function requireUpdateSource(mock: string | null): Promise<void> {
+  // What wdio.conf.ts gave the app. Every mock makes the app an install that can replace itself, so the app's own
+  // answer can only tell a mock from none, and the kind has to come from here.
+  const given = process.env.E2E_UPDATE_MOCK || null;
+  if (given !== mock) {
+    throw new Error(
+      `this spec needs REPEAT_THAT_MOCK_UPDATE=${mock ?? '(not set)'}, but the app was started with ${given ?? '(it not set)'} (SPEC_ENV in e2e/wdio.conf.ts)`,
+    );
+  }
+  const { mode } = await backendUpdateStatus();
+  if (mode === (mock === null ? 'off' : 'install')) return;
+  throw new Error(
+    mock === null
+      ? `the app has an updater (mode "${mode}"), but this spec needs none: REPEAT_THAT_MOCK_UPDATE must not be set`
+      : `the app wasn't started with REPEAT_THAT_MOCK_UPDATE=${mock}: its update mode is "${mode}"`,
+  );
+}
+
+/** "Check for updates automatically?", the question a build that checks asks until it is answered. */
+export const consentQuestion = () => $('aside*=Check for updates automatically?');
+
+/** The banner for the mock's version, in any of its forms: available, downloading, installing or failed. */
+export const offerBanner = () => $(`aside*=${MOCK_VERSION}`);
+
+/** What the banner for the mock's version shows at one moment. */
+export interface OfferSnapshot {
+  /** Everything the banner says; empty without a banner. */
+  text: string;
+  /** The value of its progress bar, 0 to 1; `null` without a bar, or with one that has no value. */
+  progress: number | null;
+}
+
+/** The banner for the mock's version, read in one round trip: for what changes faster than separate commands follow. */
+export async function offerSnapshot(): Promise<OfferSnapshot> {
+  return browser.execute((version: string) => {
+    const banner = [...document.querySelectorAll('aside')].find((aside) => aside.textContent?.includes(version));
+    const bar = banner?.querySelector('progress');
+    // A bar without a value is indeterminate (the size of the download is unknown), and reads as 0.
+    return { text: banner?.textContent ?? '', progress: bar?.hasAttribute('value') ? bar.value : null };
+  }, MOCK_VERSION);
+}
+
+/** The "Updates" block of General, a group named by its heading. It is there in every build, with a sentence or more. */
+const updatesBlock = () => $('//div[@role="group"][.//h3[normalize-space()="Updates"]]');
+
+/** The "Check for updates automatically" switch in General. */
+export const updateSwitch = () =>
+  updatesBlock().$(
+    './/input[@role="switch"][@aria-labelledby=//label[normalize-space()="Check for updates automatically"]/@id]',
+  );
+
+/** "Version 0.1.0 · last checked never", under the switch. */
+export const versionLine = () => updatesBlock().$('p*=last checked');
+
+export const checkNowButton = () => updatesBlock().$('button=Check now');
+
+/** What the last check came to, next to "Check now": "You have the latest version.", the error, ... */
+export const checkResult = () => updatesBlock().$('div[role="status"]');
