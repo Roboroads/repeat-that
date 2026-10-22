@@ -90,6 +90,36 @@ and makes the decisions. Its unit tests (`test_release_assets.py`) run in every 
 with `python3 -m unittest discover -s .github/scripts`. The `Workflow scripts` job of `ci.yml` runs every test in that
 folder on every pull request and every push to `main`, `test_workflow_secrets.py` among them.
 
+Workflow steps that install packages with apt run [`apt-install.sh`](../.github/scripts/apt-install.sh) instead of
+calling `apt-get`. Before it existed, three CI runs sat in an apt step for 30 minutes or more until they were
+cancelled, and a rerun finished in under a minute. The cause is the mirror: GitHub-hosted Ubuntu runners get their
+packages from `azure.archive.ubuntu.com`, which is sometimes painfully slow. Their sources name a list of mirrors
+(`/etc/apt/apt-mirrors.txt`, azure first), but apt only moves to the next mirror when one fails, not when one is slow.
+So on a runner whose sources name the azure mirror, the script first points them at a list of its own,
+`/etc/apt/ci-apt-mirrors.txt`: `archive.ubuntu.com`, then `mirrors.edge.kernel.org` and `mirror.us.leaseweb.net`, in
+that order. This covers both the one-line `sources.list` of Ubuntu 22.04 and the `ubuntu.sources` of 24.04. Sources that
+don't name the azure mirror are left alone, such as the `ubuntu:24.04` container of `build-linux.yml` (it uses
+`archive.ubuntu.com` already). If a mirror turns out to be a bad one, change the list in `use_other_mirrors`.
+
+The timeouts and retries are the backstop for when a mirror stalls anyway. The script gives `apt-get update` 1 minute
+and `apt-get install` 3 minutes, and makes up to three attempts (`test_apt_install.py` tests all of this against a fake
+`apt-get`):
+
+- A call that finds an apt lock held by another process waits for it inside its own time limit, and doesn't use up an
+  attempt.
+- Before a retry that follows a failed or stopped install, it runs `dpkg --configure -a` and `apt-get -f install`. If
+  either fails, that is a warning and the retry goes on.
+- An error that a retry can't change, such as a package that doesn't exist, ends the step at once with apt's own
+  message, unless `apt-get update` lost an index on the way (then the package may only be missing from the lists).
+- A retry shows up as a warning on the run. When all attempts fail, one error names the step and the last error apt
+  printed. A call that the system killed (out of memory, say) is reported as killed, not as timed out.
+
+Each of these steps also has `timeout-minutes: 25`, which is longer than the script's worst case of about 17 minutes, so
+the script's own message comes first. The `Rust` and `E2E` jobs of `ci.yml` have caps that leave room for those retries
+on top of a cold build. A new apt step should do the same. `build-linux.yml` runs in a container that has no git until
+its apt step has run, so it checks the repository out twice: once before the install, through the GitHub API (about a
+second), to get the script, and once after, with git.
+
 | Platform | Required | Files | Update files (only with an [update key](#update-signing-key)) | Build job in `publish-release.yml` |
 |---|---|---|---|---|
 | `windows` | yes | `*-setup.exe` | `*-setup.exe.sig`, `latest-windows-x86_64.json` | `windows`, calls `build-windows.yml` |
