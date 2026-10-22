@@ -1,3 +1,8 @@
+<script lang="ts" module>
+  /** How long to wait before asking for the help again when that failed. */
+  export const HELP_RETRY_MS = 2000;
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
   import {
@@ -13,14 +18,28 @@
   // on in the settings isn't picked up.
   let help = $state<PermissionHelp | null>(null);
   let busy = $state(false);
+  /** Why the help couldn't be had; it is asked for again until it can. */
+  let helpFailure = $state<string | null>(null);
+  /** Why the latest button's command failed. */
   let failure = $state<string | null>(null);
 
-  onMount(async () => {
-    try {
-      help = await capturePermissionHelp();
-    } catch (raw) {
-      failure = toApiError(raw).message;
+  onMount(() => {
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let gone = false;
+    async function load() {
+      try {
+        help = await capturePermissionHelp();
+        helpFailure = null;
+      } catch (raw) {
+        helpFailure = toApiError(raw).message;
+        if (!gone) retry = setTimeout(() => void load(), HELP_RETRY_MS);
+      }
     }
+    void load();
+    return () => {
+      gone = true;
+      clearTimeout(retry);
+    };
   });
 
   async function run(command: () => Promise<void>) {
@@ -53,7 +72,7 @@
   {#if help?.canOpenSettings}
     <p class="note muted">If capturing doesn't resume once it's turned on, quit and reopen Repeat That.</p>
   {/if}
-  {#if failure}<p class="note problem" role="alert">{failure}</p>{/if}
+  {#if failure ?? helpFailure}<p class="note problem" role="alert">{failure ?? helpFailure}</p>{/if}
 </div>
 
 <style>

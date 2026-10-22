@@ -1,8 +1,9 @@
 import { emit } from '@tauri-apps/api/event';
 import { fireEvent, screen, waitFor, within } from '@testing-library/svelte';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { argsOf, renderApp } from '../../test-utils';
 import type { PermissionHelp } from '../api';
+import { HELP_RETRY_MS } from './PermissionHelp.svelte';
 import { MOCK_HOW_TO_ALLOW, type MockBackendInit, scenarioInit } from '../mock-ipc';
 
 const MACOS_15: PermissionHelp = { canOpenSettings: true, canAskAgain: true };
@@ -18,6 +19,10 @@ async function notAllowed(permissionHelp: PermissionHelp = MACOS_15, init: MockB
   await screen.findByText("Repeat That isn't allowed to capture audio");
   return view;
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('help for a capture that is not allowed', () => {
   it('is not there while capturing', async () => {
@@ -98,6 +103,50 @@ describe('help for a capture that is not allowed', () => {
     expect(await within(group).findByRole('alert')).toHaveTextContent('The audio service is not running');
     expect(within(group).queryByRole('button')).not.toBeInTheDocument();
     expect(screen.getByText(MOCK_HOW_TO_ALLOW)).toBeInTheDocument();
+  });
+
+  it('asks for the help again until it gets it, and then shows the buttons', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let failures = 2;
+    const { backend } = await renderApp(scenarioInit('not-allowed'), (backend) => {
+      backend.overrides.capture_permission_help = (args) => {
+        if (failures-- > 0) throw { kind: 'backend', message: 'The audio service is not running' };
+        return backend.run('capture_permission_help', args);
+      };
+    });
+    const group = await screen.findByRole('group', { name: 'Allow audio capture' });
+    expect(await within(group).findByRole('alert')).toHaveTextContent('The audio service is not running');
+
+    await vi.advanceTimersByTimeAsync(HELP_RETRY_MS);
+    expect(argsOf(backend, 'capture_permission_help')).toHaveLength(2);
+    expect(button('Ask again')).not.toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(HELP_RETRY_MS);
+
+    expect(await within(group).findByRole('button', { name: 'Ask again' })).toBeEnabled();
+    expect(within(group).queryByRole('alert')).not.toBeInTheDocument();
+    expect(argsOf(backend, 'capture_permission_help')).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(3 * HELP_RETRY_MS);
+    expect(argsOf(backend, 'capture_permission_help')).toHaveLength(3);
+    vi.useRealTimers();
+  });
+
+  it('stops asking for the help once capturing resumes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { backend } = await renderApp(scenarioInit('not-allowed'), (backend) => {
+      backend.overrides.capture_permission_help = () => {
+        throw { kind: 'backend', message: 'The audio service is not running' };
+      };
+    });
+    await screen.findByRole('group', { name: 'Allow audio capture' });
+    await waitFor(() => expect(argsOf(backend, 'capture_permission_help')).toHaveLength(1));
+
+    backend.permission = 'allowed';
+    await emit('status', backend.status());
+    await waitFor(() => expect(help()).not.toBeInTheDocument());
+    await vi.advanceTimersByTimeAsync(3 * HELP_RETRY_MS);
+
+    expect(argsOf(backend, 'capture_permission_help')).toHaveLength(1);
+    vi.useRealTimers();
   });
 
   it('comes back when the permission is taken back while capturing, and asks for the help again', async () => {
