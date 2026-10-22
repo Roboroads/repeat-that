@@ -4,7 +4,7 @@ Repeat That runs on Macs with Apple Silicon and macOS 14.2 or later. It captures
 process tap, and releases are signed with a Developer ID certificate and notarized by Apple, so the app opens like any
 other once it is in Applications. How to install it is in [install-macos.md](install-macos.md).
 
-**macOS support hasn't been tested on a real Mac yet.** Nobody on the team has one, so CI on GitHub's macOS runners is
+macOS support hasn't been tested on a real Mac yet. Nobody on the team has one, so CI on GitHub's macOS runners is
 the only test so far. If something doesn't work, please
 [file a macOS report](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml). The notice stays in the
 README, the settings window and the release notes until someone confirms that it works.
@@ -22,11 +22,11 @@ replay still works in the meantime.
 
 What the window offers depends on your macOS version:
 
-- **macOS 15 and later.** **Open System Settings** opens Privacy & Security. Scroll to **Screen & System Audio
+- On macOS 15 and later, **Open System Settings** opens Privacy & Security. Scroll to **Screen & System Audio
   Recording** and turn on Repeat That (audio only is enough). If capturing doesn't resume once it is on, quit and reopen
   Repeat That. **Ask again** is there too.
-- **macOS 14.x.** Only **Ask again**. Click it and choose **Allow**. System Settings has no switch for this permission
-  on 14, and the Screen Recording switch there is a different permission (Apple lists `ScreenCapture` and
+- On macOS 14.x there is only **Ask again**. Click it and choose **Allow**. System Settings has no switch for this
+  permission on 14, and the Screen Recording switch there is a different permission (Apple lists `ScreenCapture` and
   `AudioCapture` as separate services), so turning it on doesn't help.
 
 **Ask again** does what the command below does, and then makes macOS show its question once more. It works only in the
@@ -44,7 +44,7 @@ lists for capturing system audio, and `me.roboroads.repeat-that` is the app's bu
 If you turn the permission off while Repeat That is capturing, macOS ends the capture, and the window says so within a
 few seconds.
 
-Two things are written assumptions, because nobody could try them. **Open System Settings** opens the Privacy &
+Two things here are assumptions, because nobody could try them. **Open System Settings** opens the Privacy &
 Security page and not the audio pane itself, because Apple documents no link to that pane. And Repeat That finds out
 whether the permission is given with two functions of macOS's private TCC framework, which it loads at run time. If a
 macOS version doesn't have them, Repeat That can't tell and just tries to capture, so a missing permission shows up as

@@ -3,11 +3,11 @@
 Repeat That needs a Mac with Apple Silicon (M1 or later) running macOS 14.2 or later. Intel Macs aren't supported:
 the speech detector needs ONNX Runtime, and Microsoft ships no x86_64 or universal build of it after 1.23.2.
 
-**macOS support is new and hasn't been tested on a real Mac yet.** Nobody on the team has one. The app is built, signed
+macOS support is new and hasn't been tested on a real Mac yet. Nobody on the team has one. The app is built, signed
 and notarized on GitHub's macOS runners, and the capture code runs against a virtual sound card there, but nobody has
 used it the way you will. If something doesn't work, please
 [file a macOS report](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml). If it works, say so in
-the same form: that is what lets us remove this notice.
+the same form. That is what lets us remove this notice.
 
 The app is signed with a Developer ID certificate and notarized by Apple, so it opens like any other app. It still
 isn't in the App Store.
@@ -60,7 +60,7 @@ The default hotkeys are the ones from Windows. The settings window calls the Opt
 
 If you have more than one input source (keyboard layout), macOS may already use Control+Option+Space to switch between
 them, and then the replay hotkey does nothing. Change the hotkey in the Hotkeys section, or turn the macOS shortcut off
-in System Settings → Keyboard → Keyboard Shortcuts → Input Sources. How replays work, and what the other settings do,
+in System Settings > Keyboard > Keyboard Shortcuts > Input Sources. How replays work, and what the other settings do,
 is in the [guide](guide.md).
 
 ## Volume during replay
@@ -96,8 +96,8 @@ didn't work, with your macOS version.
    press steps back, and catch-up and stop work.
 7. Listen to the app's volume around a replay at 20% and at 0%: it drops when the replay starts, comes back about 300 ms
    after it ends, and doesn't click.
-8. See the "not allowed" state. On macOS 15 and later, turn the permission off in System Settings → Privacy & Security
-   → Screen & System Audio Recording while capturing. Within a few seconds the window says Repeat That isn't allowed
+8. See the "not allowed" state. On macOS 15 and later, turn the permission off in System Settings > Privacy & Security >
+   Screen & System Audio Recording while capturing. Within a few seconds the window says Repeat That isn't allowed
    to capture audio. On macOS 14 there is no switch, so run `tccutil reset AudioCapture me.roboroads.repeat-that`,
    quit and reopen Repeat That, start capturing and click **Don't Allow**. Either way, a replay of what was buffered
    still works, and **Ask again** brings the question back. On macOS 15 and later **Open System Settings** opens
@@ -117,7 +117,7 @@ To uninstall:
 
 1. Turn off **Start at login** in the settings window, then choose **Quit** in the menu bar menu. If you removed the app
    with that switch still on, look in `~/Library/LaunchAgents` for a file with Repeat That in its name and delete it.
-   macOS may also list Repeat That under System Settings → General → Login Items & Extensions.
+   macOS may also list Repeat That under System Settings > General > Login Items & Extensions.
 2. Drag Repeat That from Applications to the Trash.
 3. Remove the permission: `tccutil reset AudioCapture me.roboroads.repeat-that`.
 4. Delete the settings folder, `~/Library/Application Support/me.roboroads.repeat-that`. It holds your settings and the
