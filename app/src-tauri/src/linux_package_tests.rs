@@ -21,14 +21,38 @@ fn linux_config() -> Value {
     read_json("tauri.linux.conf.json")
 }
 
-/// Where each file the package installs by hand goes, and where it comes from.
+/// Where each file the `.deb` installs by hand goes, and where it comes from. The `.rpm` installs the same files.
 fn installed() -> BTreeMap<String, String> {
-    linux_config()["bundle"]["linux"]["deb"]["files"]
+    installed_by("deb")
+}
+
+/// The same for one package: `deb`, `rpm` or `appimage` (the AppImage carries them inside).
+fn installed_by(package: &str) -> BTreeMap<String, String> {
+    linux_config()["bundle"]["linux"][package]["files"]
         .as_object()
-        .expect("the files")
+        .unwrap_or_else(|| panic!("the files of the {package} package"))
         .iter()
         .map(|(destination, source)| (destination.clone(), source.as_str().unwrap().to_string()))
         .collect()
+}
+
+/// The list in a package's settings, such as `depends`.
+fn listed(package: &str, key: &str) -> Vec<String> {
+    linux_config()["bundle"]["linux"][package][key]
+        .as_array()
+        .unwrap_or_else(|| panic!("{package}.{key}"))
+        .iter()
+        .map(|item| item.as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The desktop file the bundler makes itself, named after the product. The AppImage links it at its root.
+fn bundler_desktop_file() -> String {
+    let product = read_json("tauri.conf.json")["productName"]
+        .as_str()
+        .expect("a product name")
+        .to_string();
+    format!("/usr/share/applications/{product}.desktop")
 }
 
 /// The keys of the `[Desktop Entry]` group of a desktop file.
@@ -73,12 +97,80 @@ fn every_file_the_package_is_built_from_exists() {
     let sources: Vec<String> = icons
         .iter()
         .map(|icon| icon.as_str().unwrap().to_string())
-        .chain(installed().into_values())
+        .chain(
+            ["deb", "rpm", "appimage"]
+                .into_iter()
+                .flat_map(|package| installed_by(package).into_values()),
+        )
         .chain([template.to_string()])
         .collect();
     for source in sources {
         assert!(Path::new(&source).is_file(), "{source} is missing");
     }
+}
+
+#[test]
+fn linux_builds_the_deb_the_rpm_and_the_appimage() {
+    // The release takes exactly these three (release_assets.py has the patterns, build-linux.yml checks the files).
+    assert_eq!(
+        linux_config()["bundle"]["targets"],
+        serde_json::json!(["deb", "rpm", "appimage"])
+    );
+}
+
+#[test]
+fn the_rpm_installs_what_the_deb_installs() {
+    let config = linux_config();
+    let linux = &config["bundle"]["linux"];
+    assert_eq!(installed_by("rpm"), installed());
+    assert_eq!(linux["rpm"]["desktopTemplate"], linux["deb"]["desktopTemplate"]);
+}
+
+#[test]
+fn the_packages_depend_on_pipewire_and_alsa() {
+    // The binary links libpipewire-0.3 (capture, ducking, replay output) and libasound (cpal's ALSA host). The bundler
+    // adds WebKitGTK, GTK and the AppIndicator library itself, so only these two are listed. Debian 13 and Ubuntu 24.04
+    // renamed both packages for the 64-bit time_t transition, Debian 12 has the old names. The rpm names the sonames,
+    // as the bundler does for its own, so any rpm distribution resolves them (Fedora: pipewire-libs, alsa-lib).
+    let deb = listed("deb", "depends");
+    assert!(
+        deb.contains(&"libpipewire-0.3-0t64 | libpipewire-0.3-0".to_string()),
+        "{deb:?}"
+    );
+    assert!(deb.contains(&"libasound2t64 | libasound2".to_string()), "{deb:?}");
+    let rpm = listed("rpm", "depends");
+    assert!(rpm.contains(&"libpipewire-0.3.so.0()(64bit)".to_string()), "{rpm:?}");
+    assert!(rpm.contains(&"libasound.so.2()(64bit)".to_string()), "{rpm:?}");
+    // The PipeWire daemon and its session manager run on the desktop, so they are recommended rather than required: a
+    // system with PulseAudio still installs the package and shows "Capture needs PipeWire".
+    for package in ["deb", "rpm"] {
+        assert_eq!(listed(package, "recommends"), ["pipewire", "wireplumber"], "{package}");
+    }
+}
+
+#[test]
+fn the_appimage_has_only_the_real_desktop_entry() {
+    // The AppImage takes the bundler's own desktop file (named after the product) for its root, which is what an
+    // AppImage integration tool installs. The hidden template would make that entry invisible, so the AppImage
+    // replaces the file with the real entry and has no other.
+    let appimage = installed_by("appimage");
+    let entries: Vec<&String> = appimage
+        .keys()
+        .filter(|destination| destination.starts_with("/usr/share/applications/"))
+        .collect();
+    assert_eq!(entries, [&bundler_desktop_file()]);
+    assert_eq!(appimage[&bundler_desktop_file()], desktop_file());
+}
+
+#[test]
+fn the_appimage_carries_the_icons_of_the_packages() {
+    let icons = |files: BTreeMap<String, String>| -> BTreeMap<String, String> {
+        files
+            .into_iter()
+            .filter(|(destination, _)| destination.starts_with("/usr/share/icons/"))
+            .collect()
+    };
+    assert_eq!(icons(installed_by("appimage")), icons(installed()));
 }
 
 #[test]

@@ -12,8 +12,9 @@ Usage: release_assets.py <command> ...
                                never change (unless --replace lets an added file change its own line) or vanish
                                (unless --drop names a file that leaves the release).
   check-assets --mode full --produced FILE... [--release-json FILE]
-                               every asset on the release must be produced by this run, except an optional platform's
-                               asset this run did not produce; print the names to keep
+                               every required platform with a build job produced each kind of file it has, and every
+                               asset on the release must be produced by this run, except an optional platform's asset
+                               this run did not produce; print the names to keep
   check-assets --mode late --platform P --produced FILE... --release-json FILE --sums FILE [--replace] [--tag TAG]
                                the files may be added to the release: only platform P's, P optional, built for TAG,
                                all existing assets listed in the release's SHA256SUMS. Prints what the job must do:
@@ -67,7 +68,7 @@ class Platform:
 # `needs` of its publish job); `gate` fails when the two are out of step.
 PLATFORMS = (
     Platform("windows", "Windows", True, ("*-setup.exe",), build=True, workflow="build-windows.yml"),
-    Platform("linux", "Linux", True, ("*.deb", "*.rpm", "*.AppImage"), workflow="build-linux.yml"),
+    Platform("linux", "Linux", True, ("*.deb", "*.rpm", "*.AppImage"), build=True, workflow="build-linux.yml"),
     Platform("flatpak", "Flatpak", True, ("*.flatpak",), workflow="build-flatpak.yml"),
     Platform("macos", "macOS", False, ("*.dmg",), build=True, workflow="build-macos.yml"),
 )
@@ -233,9 +234,10 @@ def check_versions(files, tag):
 def check_assets_full(release_assets, produced, platforms=PLATFORMS):
     """Full mode: the assets already on the release against the files this run produced.
 
-    Every asset must be one of the produced files (it gets replaced), except an optional platform's asset when this
-    run produced nothing for that platform (a .dmg attached late earlier): that one is kept. Returns the kept names.
-    Anything else would sit on the release without a line in the new SHA256SUMS."""
+    Every required platform with a build job must have produced a file for each of its patterns. Every asset must be
+    one of the produced files (it gets replaced), except an optional platform's asset when this run produced nothing
+    for that platform (a .dmg attached late earlier): that one is kept. Returns the kept names. Anything else would
+    sit on the release without a line in the new SHA256SUMS."""
     produced = _names(produced)
     errors = []
     try:
@@ -244,8 +246,17 @@ def check_assets_full(release_assets, produced, platforms=PLATFORMS):
         errors += error.errors
         produced_platforms = {classify(name, platforms) for name in produced} - {None}
     for platform in platforms:
-        if platform.build and platform.required and platform.name not in produced_platforms:
+        if not (platform.build and platform.required):
+            continue
+        if platform.name not in produced_platforms:
             errors.append(f"{platform.label} produced no files")
+        else:
+            # A required platform ships every kind of file it has (Linux: the .deb, the .rpm and the AppImage).
+            errors += [
+                f"{platform.label} produced no {pattern} file"
+                for pattern in platform.patterns
+                if not any(matches(pattern, name) for name in produced)
+            ]
     kept = []
     for name in release_assets:
         if name == SUMS_NAME or name in produced:

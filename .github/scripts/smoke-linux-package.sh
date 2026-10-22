@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Installs the Linux packages on the system it runs on, the way a user would, and checks that the app starts there.
+# .github/workflows/build-linux.yml runs it as root in a fresh container of each supported distribution (Debian 12 and
+# 13, Ubuntu 24.04, Fedora 40), on the files check-linux-packages.sh has checked.
+#
+#   * the .deb (with apt) or the .rpm (with dnf) installs with its required dependencies alone, no recommended ones;
+#   * the installed binary has every library it links (ldd) and its self-check (`--rt-self-check`) reports Silero with
+#     the packages' version, which also proves the binary loads at all on this glibc;
+#   * the installed desktop entries pass this distribution's desktop-file-validate, and the icons are there;
+#   * the AppImage's self-check passes too, with the libraries an AppImage takes from the system (the ones the
+#     package's dependencies brought in, PipeWire's and ALSA's among them);
+#   * the package uninstalls and takes its files with it.
+#
+# The self-check plays and captures nothing and needs no display. Prints every check as "ok: ..." or "FAIL: ..." and
+# exits 1 when one failed.
+#
+# Usage: smoke-linux-package.sh DIR
+set -euo pipefail
+
+if [[ $# -ne 1 || ! -d "$1" ]]; then
+  echo "usage: smoke-linux-package.sh DIR" >&2
+  exit 2
+fi
+dir=$(cd "$1" && pwd)
+app_id=me.roboroads.repeat-that
+
+failures=0
+ok() { echo "ok: $*"; }
+fail() {
+  echo "FAIL: $*"
+  failures=$((failures + 1))
+}
+indent() { sed 's/^/    /'; }
+
+shopt -s nullglob
+debs=("$dir"/*.deb)
+rpms=("$dir"/*.rpm)
+appimages=("$dir"/*.AppImage)
+shopt -u nullglob
+if [[ ${#debs[@]} -ne 1 || ${#rpms[@]} -ne 1 || ${#appimages[@]} -ne 1 ]]; then
+  echo "FAIL: expected one .deb, one .rpm and one .AppImage in $dir" >&2
+  ls -l "$dir" >&2
+  exit 1
+fi
+# Repeat-That_0.2.0_amd64.deb -> 0.2.0
+version=$(basename "${debs[0]}" | cut -d_ -f2)
+expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\"}"
+
+echo "System: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"')"
+if command -v apt-get >/dev/null; then
+  kind=deb
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  install_packages() { apt-get install -y -qq --no-install-recommends "$@"; }
+  uninstall() { apt-get remove -y -qq repeat-that; }
+elif command -v dnf >/dev/null; then
+  kind=rpm
+  install_packages() { dnf install -y -q --setopt=install_weak_deps=False "$@"; }
+  uninstall() { dnf remove -y -q repeat-that; }
+else
+  echo "FAIL: neither apt-get nor dnf on this system" >&2
+  exit 1
+fi
+if [[ $kind == deb ]]; then package=${debs[0]}; else package=${rpms[0]}; fi
+
+# Checks one self-check run: its output must be exactly the expected line, and its exit code 0.
+check_self_check() {
+  local label=$1 out code=0
+  shift
+  out=$("$@" 2>&1) || code=$?
+  if [[ $code -eq 0 && "$(tail -n 1 <<<"$out")" == "$expected" ]]; then
+    ok "$label: the self-check reports $expected"
+  else
+    fail "$label: the self-check exited $code, expected $expected"
+    indent <<<"$out"
+  fi
+}
+
+echo
+echo "Installing $(basename "$package")"
+if install_packages "$package" 2>&1 | tail -n 5; then
+  ok "$(basename "$package") installs"
+else
+  fail "$(basename "$package") does not install"
+  exit 1
+fi
+
+if [[ "$(command -v repeat-that)" == /usr/bin/repeat-that ]]; then
+  ok "repeat-that is /usr/bin/repeat-that"
+else
+  fail "repeat-that is not on the PATH as /usr/bin/repeat-that"
+fi
+missing=$(ldd /usr/bin/repeat-that | grep 'not found' || true)
+if [[ -z "$missing" ]]; then
+  ok "ldd finds every library"
+else
+  fail "libraries are missing:"
+  indent <<<"$missing"
+fi
+check_self_check "the package" repeat-that --rt-self-check
+
+# The validator comes from the distribution, so it is installed only now: it must not bring in what the package lacks.
+install_packages desktop-file-utils >/dev/null 2>&1
+for entry in "$app_id.desktop" "Repeat That.desktop"; do
+  if out=$(desktop-file-validate "/usr/share/applications/$entry" 2>&1); then
+    ok "/usr/share/applications/$entry passes desktop-file-validate"
+  else
+    fail "/usr/share/applications/$entry fails desktop-file-validate"
+  fi
+  if [[ -n "$out" ]]; then indent <<<"$out"; fi
+done
+for icon in /usr/share/icons/hicolor/scalable/apps/$app_id.svg /usr/share/icons/hicolor/{32x32,128x128,256x256,512x512}/apps/$app_id.png; do
+  if [[ -s "$icon" ]]; then ok "$icon"; else fail "no $icon"; fi
+done
+
+# The AppImage on the same system. A container has no FUSE, so it extracts itself into TMPDIR first. Artifacts lose the
+# executable bit, and downloads from a release don't have it either.
+appimage=${appimages[0]}
+chmod +x "$appimage"
+check_self_check "the AppImage" env APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --rt-self-check
+
+echo
+if uninstall >/dev/null 2>&1 && [[ ! -e /usr/bin/repeat-that && ! -e /usr/share/applications/$app_id.desktop ]]; then
+  ok "the package uninstalls and takes its files with it"
+else
+  fail "the package does not uninstall cleanly"
+fi
+
+echo
+if [[ $failures -gt 0 ]]; then
+  echo "$failures check(s) failed"
+  exit 1
+fi
+echo "all checks passed"

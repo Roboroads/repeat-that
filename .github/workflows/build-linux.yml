@@ -1,0 +1,261 @@
+name: Build Linux packages
+
+# Builds the Linux x64 packages (a .deb, an .rpm and an AppImage), checks them, installs them on each supported
+# distribution and uploads each as the artifact `release-linux-<file name>`. Like build-windows.yml it only builds:
+# publish-release.yml calls it as its `linux` job, writes SHA256SUMS over every platform and attaches the files. Linux is
+# a required platform there, so a failure in any job of this workflow, the installs included, holds the release back.
+#   * pull_request / workflow_dispatch: a dry run. The packages are workflow artifacts, so a change can be tried on a
+#     real Linux desktop before it merges, and the job summary shows their checksums.
+#   * with a tag (workflow_call from publish-release.yml): builds exactly that release, and fails when the app version
+#     doesn't match the tag. A draft release has no tag yet, so a run for a draft gets the commit to build in `sha`.
+#
+# The packages are built in a debian:12 container, the oldest supported system, so the binary needs no newer glibc
+# than Debian 12's and the AppImage carries Debian 12's libraries. The `install` jobs then install the .deb on Debian 12,
+# Debian 13 and Ubuntu 24.04 and the .rpm on Fedora 40, and run the AppImage on each.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0. Empty for a dry run.
+        type: string
+        required: false
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0. Empty for a dry run. Nothing is attached to a release.
+        type: string
+        required: false
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - app/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/scripts/check-linux-packages.sh
+      - .github/scripts/smoke-linux-package.sh
+      - .github/workflows/build-linux.yml
+
+permissions:
+  contents: read
+
+# `github.workflow` is the calling workflow's name in a called workflow, so this run and the one publish-release.yml
+# starts for the same pull request don't cancel each other.
+concurrency:
+  group: build-linux-${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Packages (Linux x64)
+    runs-on: ubuntu-latest
+    container: debian:12
+    timeout-minutes: 60
+    # bash with pipefail: a container's default shell has no pipefail, which would hide a failed check behind `tee`.
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ steps.stage.outputs.version }}
+    steps:
+      - name: Check the tag and commit
+        if: ${{ inputs.tag }}
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must look like v0.1.0, got '$TAG'"
+            exit 1
+          fi
+          if [[ -n "$SHA" && ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit hash, got '$SHA'"
+            exit 1
+          fi
+
+      # The Tauri libraries, libpipewire's headers and clang for the capture backend (as in ci.yml), git and curl for the
+      # checkout and rustup, and the tools the bundler and check-linux-packages.sh use: `file` and the GTK and
+      # gdk-pixbuf query tools for the AppImage's GTK plugin, rpm, rpm2cpio and cpio to read the .rpm, and
+      # desktop-file-validate.
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config file xz-utils \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libgtk-3-bin libayatana-appindicator3-dev librsvg2-dev librsvg2-common \
+            libasound2-dev libxdo-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang \
+            desktop-file-utils rpm rpm2cpio cpio binutils
+
+      - uses: actions/checkout@v7
+        with:
+          # A release run builds exactly what is being released: the given commit (a draft has no tag yet), else
+          # the tag. Empty on pull requests and dry runs: the event's own commit.
+          ref: ${{ inputs.sha || inputs.tag }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19' # same as ci.yml: the oldest Node the docs ask for
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # Pinned by commit, so the toolchain is chosen with an input instead of the ref.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Builds the frontend (beforeBuildCommand) and the app, then bundles it. No tagName/releaseId: the action only
+      # builds, and the files are staged and uploaded below so the release assets have predictable names. The bundle
+      # targets, dependencies and desktop files come from app/src-tauri/tauri.linux.conf.json. The AppImage is made by
+      # linuxdeploy, itself an AppImage, which runs without FUSE here because Tauri sets APPIMAGE_EXTRACT_AND_RUN.
+      - name: Build packages
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        with:
+          projectPath: app
+
+      # Tauri names its bundles after productName ("Repeat That_0.1.0_amd64.deb"). GitHub turns the spaces in release
+      # asset names into dots, so rename first and let SHA256SUMS list the names people will download.
+      - name: Stage packages
+        id: stage
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle=target/release/bundle
+          mkdir packages
+          for kind in deb rpm AppImage; do
+            case $kind in
+              deb) files=("$bundle"/deb/*.deb) ;;
+              rpm) files=("$bundle"/rpm/*.rpm) ;;
+              AppImage) files=("$bundle"/appimage/*.AppImage) ;;
+            esac
+            if [[ ${#files[@]} -ne 1 ]]; then
+              echo "::error::expected exactly one .$kind under $bundle"
+              find "$bundle" -maxdepth 2 | sort
+              exit 1
+            fi
+            name=$(basename "${files[0]}")
+            cp "${files[0]}" "packages/${name// /-}"
+          done
+
+          # Repeat-That_<version>_amd64.deb; check-linux-packages.sh checks that the other two carry the same version.
+          debs=(packages/*.deb)
+          version=$(basename "${debs[0]}" | cut -d_ -f2)
+          if [[ -n "$TAG" && "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match the app version $version; is release-please-config.json bumping every version file?"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            for kind in deb rpm AppImage; do
+              files=(packages/*."$kind")
+              echo "${kind,,}=${files[0]#packages/}"
+            done
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check the packages
+        env:
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: .github/scripts/check-linux-packages.sh --version "$VERSION" packages 2>&1 | tee package-check.log
+
+      # publish-release.yml writes SHA256SUMS over every platform; this is only for whoever tries the build.
+      - name: Summary
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        env:
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: |
+          {
+            echo "### Linux packages $VERSION (x64)"
+            echo
+            echo '```'
+            (cd packages && ls -l && echo && sha256sum --text -- *)
+            echo '```'
+            echo
+            echo "#### Checks"
+            echo
+            echo '```'
+            cat package-check.log 2>/dev/null || echo "(the checks did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The artifact names start with release-linux- so publish-release.yml picks them up (release-*) and knows the
+      # platform. Each is a zip holding one package; the packages are compressed already, so no compression.
+      - name: Upload the .deb
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-${{ steps.stage.outputs.deb }}
+          path: packages/${{ steps.stage.outputs.deb }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the .rpm
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-${{ steps.stage.outputs.rpm }}
+          path: packages/${{ steps.stage.outputs.rpm }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload the AppImage
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-${{ steps.stage.outputs.appimage }}
+          path: packages/${{ steps.stage.outputs.appimage }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+
+  # Installs the packages on a fresh container of each supported distribution and starts the app's self-check, so a
+  # dependency that doesn't resolve, a missing library or a glibc that is too old fails the build, not a user's install.
+  install:
+    name: Install on ${{ matrix.system }}
+    needs: build
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { system: Debian 12, image: "debian:12" }
+          - { system: Debian 13, image: "debian:13" }
+          - { system: Ubuntu 24.04, image: "ubuntu:24.04" }
+          - { system: Fedora 40, image: "fedora:40" }
+    steps:
+      # The images have no git, so the checkout downloads the commit through the API, which is all the script needs.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha || inputs.tag }}
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-linux-*
+          merge-multiple: true
+          path: packages
+
+      - name: Install and start
+        run: bash .github/scripts/smoke-linux-package.sh packages
