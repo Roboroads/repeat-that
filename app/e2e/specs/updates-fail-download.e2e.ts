@@ -51,8 +51,19 @@ describe('updates, when the download fails', () => {
     await expect(checkResult()).toHaveText(expect.stringContaining('the download failed'));
     await expect(checkNowButton()).toBeEnabled();
 
+    const lastChecked = (await backendUpdateStatus()).lastCheckedAt ?? 0;
     await checkNowButton().click();
+    await browser.waitUntil(
+      async () => {
+        const status = await backendUpdateStatus();
+        return status.state === 'available' && status.errorKind === null && (status.lastCheckedAt ?? 0) > lastChecked;
+      },
+      { timeoutMsg: 'the new check never offered the update again' },
+    );
+    // The failed banner gives way to the offer: the page shows the new state, and nothing of the old one.
     await expect(offerBanner()).toHaveText(expect.stringContaining(`Version ${MOCK_VERSION} is available`));
+    await expect(offerBanner()).not.toHaveText(expect.stringContaining("Couldn't install"));
+    await expect(offerBanner().$('button=Download page')).not.toBeExisting();
     await expect(offerBanner().$('button=Install and restart')).toBeEnabled();
     await expect(checkResult()).toHaveText(`Version ${MOCK_VERSION} is available.`);
   });
