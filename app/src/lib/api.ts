@@ -24,6 +24,8 @@ export interface Settings {
   hotkeys: { replay: Accel; stop: Accel; catchUp: Accel };
   autostart: boolean;
   firstRunDone: boolean;
+  /** Check for updates by itself. `null`: not asked yet, which counts as off. */
+  checkForUpdates: boolean | null;
 }
 
 export type HotkeyName = keyof Settings['hotkeys'];
@@ -77,6 +79,41 @@ export interface PermissionHelp {
   canOpenSettings: boolean;
   /** `ask_for_capture_permission` makes the OS ask once more. */
   canAskAgain: boolean;
+}
+
+/**
+ * What this build does about updates. `install`: downloads and installs them itself. `notify`: only says that one is
+ * out, and links to the download page. `external`: something else updates it (Flathub). `off`: this build has no
+ * updater.
+ */
+export type UpdateMode = 'install' | 'notify' | 'external' | 'off';
+export type UpdateState = 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'error';
+
+/** Which step failed in state `error`: looking for a version, or downloading and installing the one found. */
+export type UpdateErrorKind = 'check' | 'install';
+
+export interface UpdateStatus {
+  mode: UpdateMode;
+  /** A sentence for `notify`, `external` and `off`; `null` for `install`. */
+  modeReason: string | null;
+  currentVersion: string;
+  state: UpdateState;
+  /** The newer version. Plain text notes, and a release page on this project's GitHub. */
+  available: { version: string; date: string | null; notes: string; releaseUrl: string } | null;
+  /** 0..1 while downloading; `null` when the size is unknown. */
+  progress: number | null;
+  /** In state `error`. */
+  error: string | null;
+  /**
+   * In state `error`: which step failed, `null` otherwise. After `install`, `available` is still filled in: the
+   * release page link in it is what the window offers. After `check`, `available` may or may not be filled in, and the
+   * window does not use it.
+   */
+  errorKind: UpdateErrorKind | null;
+  /** Milliseconds since the epoch; this run only. */
+  lastCheckedAt: number | null;
+  /** The last check was asked for by the user. */
+  manual: boolean;
 }
 
 export interface AppEntry {
@@ -161,6 +198,16 @@ export const askForCapturePermission = () => call('ask_for_capture_permission');
 /** Opens the OS settings where the permission is given. */
 export const openCapturePermissionSettings = () => call('open_capture_permission_settings');
 
+/** Checks for a newer version now, whatever the setting says, and answers with the result. */
+export const checkForUpdates = () => call<UpdateStatus>('check_for_updates');
+/**
+ * Downloads and installs the version found, then restarts the app. Refused unless one was found and the mode is
+ * `install`. The progress comes as `update-status` events.
+ */
+export const installUpdate = () => call('install_update');
+/** Fails on a backend that has no updater commands; the caller treats that as mode `off`. */
+export const getUpdateStatus = () => call<UpdateStatus>('get_update_status');
+
 export type Unlisten = () => void;
 
 /** Stops listening. Never throws: when the window is already going away there is nothing left to undo. */
@@ -181,3 +228,6 @@ export const onStatus = async (handler: (status: Status) => void): Promise<Unlis
 
 export const onSettingsChanged = async (handler: (settings: Settings) => void): Promise<Unlisten> =>
   quietly(await listen<Settings>('settings-changed', (event) => handler(event.payload)));
+
+export const onUpdateStatus = async (handler: (status: UpdateStatus) => void): Promise<Unlisten> =>
+  quietly(await listen<UpdateStatus>('update-status', (event) => handler(event.payload)));

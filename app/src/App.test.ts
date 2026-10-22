@@ -258,6 +258,69 @@ describe('first run', () => {
   });
 });
 
+describe('updates', () => {
+  const FIRST_RUN = 'Pick the app you want to catch up on';
+  const QUESTION = 'Check for updates automatically?';
+
+  it('puts the question under the first-run banner and above the app list', async () => {
+    await renderApp({ apps: mockApps(), updates: { mode: 'install' } });
+
+    const firstRun = screen.getByText(FIRST_RUN).closest('aside') as HTMLElement;
+    const ask = screen.getByRole('complementary', { name: QUESTION });
+    const list = screen.getByRole('radiogroup', { name: 'App to capture' });
+    expect(firstRun.compareDocumentPosition(ask) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(ask.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('puts an update under the first-run banner when it comes without a question to ask', async () => {
+    const { backend } = await renderApp({
+      apps: mockApps(),
+      settings: { checkForUpdates: true },
+      updates: { mode: 'install' },
+    });
+    await backend.handle('check_for_updates', {});
+
+    const firstRun = screen.getByText(FIRST_RUN).closest('aside') as HTMLElement;
+    const banner = await screen.findByRole('complementary', { name: 'Version 99.0.0 is available' });
+    expect(firstRun.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('loads the page as before on a backend that has no update commands', async () => {
+    await renderApp({ apps: mockApps(), settings: { checkForUpdates: null } }, (backend) => {
+      for (const cmd of ['get_update_status', 'check_for_updates', 'install_update']) {
+        backend.overrides[cmd] = () => {
+          throw `Command ${cmd} not found`;
+        };
+      }
+    });
+
+    expect(screen.getByText(FIRST_RUN)).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: 'Buffer length' })).toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: QUESTION })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'General' })).toHaveTextContent("This build doesn't check for updates.");
+  });
+
+  it.each([
+    ['update', 'install'],
+    ['update-notify', 'notify'],
+  ] as const)('the %s scenario starts as a %s build', async (scenario, mode) => {
+    const { backend } = await renderApp(scenarioInit(scenario));
+
+    expect(backend.handle('get_update_status', {})).toMatchObject({ mode });
+  });
+
+  it('shows the update the debug build finds on its own after the question is answered yes', async () => {
+    const { backend } = await renderApp({ ...scenarioInit('update'), updates: { mode: 'install' } });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Check automatically' }));
+    await waitFor(() => expect(backend.settings.checkForUpdates).toBe(true));
+    backend.tick(5000);
+
+    expect(await screen.findByRole('complementary', { name: 'Version 99.0.0 is available' })).toBeInTheDocument();
+  });
+});
+
 describe('errors', () => {
   it('shows a failed command and lets it be dismissed', async () => {
     const { backend } = await renderApp({ apps: [discord], settings: { target } });

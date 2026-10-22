@@ -14,9 +14,12 @@ import type {
   PermissionHelp,
   Settings,
   Status,
+  UpdateMode,
+  UpdateStatus,
 } from './api';
 import { matchesTarget } from './apps';
-import { clamp, defaultSettings, duckLevelLimits, LIMITS } from './defaults';
+import { clamp, defaultSettings, duckLevelLimits, LIMITS, NO_UPDATER_REASON, offUpdateStatus } from './defaults';
+import { checksForUpdates } from './updates';
 
 export const SCENARIOS = [
   'first-run',
@@ -28,8 +31,24 @@ export const SCENARIOS = [
   'no-hotkeys',
   'no-tray',
   'not-allowed',
+  'update',
+  'update-notify',
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
+
+/** What the pretend update source does, as the debug build's `REPEAT_THAT_MOCK_UPDATE` does. */
+export interface MockUpdates {
+  /** `off` by default, as a build without an update key. */
+  mode: UpdateMode;
+  modeReason: string | null;
+  currentVersion: string;
+  /** What a check finds. `fail-download` finds a release, then breaks half way through the download. */
+  outcome: 'available' | 'none' | 'fail-check' | 'fail-download';
+  /** The release a check finds. */
+  release: { version: string; date: string | null; notes: string };
+  /** How long a check takes, in milliseconds. */
+  checkMs: number;
+}
 
 export interface MockBackendInit {
   settings?: Partial<Settings>;
@@ -46,9 +65,24 @@ export interface MockBackendInit {
   permission?: 'allowed' | 'denied';
   /** What `capture_permission_help` answers; nothing to allow by default, as outside macOS. */
   permissionHelp?: PermissionHelp;
-  /** Where `status` and `settings-changed` go. */
+  /** The update source. Not an updater at all by default. */
+  updates?: Partial<MockUpdates>;
+  /** Where `status`, `update-status` and `settings-changed` go. */
   emit?: (event: string, payload: unknown) => void;
 }
+
+/** The real app checks 60 s after it starts; a person clicking through the mock should not wait that long. */
+const MOCK_AUTO_CHECK_MS = 5000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const MOCK_DOWNLOAD_MS = 2000;
+const MOCK_NOTES = [
+  'Sample release notes, as plain text.',
+  '',
+  '- Replays start a little faster.',
+  '- Fixed the volume coming back late after a replay.',
+  '- <script>alert("notes are text, never markup")</script>',
+].join('\n');
 
 const HOTKEY_NAMES: HotkeyName[] = ['replay', 'stop', 'catchUp'];
 const HOTKEY_LABELS: Record<HotkeyName, string> = { replay: 'Replay', stop: 'Stop', catchUp: 'Catch up' };
@@ -134,6 +168,21 @@ export function scenarioInit(scenario: Scenario): MockBackendInit {
         permission: 'denied',
         permissionHelp: { canOpenSettings: true, canAskAgain: true },
       };
+    case 'update':
+      // A build that updates itself, on the first run: the question sits under the first-run banner. Say yes and a
+      // check finds 99.0.0 after 5 s; "Check now" finds it at once.
+      return { apps: mockApps(), updates: { mode: 'install', checkMs: 600 } };
+    case 'update-notify':
+      // A .deb or .rpm: it only says that a version is out. Asked already, so the first check comes on its own.
+      return {
+        apps: mockApps(),
+        settings: { target, firstRunDone: true, checkForUpdates: true },
+        updates: {
+          mode: 'notify',
+          modeReason: 'Install updates from the download page or your package manager.',
+          checkMs: 600,
+        },
+      };
     case 'problems':
       return {
         apps: mockApps(),
@@ -160,6 +209,8 @@ export class MockBackend {
   configureOutcome: ConfigureOutcome;
   permission: 'allowed' | 'denied';
   permissionHelp: PermissionHelp;
+  /** The pretend update source; change `outcome` to make the next check or download go another way. */
+  updates: MockUpdates;
   /** Every command received, oldest first. */
   readonly calls: Array<{ cmd: string; args: unknown }> = [];
   /** Replaces a command, to make it fail or hang in a test. */
@@ -170,6 +221,9 @@ export class MockBackend {
   private bufferedMs = 0;
   private playback: Status['playback'] = 'idle';
   private behindMs = 0;
+  private updateState: UpdateStatus;
+  /** Time left until the next automatic check, if one is planned. */
+  private autoCheckInMs: number | null = null;
 
   constructor(init: MockBackendInit = {}) {
     this.settings = { ...defaultSettings(), ...init.settings };
@@ -180,6 +234,22 @@ export class MockBackend {
     this.permission = init.permission ?? 'allowed';
     this.permissionHelp = init.permissionHelp ?? { canOpenSettings: false, canAskAgain: false };
     this.send = init.emit ?? (() => {});
+    const mode = init.updates?.mode ?? 'off';
+    this.updates = {
+      mode,
+      modeReason: mode === 'off' ? NO_UPDATER_REASON : null,
+      currentVersion: '0.1.0',
+      outcome: 'available',
+      release: { version: '99.0.0', date: '2026-10-22', notes: MOCK_NOTES },
+      checkMs: 0,
+      ...init.updates,
+    };
+    this.updateState = {
+      ...offUpdateStatus(this.updates.currentVersion),
+      mode: this.updates.mode,
+      modeReason: this.updates.modeReason,
+    };
+    if (this.checksByItself() && this.settings.checkForUpdates === true) this.autoCheckInMs = MOCK_AUTO_CHECK_MS;
   }
 
   /** The `mockIPC` handler. Throws a `CommandError` like a failing command. */
@@ -225,6 +295,12 @@ export class MockBackend {
         return null;
       case 'capture_permission_help':
         return { ...this.permissionHelp };
+      case 'get_update_status':
+        return structuredClone(this.updateState);
+      case 'check_for_updates':
+        return this.check(true);
+      case 'install_update':
+        return this.install();
       case 'ask_for_capture_permission':
         if (!this.permissionHelp.canAskAgain) return fail('backend', NOTHING_TO_ALLOW);
         // The user chooses Allow at once; the real engine takes up to 2 s to notice.
@@ -243,6 +319,7 @@ export class MockBackend {
     if (this.captureState() === 'capturing') {
       this.bufferedMs = Math.min(this.bufferedMs + ms * 0.6, this.settings.bufferSeconds * 1000);
     }
+    this.tickUpdates(ms);
     if (this.playback !== 'idle') {
       const speed = this.playback === 'catchingUp' ? this.settings.catchUpSpeed : this.settings.replaySpeed;
       this.behindMs -= ms * speed * 0.5;
@@ -287,6 +364,96 @@ export class MockBackend {
     };
   }
 
+  private checksByItself(): boolean {
+    return checksForUpdates(this.updates.mode);
+  }
+
+  private pushUpdate(next: Partial<UpdateStatus>): UpdateStatus {
+    this.updateState = { ...this.updateState, ...next };
+    this.send('update-status', structuredClone(this.updateState));
+    return structuredClone(this.updateState);
+  }
+
+  /** Looks for a newer version: `checking` at once, the result after `checkMs`. */
+  private async check(manual: boolean): Promise<UpdateStatus> {
+    const { state } = this.updateState;
+    if (!this.checksByItself() || state === 'checking' || state === 'downloading' || state === 'installing') {
+      return structuredClone(this.updateState);
+    }
+    this.pushUpdate({ state: 'checking', manual, error: null, errorKind: null });
+    if (this.updates.checkMs > 0) await new Promise((resolve) => setTimeout(resolve, this.updates.checkMs));
+
+    const lastCheckedAt = Date.now();
+    const { outcome, release } = this.updates;
+    // A failed automatic check is tried again after an hour; the daily schedule goes on after any other.
+    if (outcome === 'fail-check' && !manual && this.autoCheckInMs !== null) this.autoCheckInMs = HOUR_MS;
+    if (outcome === 'none') {
+      return this.pushUpdate({
+        state: 'upToDate',
+        available: null,
+        progress: null,
+        error: null,
+        errorKind: null,
+        lastCheckedAt,
+      });
+    }
+    if (outcome === 'fail-check') {
+      return this.pushUpdate({
+        state: 'error',
+        available: null,
+        progress: null,
+        error: "Couldn't reach GitHub to look for a new version",
+        errorKind: 'check',
+        lastCheckedAt,
+      });
+    }
+    const releaseUrl = `https://github.com/Roboroads/repeat-that/releases/tag/v${release.version}`;
+    const available = { ...release, releaseUrl };
+    return this.pushUpdate({
+      state: 'available',
+      available,
+      progress: null,
+      error: null,
+      errorKind: null,
+      lastCheckedAt,
+    });
+  }
+
+  private install(): null {
+    if (this.updateState.state !== 'available' || this.updateState.mode !== 'install') {
+      return fail('invalid', 'There is no update to install');
+    }
+    this.pushUpdate({ state: 'downloading', progress: 0, error: null, errorKind: null });
+    return null;
+  }
+
+  /** The download moves on, and the automatic check comes due. */
+  private tickUpdates(ms: number): void {
+    if (this.updateState.state === 'downloading') {
+      const progress = (this.updateState.progress ?? 0) + ms / MOCK_DOWNLOAD_MS;
+      if (this.updates.outcome === 'fail-download' && progress >= 0.5) {
+        this.pushUpdate({
+          state: 'error',
+          progress: null,
+          error: 'The connection was lost during the download',
+          errorKind: 'install',
+        });
+      } else if (progress >= 1) {
+        // The real app restarts here; the mock stays in `installing`.
+        this.pushUpdate({ state: 'installing', progress: null });
+      } else {
+        this.pushUpdate({ progress });
+      }
+    }
+    if (this.autoCheckInMs !== null) {
+      this.autoCheckInMs -= ms;
+      if (this.autoCheckInMs <= 0) {
+        this.autoCheckInMs = DAY_MS;
+        void this.check(false);
+      }
+    }
+  }
+
   private captureState(): Status['capture']['state'] {
     const target = this.settings.target;
     if (target === null) return 'noTarget';
@@ -316,6 +483,8 @@ export class MockBackend {
 
   private update(patch: Partial<Settings>): Settings {
     const next: Settings = { ...this.settings, ...patch };
+    // `null` in a patch is ignored: there is no "ask me again".
+    next.checkForUpdates = patch.checkForUpdates ?? this.settings.checkForUpdates;
     next.duck = { ...this.settings.duck, ...patch.duck };
     next.hotkeys = { ...this.settings.hotkeys, ...patch.hotkeys };
 
@@ -337,6 +506,14 @@ export class MockBackend {
       if (other !== undefined) fail('conflict', `${accel} is already used for ${HOTKEY_LABELS[other]}.`);
     }
 
+    if (next.checkForUpdates !== true) {
+      this.autoCheckInMs = null;
+    } else if (this.settings.checkForUpdates !== true && this.checksByItself()) {
+      // Turned on: the real app checks after 5 s unless this run has checked in the last 24 h.
+      const { lastCheckedAt } = this.updateState;
+      const since = lastCheckedAt === null ? DAY_MS : Date.now() - lastCheckedAt;
+      this.autoCheckInMs = since >= DAY_MS ? MOCK_AUTO_CHECK_MS : DAY_MS - since;
+    }
     this.settings = next;
     this.bufferedMs = Math.min(this.bufferedMs, next.bufferSeconds * 1000);
     this.push();

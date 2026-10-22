@@ -17,3 +17,12 @@ export async function openExternal(url: string): Promise<void> {
   }
   window.open(url, '_blank', 'noopener,noreferrer');
 }
+
+/**
+ * For the `onclick` of a link to one of this project's pages: keeps the window where it is and opens `url` outside it
+ * (see openExternal), where a plain link would do nothing.
+ */
+export function openLink(event: MouseEvent, url: string): void {
+  event.preventDefault();
+  void openExternal(url);
+}

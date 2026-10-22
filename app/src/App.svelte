@@ -10,6 +10,7 @@
   import HotkeysSection from './lib/components/HotkeysSection.svelte';
   import ReplaySection from './lib/components/ReplaySection.svelte';
   import StatusBar from './lib/components/StatusBar.svelte';
+  import UpdateBanner from './lib/components/UpdateBanner.svelte';
   import { SettingsStore } from './lib/store.svelte';
 
   const store = new SettingsStore();
@@ -38,6 +39,7 @@
     {/if}
 
     <FirstRunBanner {settings} />
+    <UpdateBanner {store} {settings} />
     <AppList {store} {settings} />
     <ReplaySection {store} {settings} />
     <DuckingSection {store} {settings} />
