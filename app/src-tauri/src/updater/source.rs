@@ -562,7 +562,13 @@ mod tests {
 
         #[test]
         fn the_running_version_is_no_update() {
-            let (_app, source) = with_release(env!("CARGO_PKG_VERSION"), SIGNATURE, b"test");
+            // The mock app reports tauri's own fixed version, not this crate's: ask it, so a release bump
+            // can't break this test.
+            let running = mock_context::<MockRuntime, _>(noop_assets())
+                .package_info()
+                .version
+                .to_string();
+            let (_app, source) = with_release(&running, SIGNATURE, b"test");
             assert_eq!(source.check(), Ok(None));
         }
 
