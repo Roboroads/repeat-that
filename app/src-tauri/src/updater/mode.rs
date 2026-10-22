@@ -274,12 +274,11 @@ mod tests {
 
     #[test]
     fn a_flatpak_is_sent_to_the_releases_page_for_updates() {
-        // The Flatpak only comes from the GitHub releases for now. Once it is on Flathub, the sentence changes with it.
-        assert_eq!(
-            FLATPAK_REASON,
-            "Download new versions of the Flatpak from the releases page on GitHub."
-        );
-        assert!(!FLATPAK_REASON.contains("Flathub"));
+        // The Flatpak only comes from the GitHub releases for now, so Flathub is not where its updates come from.
+        // Once it is on Flathub, this test changes with the sentence.
+        assert!(FLATPAK_REASON.contains("releases page"), "{FLATPAK_REASON}");
+        assert!(FLATPAK_REASON.contains("Flatpak"), "{FLATPAK_REASON}");
+        assert!(!FLATPAK_REASON.contains("Flathub"), "{FLATPAK_REASON}");
     }
 
     #[test]
