@@ -551,6 +551,14 @@ impl<R: Runtime> UpdateHost for AppHost<R> {
     }
 }
 
+/// Whether the app runs in a Flatpak sandbox, which only a Linux build can.
+fn in_flatpak() -> bool {
+    #[cfg(target_os = "linux")]
+    return rt_capture::in_flatpak();
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
 /// Starts the updater: works out what this install can do, makes the service and manages it. Needs the settings (for the
 /// answer to the question) and [`SharedStatus`] in the managed state, and must come before the tray is set up, so the
 /// tray menu starts with its update item.
@@ -564,6 +572,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
         has_key: is_compiled_in(),
         debug_build: cfg!(debug_assertions),
         mocked: mock.is_some(),
+        in_flatpak: in_flatpak(),
         os: Os::CURRENT,
     };
     let source: Arc<dyn UpdateSource> = match mock {
@@ -1386,10 +1395,6 @@ mod tests {
             Some("/usr/bin/repeat-that".into())
         }
 
-        fn exists(&self, _: &std::path::Path) -> bool {
-            false
-        }
-
         fn can_replace(&self, _: &std::path::Path) -> bool {
             false
         }
@@ -1403,6 +1408,7 @@ mod tests {
             has_key: true,
             debug_build: false,
             mocked: false,
+            in_flatpak: false,
             os: Os::Linux,
         };
         let detection = mode::detect(build, &PackageEnv, &NothingWritable);
