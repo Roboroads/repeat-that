@@ -1,0 +1,186 @@
+"""Tests for apt-install.sh. Run with: python3 -m unittest discover -s .github/scripts
+
+The script runs against fake `apt-get`, `dpkg` and `sudo` commands on a PATH of its own, so nothing is installed and the
+network is never touched. A fake apt-get acts out a plan per subcommand (`update`, `install`): `ok`, `fail` or `hang`,
+one word per call, the last one repeating. Timeouts are shrunk to a second so a hung call costs the test no more.
+"""
+
+import os
+import subprocess
+import tempfile
+import time
+import unittest
+from pathlib import Path
+
+SCRIPT = Path(__file__).resolve().parent / "apt-install.sh"
+STEP = "Install system packages (Linux)"
+PACKAGES = ["pkg-config", "libgtk-3-dev", "clang"]
+
+FAKE_APT_GET = """#!/usr/bin/env bash
+echo "apt-get $*" >> "$FAKE_DIR/calls"
+sub=
+for arg in "$@"; do
+  case $arg in update | install) sub=$arg ;; esac
+done
+plan=FAKE_PLAN_${sub^^}
+read -ra steps <<< "${!plan:-ok}"
+count=$(cat "$FAKE_DIR/count.$sub" 2>/dev/null || echo 0)
+echo $((count + 1)) > "$FAKE_DIR/count.$sub"
+step=${steps[$((count < ${#steps[@]} ? count : ${#steps[@]} - 1))]}
+case $step in
+  ok) exit 0 ;;
+  fail) echo "E: Failed to fetch http://mirror.invalid/pool/x.deb" >&2; exit 100 ;;
+  hang) sleep 60; exit 0 ;;
+esac
+"""
+FAKE_DPKG = '#!/usr/bin/env bash\necho "dpkg $*" >> "$FAKE_DIR/calls"\n'
+FAKE_SUDO = '#!/usr/bin/env bash\necho "sudo $*" >> "$FAKE_DIR/calls"\nexec "$@"\n'
+
+
+class AptInstallTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        bindir = self.dir / "bin"
+        bindir.mkdir()
+        for name, body in (("apt-get", FAKE_APT_GET), ("dpkg", FAKE_DPKG), ("sudo", FAKE_SUDO)):
+            (bindir / name).write_text(body)
+            (bindir / name).chmod(0o755)
+        self.bindir = bindir
+
+    def run_script(self, *args, update="ok", install="ok", **env):
+        """Runs the script; returns the finished process and how long it took."""
+        environment = {
+            **os.environ,
+            "PATH": f"{self.bindir}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_DIR": str(self.dir),
+            "FAKE_PLAN_UPDATE": update,
+            "FAKE_PLAN_INSTALL": install,
+            "APT_UPDATE_TIMEOUT": "1",
+            "APT_INSTALL_TIMEOUT": "1",
+            "APT_RETRY_PAUSE": "0",
+            **env,
+        }
+        start = time.monotonic()
+        done = subprocess.run(
+            ["bash", str(SCRIPT), *args], env=environment, capture_output=True, text=True, timeout=60, check=False
+        )
+        return done, time.monotonic() - start
+
+    def calls(self, prefix):
+        log = self.dir / "calls"
+        lines = log.read_text().splitlines() if log.exists() else []
+        return [line for line in lines if line.startswith(prefix + " ")]
+
+    def test_installs_the_packages_once_when_apt_works(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.calls("apt-get")), 2)
+        update, install = self.calls("apt-get")
+        self.assertTrue(update.endswith(" update"), update)
+        self.assertTrue(install.endswith(" install -y --no-install-recommends " + " ".join(PACKAGES)), install)
+        self.assertNotIn("::warning::", done.stdout)
+        self.assertEqual(self.calls("dpkg"), [])
+
+    def test_every_apt_call_retries_downloads_and_waits_for_the_dpkg_lock(self):
+        self.run_script("--step", STEP, *PACKAGES)
+        for call in self.calls("apt-get"):
+            self.assertIn("-o Acquire::Retries=3", call)
+            self.assertIn("-o DPkg::Lock::Timeout=", call)
+
+    def test_quiet_makes_both_calls_quiet(self):
+        self.run_script("--quiet", "--step", STEP, "minisign")
+        update, install = self.calls("apt-get")
+        self.assertIn(" -qq ", update)
+        self.assertIn(" -qq ", install)
+        self.assertTrue(install.endswith(" install -y --no-install-recommends minisign"), install)
+
+    def test_without_quiet_neither_call_is_quiet(self):
+        self.run_script("--step", STEP, *PACKAGES)
+        for call in self.calls("apt-get"):
+            self.assertNotIn("-qq", call)
+
+    def test_a_failed_download_is_retried(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.calls("apt-get")), 4, "update and install, twice")
+        self.assertIn(f"::warning::{STEP}", done.stdout)
+        self.assertIn("attempt 2 of 3", done.stdout)
+        self.assertNotIn("::error::", done.stdout)
+
+    def test_a_retry_first_finishes_what_a_killed_dpkg_left_behind(self):
+        self.run_script("--step", STEP, *PACKAGES, install="fail ok")
+        configure = self.calls("dpkg")
+        self.assertEqual(len(configure), 1)
+        self.assertIn("--configure -a", configure[0])
+
+    def test_a_hung_update_is_killed_and_retried(self):
+        done, took = self.run_script("--step", STEP, *PACKAGES, update="hang ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertLess(took, 30, "the hung apt-get was waited for instead of killed")
+        self.assertIn("apt-get update timed out after 1s", done.stdout)
+        self.assertEqual(len(self.calls("apt-get")), 3, "update (hung), update, install")
+
+    def test_a_hung_install_is_killed_and_retried(self):
+        done, took = self.run_script("--step", STEP, *PACKAGES, install="hang hang ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertLess(took, 30)
+        self.assertIn("apt-get install timed out after 1s", done.stdout)
+        self.assertEqual(len(self.calls("apt-get")), 6, "update and install, three times")
+
+    def test_gives_up_after_three_attempts_and_names_the_step(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail")
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(len(self.calls("apt-get")), 6, "update and install, three times")
+        errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+        self.assertEqual(len(errors), 1, done.stdout)
+        self.assertIn(STEP, errors[0])
+        self.assertIn("apt-get install exited with status 100", errors[0])
+        self.assertIn("3 attempts", errors[0])
+
+    def test_gives_up_on_an_update_that_always_hangs(self):
+        done, took = self.run_script("--step", STEP, *PACKAGES, update="hang")
+        self.assertEqual(done.returncode, 1)
+        self.assertLess(took, 40)
+        self.assertEqual(len(self.calls("apt-get")), 3)
+        self.assertTrue(all(call.endswith(" update") for call in self.calls("apt-get")))
+        self.assertIn("::error::", done.stdout)
+        self.assertIn("apt-get update timed out after 1s", done.stdout)
+
+    def test_the_number_of_attempts_can_be_changed(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail", APT_ATTEMPTS="2")
+        self.assertEqual(done.returncode, 1)
+        self.assertEqual(len(self.calls("apt-get")), 4)
+        self.assertIn("2 attempts", done.stdout)
+
+    def test_the_step_name_is_optional(self):
+        done, _ = self.run_script(*PACKAGES, install="fail", APT_ATTEMPTS="1")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("::error::apt install:", done.stdout)
+
+    def test_no_packages_is_a_usage_error_and_runs_nothing(self):
+        done, _ = self.run_script("--step", STEP)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("usage", done.stderr.lower())
+        self.assertEqual(self.calls("apt-get"), [])
+
+    def test_an_unknown_option_is_a_usage_error(self):
+        done, _ = self.run_script("--bogus", "clang")
+        self.assertEqual(done.returncode, 2)
+        self.assertEqual(self.calls("apt-get"), [])
+
+    @unittest.skipIf(os.geteuid() == 0, "root doesn't need sudo")
+    def test_runs_apt_through_sudo_when_not_root(self):
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(len(self.calls("sudo")), 2)
+        self.assertTrue(all("apt-get" in call for call in self.calls("sudo")))
+
+    @unittest.skipUnless(os.geteuid() == 0, "only root runs apt directly")
+    def test_runs_apt_directly_as_root(self):
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(self.calls("sudo"), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

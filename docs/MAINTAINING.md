@@ -90,6 +90,15 @@ and makes the decisions. Its unit tests (`test_release_assets.py`) run in every 
 with `python3 -m unittest discover -s .github/scripts`. The `Workflow scripts` job of `ci.yml` runs every test in that
 folder on every pull request and every push to `main`, `test_workflow_secrets.py` among them.
 
+Workflow steps that install packages with apt run [`apt-install.sh`](../.github/scripts/apt-install.sh) instead of
+calling `apt-get`. It gives `apt-get update` 90 seconds and `apt-get install` 4 minutes, and makes up to three attempts
+(`test_apt_install.py` tests this against a fake `apt-get`). Before it existed, three CI runs sat in an apt step for 30
+minutes or more until they were cancelled, and a rerun finished in under a minute. A failed attempt that is tried again
+shows up as a warning on the run, and when all three fail the error names the step. Each of these steps also has
+`timeout-minutes: 25`, which is longer than the script's worst case, so the script's own message comes first. A new apt
+step should do the same. `build-linux.yml` runs in a container that has no git until its apt step has run, so it checks
+the repository out twice: once before the install, through the GitHub API, to get the script, and once after, with git.
+
 | Platform | Required | Files | Update files (only with an [update key](#update-signing-key)) | Build job in `publish-release.yml` |
 |---|---|---|---|---|
 | `windows` | yes | `*-setup.exe` | `*-setup.exe.sig`, `latest-windows-x86_64.json` | `windows`, calls `build-windows.yml` |
