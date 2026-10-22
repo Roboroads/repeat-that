@@ -123,6 +123,15 @@ kbd {
   color: var(--text-muted);
 }
 
+/* A short warning or notice inside a section, in the warning colors. */
+.callout {
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 0.9rem;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

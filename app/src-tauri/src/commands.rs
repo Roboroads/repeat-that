@@ -16,8 +16,9 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::actions::{self, AppAction};
 use crate::engine::{self, SharedAppEngine};
 use crate::icons::SharedIcons;
-use crate::ipc::{AppEntry, CommandError, OutputDevice, Settings, Status};
+use crate::ipc::{AppEntry, CommandError, ConfigureOutcome, OutputDevice, Settings, Status};
 use crate::service::{self, SettingsService};
+use crate::shortcut_page::PageOpener;
 
 /// Every command, for the app and its tests alike.
 pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
@@ -33,6 +34,8 @@ pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'stat
         replay,
         stop,
         catch_up,
+        configure_shortcuts,
+        quit_app,
     ]
 }
 
@@ -120,6 +123,30 @@ pub fn catch_up<R: Runtime>(app: AppHandle<R>) {
     actions::dispatch(AppAction::CatchUp, &app);
 }
 
+/// Asks the desktop to show where the user changes the hotkeys (Wayland, where the desktop owns the keys). Answers
+/// `unsupported` where it can't be asked, and the window then says where in the system settings to look.
+#[tauri::command]
+pub async fn configure_shortcuts<R: Runtime>(app: AppHandle<R>) -> Result<ConfigureOutcome, CommandError> {
+    // The desktop answers over D-Bus, which can take a moment: not on the main thread.
+    off_the_main_thread(move || {
+        let outcome = app.state::<SettingsService>().configure_shortcuts()?;
+        // A portal that can't open its own settings page (version 1) would leave the window with only words: the
+        // desktop's own shortcut page is the next best thing.
+        let opener = app.try_state::<PageOpener>().map(|opener| Arc::clone(&opener));
+        if outcome == ConfigureOutcome::Unsupported && opener.is_some_and(|open| open()) {
+            return Ok(ConfigureOutcome::Opened);
+        }
+        Ok(outcome)
+    })
+    .await
+}
+
+/// Quits the app, for a desktop with no tray, where the tray menu's Quit isn't there.
+#[tauri::command]
+pub fn quit_app<R: Runtime>(app: AppHandle<R>) {
+    actions::dispatch(AppAction::Quit, &app);
+}
+
 fn running_engine<R: Runtime>(app: &AppHandle<R>) -> Result<EngineHandle, CommandError> {
     app.try_state::<SharedAppEngine>()
         .and_then(|engine| engine.handle())
@@ -188,6 +215,10 @@ mod tests {
         let commands = commands_the_window_calls();
         assert!(commands.len() >= 11, "{commands:?}");
         for cmd in commands {
+            if cmd == "quit_app" {
+                // Ends the app, which the mock runtime can't do; see `the_quit_command_is_registered`.
+                continue;
+            }
             // Answered or refused for a reason of its own, never refused as unknown.
             if let Err(error) = invoke(&h, &cmd, json!({ "patch": {}, "paused": false, "suspended": false })) {
                 assert!(!error.to_string().contains("not found"), "{cmd}: {error}");
@@ -301,6 +332,85 @@ mod tests {
         assert!(h.backend.registered().is_empty());
         invoke(&h, "suspend_hotkeys", json!({ "suspended": false })).unwrap();
         assert_eq!(h.backend.registered().len(), 3);
+    }
+
+    #[test]
+    fn configure_shortcuts_says_so_when_the_desktop_cannot_show_its_settings() {
+        let h = harness();
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "unsupported");
+    }
+
+    #[test]
+    fn a_portal_that_cannot_open_its_page_gets_the_desktops_own_shortcut_page_instead() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "opened");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn with_no_page_to_open_either_it_says_so_after_trying() {
+        let h = harness();
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "unsupported");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_desktops_page_is_not_opened_on_top_of_the_portals_own() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        *h.backend.configure_answer.lock().unwrap() = Some(Ok(crate::ipc::ConfigureOutcome::Opened));
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "opened");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_desktops_page_is_not_opened_while_a_dialog_is_open() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        *h.backend.configure_answer.lock().unwrap() = Some(Ok(crate::ipc::ConfigureOutcome::Busy));
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "busy");
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_failing_portal_is_an_error_and_the_desktops_page_stays_closed() {
+        let h = harness();
+        h.page_works.store(true, std::sync::atomic::Ordering::SeqCst);
+        *h.backend.configure_answer.lock().unwrap() = Some(Err("the portal went away".into()));
+        assert!(invoke(&h, "configure_shortcuts", json!({})).is_err());
+        assert_eq!(h.page_opens.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn configure_shortcuts_says_when_the_desktop_opened_its_settings() {
+        let h = harness();
+        *h.backend.configure_answer.lock().unwrap() = Some(Ok(crate::ipc::ConfigureOutcome::Opened));
+        assert_eq!(invoke(&h, "configure_shortcuts", json!({})).unwrap(), "opened");
+    }
+
+    #[test]
+    fn configure_shortcuts_rejects_as_backend_when_the_desktop_fails() {
+        let h = harness();
+        *h.backend.configure_answer.lock().unwrap() = Some(Err("the portal went away".into()));
+        let error = invoke(&h, "configure_shortcuts", json!({})).unwrap_err();
+        assert_eq!(error["kind"], "backend");
+        assert!(
+            error["message"].as_str().unwrap().contains("the portal went away"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_quit_command_is_registered() {
+        // Invoking it would end the process, and the mock runtime can't stand in for that. `every_command_the_window_calls_is_there`
+        // finds it in api.ts; this is the other half, that the handler list has it.
+        let source = std::fs::read_to_string("src/commands.rs").expect("this file");
+        let handler = source
+            .split("tauri::generate_handler![")
+            .nth(1)
+            .expect("the handler list");
+        assert!(handler.split(']').next().unwrap().contains("quit_app"));
     }
 
     // The status, and the commands of the audio engine, on the real engine capturing the fixture.

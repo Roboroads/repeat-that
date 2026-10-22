@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { suspendHotkeys, type HotkeyName, type Settings } from '../api';
+  import { configureShortcuts, suspendHotkeys, toApiError, type HotkeyName, type Settings } from '../api';
+  import { copyText } from '../clipboard';
   import { DEFAULT_HOTKEYS } from '../defaults';
   import { formatAccel, heldModifiers, interpretKey } from '../hotkey';
   import type { SettingsStore } from '../store.svelte';
@@ -12,6 +13,9 @@
   }
 
   let { store, settings }: Props = $props();
+
+  /** How the hotkeys work here. The recorder is for `plugin`; `portal` shows what the desktop assigned; `none` has commands. */
+  const backend = $derived(store.status?.hotkeyBackend ?? 'plugin');
 
   const FIELDS: Array<{ name: HotkeyName; label: string }> = [
     { name: 'replay', label: 'Replay' },
@@ -114,8 +118,45 @@
     void store.update({ hotkeys: { ...DEFAULT_HOTKEYS } }, { optimistic: false });
   }
 
+  // Where the desktop owns the keys (the portal).
+  /** The desktop can't be asked to show its settings, so the window says where they are. */
+  let settingsElsewhere = $state(false);
+  /** The desktop has its shortcuts dialog open and is waiting for the answer to it. */
+  let dialogOpen = $state(false);
+  /** Why asking failed. */
+  let configureError = $state<string | null>(null);
+
+  /** Whether the desktop gave any action a key. Until it does, the way on is its dialog, not its settings. */
+  const anyKey = $derived(FIELDS.some(({ name }) => store.status?.hotkeyTriggers[name] != null));
+
+  async function openSystemSettings() {
+    settingsElsewhere = false;
+    dialogOpen = false;
+    configureError = null;
+    try {
+      const outcome = await configureShortcuts();
+      settingsElsewhere = outcome === 'unsupported';
+      dialogOpen = outcome === 'busy';
+    } catch (raw) {
+      configureError = toApiError(raw).message;
+    }
+  }
+
+  // Where there are no hotkeys: the commands to bind by hand.
+  /** The action whose command was copied a moment ago. */
+  let copied = $state<HotkeyName | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function copy(name: HotkeyName, command: string) {
+    if (!(await copyText(command))) return;
+    copied = name;
+    if (copiedTimer !== null) clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => (copied = null), 2000);
+  }
+
   onDestroy(() => {
     if (recording !== null) suspend(false);
+    if (copiedTimer !== null) clearTimeout(copiedTimer);
   });
 
   const STATE_TEXT = { inUse: 'In use by another app', invalid: 'Invalid', unbound: 'Not set' } as const;
@@ -134,48 +175,102 @@
 
 <Section title="Hotkeys" id="hotkeys">
   {#snippet actions()}
-    <button type="button" disabled={isDefault} onclick={reset}>Reset to defaults</button>
+    {#if backend === 'plugin'}
+      <button type="button" disabled={isDefault} onclick={reset}>Reset to defaults</button>
+    {/if}
   {/snippet}
 
-  {#each FIELDS as { name, label } (name)}
-    {@const state = fieldState(name)}
-    <div class="hotkey">
-      <span class="label" aria-hidden="true">{label}</span>
-      <button
-        type="button"
-        class="field"
-        class:recording={recording === name}
-        aria-label={describe(name, label)}
-        onclick={(event) => {
-          // Safari and Firefox on macOS do not focus a button on click; the key presses must reach this one.
-          event.currentTarget.focus();
-          begin(name);
-        }}
-        onkeydown={(event) => onkeydown(event, name)}
-        onkeyup={(event) => onkeyup(event, name)}
-        onblur={() => {
-          if (recording === name) end();
-        }}
-      >
-        {#if recording === name}
-          <span class="placeholder">{held.length > 0 ? `${held.join('+')}+…` : 'Press a combination'}</span>
-        {:else if settings.hotkeys[name] !== null}
-          {#each formatAccel(settings.hotkeys[name]) as key, index (index)}
-            {#if index > 0}<span class="plus">+</span>{/if}<kbd>{key}</kbd>
-          {/each}
-        {:else}
-          <span class="placeholder">Click to set</span>
-        {/if}
+  {#if backend === 'portal'}
+    <p class="note">Your desktop decides which keys these use.</p>
+    {#each FIELDS as { name, label } (name)}
+      {@const trigger = store.status?.hotkeyTriggers[name] ?? null}
+      <div class="hotkey">
+        <span class="label">{label}</span>
+        <span class="field assigned">
+          {#if trigger !== null}<kbd>{trigger}</kbd>{:else}<span class="placeholder">Not assigned</span>{/if}
+        </span>
+      </div>
+    {/each}
+    <div class="system">
+      <button type="button" onclick={openSystemSettings}>
+        {anyKey ? 'Change in system settings' : 'Set up shortcuts'}
       </button>
-      {#if recording === name}
-        <p class="note">{hint ?? 'Esc cancels, Backspace clears.'}</p>
-      {:else if errors[name]}
-        <p class="note problem" role="alert">{errors[name]}</p>
-      {:else if state !== 'ok'}
-        <p class="note" class:problem={state !== 'unbound'}>{STATE_TEXT[state]}</p>
-      {/if}
     </div>
-  {/each}
+    {#if dialogOpen}
+      <p class="note">Your desktop is waiting for you to answer its shortcuts dialog.</p>
+    {/if}
+    {#if settingsElsewhere}
+      <p class="note">
+        This desktop can't open them from here. In KDE, look under System Settings → Shortcuts → Repeat That. In GNOME,
+        under Settings → Keyboard → View and Customize Shortcuts → Apps.
+      </p>
+    {/if}
+    {#if configureError}
+      <p class="note problem" role="alert">{configureError}</p>
+    {/if}
+  {:else if backend === 'none'}
+    <p class="callout">Global hotkeys aren't available on this desktop.</p>
+    <p class="note">
+      Bind each command below as a custom keyboard shortcut in your desktop's settings (in GNOME: Settings → Keyboard →
+      View and Customize Shortcuts → Custom Shortcuts). Each one acts on the running app.
+    </p>
+    {#each FIELDS as { name, label } (name)}
+      {@const command = store.status?.hotkeyCommands?.[name]}
+      {#if command}
+        <div class="command">
+          <span class="label">{label}</span>
+          <code>{command}</code>
+          <button
+            type="button"
+            aria-label="{copied === name ? 'Copied' : 'Copy'} the {label} command"
+            onclick={() => copy(name, command)}
+          >
+            {copied === name ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      {/if}
+    {/each}
+  {:else}
+    {#each FIELDS as { name, label } (name)}
+      {@const state = fieldState(name)}
+      <div class="hotkey">
+        <span class="label" aria-hidden="true">{label}</span>
+        <button
+          type="button"
+          class="field"
+          class:recording={recording === name}
+          aria-label={describe(name, label)}
+          onclick={(event) => {
+            // Safari and Firefox on macOS do not focus a button on click; the key presses must reach this one.
+            event.currentTarget.focus();
+            begin(name);
+          }}
+          onkeydown={(event) => onkeydown(event, name)}
+          onkeyup={(event) => onkeyup(event, name)}
+          onblur={() => {
+            if (recording === name) end();
+          }}
+        >
+          {#if recording === name}
+            <span class="placeholder">{held.length > 0 ? `${held.join('+')}+…` : 'Press a combination'}</span>
+          {:else if settings.hotkeys[name] !== null}
+            {#each formatAccel(settings.hotkeys[name]) as key, index (index)}
+              {#if index > 0}<span class="plus">+</span>{/if}<kbd>{key}</kbd>
+            {/each}
+          {:else}
+            <span class="placeholder">Click to set</span>
+          {/if}
+        </button>
+        {#if recording === name}
+          <p class="note">{hint ?? 'Esc cancels, Backspace clears.'}</p>
+        {:else if errors[name]}
+          <p class="note problem" role="alert">{errors[name]}</p>
+        {:else if state !== 'ok'}
+          <p class="note" class:problem={state !== 'unbound'}>{STATE_TEXT[state]}</p>
+        {/if}
+      </div>
+    {/each}
+  {/if}
 </Section>
 
 <style>
@@ -210,6 +305,12 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
   }
 
+  /* What the desktop assigned is shown like a key field but is not a button. */
+  .field.assigned {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
   .plus,
   .placeholder {
     color: var(--text-muted);
@@ -223,5 +324,28 @@
 
   .note.problem {
     color: var(--warn);
+  }
+
+  .system {
+    display: flex;
+    justify-content: flex-start;
+  }
+
+  .command {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr auto;
+    align-items: center;
+    column-gap: 0.75rem;
+  }
+
+  .command code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    padding: 0.25rem 0.5rem;
+    border-radius: 6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 0.85rem;
+    user-select: all;
   }
 </style>

@@ -3,7 +3,7 @@
 //! Each OS gets its own backend behind [`AppAudioSource`]:
 //! - Windows: WASAPI process loopback (Windows 10 2004+), see `WasapiSource`
 //! - Linux: PipeWire, see `linux::PipeWireSource`
-//! - macOS: Core Audio process taps (macOS 14.2+, planned)
+//! - macOS: Core Audio process taps (macOS 14.2+), see `macos::CoreAudioSource`
 //!
 //! Every OS has a module that this file includes under the name `os` (see the `mod` lines below), and the module has
 //! the same items: `HAS_BACKEND`, `HAS_DUCK_GUARD`, `EXE_PATHS_IGNORE_CASE`, `source`, `icon` and `run_duck_guard`. An
@@ -13,7 +13,8 @@
 //! `windows::WasapiSource`.
 //!
 //! [`MockSource`] plays audio from memory or a WAV file as if it were an app, so the rest of the app can be developed
-//! and tested on any OS. [`app_icon`] reads the icon of an app's executable for the app list.
+//! and tested on any OS. [`app_icon`] reads the icon of an app's executable for the app list. [`permission`] tells
+//! whether the OS lets this app capture audio at all, and how to fix it when it doesn't.
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -27,6 +28,7 @@ pub mod duck_guard;
 mod duck_journal;
 mod icon;
 pub mod mock;
+pub mod permission;
 mod process_tree;
 mod ramp;
 // One OS module per OS, used as `os`. A new backend adds its `mod`/`use` pair here and its OS to the `not(any(..))` of
@@ -39,9 +41,15 @@ use windows as os;
 pub mod linux;
 #[cfg(target_os = "linux")]
 use linux as os;
-#[cfg(not(any(windows, target_os = "linux")))]
+// Its pure parts (grouping apps, the ducking state machine) also build in tests on every OS, so their tests run
+// everywhere.
+#[cfg(any(target_os = "macos", test))]
+pub mod macos;
+#[cfg(target_os = "macos")]
+use macos as os;
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 mod unsupported;
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 use unsupported as os;
 
 pub use icon::{IconImage, app_icon};
@@ -119,16 +127,28 @@ pub trait AppAudioSource: Send + Sync {
     fn start(&self, app: &AudioApp, sink: FrameSink) -> Result<Box<dyn CaptureHandle>>;
 
     /// Ducks `app` to `level` times the volume it had before ducking. `1.0` restores that volume, so the user's own
-    /// per-app volume setting is never lost. Levels are clamped to [`MIN_DUCK_LEVEL`]–1.0.
+    /// per-app volume setting is never lost. Levels are clamped to [`PLATFORM_MIN_DUCK_LEVEL`]–1.0: 5% on Windows and
+    /// Linux, 0 on macOS, where 0 mutes the app.
     ///
     /// Captured audio keeps its full level while the app is ducked: backends whose capture is affected by the app's
     /// volume (Windows) compensate for it. Those fade the volume in small steps, so the compensation can't be audibly
-    /// out of step with it, and return once the fade is done, a few hundred milliseconds later.
+    /// out of step with it, and return once the fade is done, a few hundred milliseconds later. macOS captures the app
+    /// before it is ducked and fades too, see `macos::CoreAudioSource`.
     fn set_app_volume(&self, app: &AudioApp, level: f32) -> Result<()>;
 }
 
-/// The lowest duck level. Ducking never mutes an app completely, because muted audio can't be captured.
+/// The lowest duck level on Windows and Linux. Ducking never mutes an app completely there, because muted audio can't
+/// be captured.
 pub const MIN_DUCK_LEVEL: f32 = 0.05;
+
+/// The lowest duck level on this OS, the one [`AppAudioSource::set_app_volume`] clamps to. macOS captures an app
+/// before it is muted, so it can go down to 0, which mutes the app; elsewhere it is [`MIN_DUCK_LEVEL`].
+#[cfg(target_os = "macos")]
+pub const PLATFORM_MIN_DUCK_LEVEL: f32 = 0.0;
+/// The lowest duck level on this OS, the one [`AppAudioSource::set_app_volume`] clamps to. macOS captures an app
+/// before it is muted, so it can go down to 0, which mutes the app; elsewhere it is [`MIN_DUCK_LEVEL`].
+#[cfg(not(target_os = "macos"))]
+pub const PLATFORM_MIN_DUCK_LEVEL: f32 = MIN_DUCK_LEVEL;
 
 /// Whether this OS has a capture backend. Without one, [`platform_source`] and [`platform_source_with`] say
 /// [`CaptureError::Unsupported`].
@@ -311,6 +331,18 @@ mod tests {
         // Like the other variants, Display names the kind, so a log line tells what happened. The sentence for the user
         // follows unchanged, and code that shows only that matches on the variant.
         assert_eq!(shown, format!("audio capture is not allowed: {how}"));
+    }
+
+    #[test]
+    fn only_macos_ducks_down_to_silence() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(PLATFORM_MIN_DUCK_LEVEL, 0.0);
+        } else {
+            assert_eq!(PLATFORM_MIN_DUCK_LEVEL, MIN_DUCK_LEVEL);
+        }
+        // The Windows fade and its compensation keep using the 5% floor.
+        assert_eq!(MIN_DUCK_LEVEL, 0.05);
+        assert_eq!(clamp_duck_level(0.0), MIN_DUCK_LEVEL);
     }
 
     #[test]

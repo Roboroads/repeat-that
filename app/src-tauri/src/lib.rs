@@ -4,19 +4,32 @@ mod actions;
 mod autostart;
 mod commands;
 mod engine;
+#[cfg(all(test, target_os = "linux"))]
+mod fake_portal;
 mod hotkeys;
 mod icons;
 mod ipc;
+#[cfg(test)]
+mod linux_package_tests;
 mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
+#[cfg(target_os = "linux")]
+mod portal;
+#[cfg(all(test, target_os = "linux"))]
+mod private_bus;
+pub mod self_check;
 mod service;
+mod session;
 mod settings;
+mod shortcut_page;
 mod source;
 mod store;
 #[cfg(test)]
 mod test_app;
 mod tray;
+#[cfg(target_os = "linux")]
+mod webkit;
 mod window;
 
 use std::sync::{Arc, Mutex};
@@ -35,6 +48,10 @@ const EMBEDS_PLACEHOLDER_FRONTEND: bool = option_env!("REPEAT_THAT_FRONTEND_PLAC
 /// Starts the app. `rt_capture::duck_guard::run_if_requested()` has already run in `main`, so this is never a duck
 /// guard process.
 pub fn run() {
+    // First of all, while the process has only its main thread and before any webview exists: WebKitGTK reads these when
+    // the first one starts.
+    #[cfg(target_os = "linux")]
+    webkit::apply_defaults();
     // `tauri dev` loads the dev server and never shows the embedded page.
     if EMBEDS_PLACEHOLDER_FRONTEND && !cfg!(dev) {
         eprintln!(
@@ -44,13 +61,18 @@ pub fn run() {
     }
     // Hotkeys, the tray and the window drive the engine; it runs from `setup` on.
     let engine: SharedAppEngine = Arc::new(AppEngine::default());
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         // Start order: single instance first, so a second launch exits before it sets anything up, then the plugins the
         // rest of the app uses, then the settings with the hotkeys, the tray and the audio engine (all in `setup`).
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             window::on_second_launch(app, &args)
-        }))
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        }));
+    // The plugin's hotkeys need an X server (or Windows, or macOS). On Wayland the portal takes their place, and without
+    // a display the plugin could only fail.
+    if session::wants_shortcut_plugin(&session::ProcessEnv) {
+        builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+    }
+    let app = builder
         .plugin(tauri_plugin_store::Builder::new().build())
         // Starting with the OS is off until the user turns it on; the entry starts the app hidden in the tray.
         .plugin(tauri_plugin_autostart::init(
@@ -60,6 +82,7 @@ pub fn run() {
         // Opens the privacy policy in the browser; the capability limits it to this project's pages.
         .plugin(tauri_plugin_opener::init())
         .manage::<SharedStatus>(Mutex::default())
+        .manage::<shortcut_page::PageOpener>(shortcut_page::real_opener())
         .manage::<SharedEngine>(engine.clone())
         .manage::<SharedAppEngine>(engine)
         .manage::<SharedIcons>(Arc::new(IconCache::default()))
@@ -71,6 +94,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             let handle = app.handle();
+            // What the desktop is like decides how the hotkeys work and whether the window opens at every launch.
+            session::install(handle);
             // The settings decide whether this is the first run and which hotkeys to register, so they come first.
             service::install(handle);
             tray::setup(handle)?;
@@ -78,6 +103,9 @@ pub fn run() {
             engine::install(handle);
             let args: Vec<String> = std::env::args().collect();
             window::apply_startup_visibility(handle, &args);
+            // A launch that asks for an action (`repeat-that --replay`) does it now that the app is up. A second launch
+            // never gets here: the running app does the action, see `window::on_second_launch`.
+            actions::run_launch_action(&args, handle);
             Ok(())
         })
         .build(tauri::generate_context!())

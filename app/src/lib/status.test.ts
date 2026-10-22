@@ -13,6 +13,10 @@ function status(over: Partial<Status> = {}): Status {
     hotkeys: { replay: 'ok', stop: 'ok', catchUp: 'ok' },
     vadFallback: false,
     settingsProblem: null,
+    hotkeyBackend: 'plugin',
+    hotkeyTriggers: { replay: null, stop: null, catchUp: null },
+    hotkeyCommands: null,
+    trayAvailable: true,
     ...over,
   };
 }

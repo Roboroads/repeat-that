@@ -144,6 +144,58 @@ describe('MockBackend', () => {
   });
 });
 
+describe('the desktop', () => {
+  it('is an ordinary desktop by default: plugin hotkeys, a tray, nothing assigned', () => {
+    const { b } = backend();
+    const status = b.handle('get_status', {}) as Status;
+
+    expect(status.hotkeyBackend).toBe('plugin');
+    expect(status.hotkeyTriggers).toEqual({ replay: null, stop: null, catchUp: null });
+    expect(status.hotkeyCommands).toBeNull();
+    expect(status.trayAvailable).toBe(true);
+  });
+
+  it('lets a test or a scenario say otherwise', () => {
+    const { b } = backend({ statusOverrides: { hotkeyBackend: 'none', trayAvailable: false } });
+    const status = b.handle('get_status', {}) as Status;
+
+    expect(status.hotkeyBackend).toBe('none');
+    expect(status.trayAvailable).toBe(false);
+  });
+
+  it('configure_shortcuts opens the settings, or says it cannot', () => {
+    expect(backend().b.handle('configure_shortcuts', {})).toBe('opened');
+    expect(backend({ configureOutcome: 'unsupported' }).b.handle('configure_shortcuts', {})).toBe('unsupported');
+  });
+
+  it('quit_app is a command, and the mock keeps running', () => {
+    const { b } = backend();
+
+    expect(b.handle('quit_app', {})).toBeNull();
+    expect(b.calls.map((call) => call.cmd)).toEqual(['quit_app']);
+  });
+
+  it('the portal scenario has the keys the desktop assigned', () => {
+    const status = backend(scenarioInit('portal')).b.status();
+
+    expect(status.hotkeyBackend).toBe('portal');
+    expect(status.hotkeyTriggers.replay).not.toBeNull();
+    expect(status.hotkeyCommands).toBeNull();
+  });
+
+  it('the no-hotkeys scenario has the commands to bind', () => {
+    const status = backend(scenarioInit('no-hotkeys')).b.status();
+
+    expect(status.hotkeyBackend).toBe('none');
+    expect(status.hotkeyCommands).toMatchObject({ replay: expect.stringContaining('--replay') });
+    expect(status.hotkeyTriggers).toEqual({ replay: null, stop: null, catchUp: null });
+  });
+
+  it('the no-tray scenario has no tray', () => {
+    expect(backend(scenarioInit('no-tray')).b.status().trayAvailable).toBe(false);
+  });
+});
+
 describe('scenarios', () => {
   it.each(SCENARIOS)('%s builds a backend that answers get_settings', (name) => {
     const { b } = backend(scenarioInit(name));

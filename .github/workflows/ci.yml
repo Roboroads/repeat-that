@@ -115,6 +115,12 @@ jobs:
         if: needs.changes.outputs.code != 'false'
       - run: cargo test --workspace
         if: needs.changes.outputs.code != 'false'
+      # Runs the real app with its hidden self-check: one JSON line that says whether Silero loaded (on macOS, that the
+      # statically linked ONNX Runtime works on Apple Silicon). The exit code is 0 only when it did.
+      - name: Self-check
+        if: needs.changes.outputs.code != 'false'
+        shell: bash
+        run: cargo run --quiet -p repeat-that -- --rt-self-check
       # End-to-end test of Windows capture: a virtual audio device (VB-CABLE) and the audio service, which Windows
       # Server runners have turned off.
       - name: Set up audio (Windows)

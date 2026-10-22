@@ -209,6 +209,13 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   the app its volume back.
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
+- Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,
+  prints one JSON line `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..}` and exits before Tauri starts. The
+  exit code is 0 only when Silero loaded and ran one frame of silence. CI runs it on every OS, and the macOS bundle
+  check will use it too. It plays and captures nothing. In debug builds `REPEAT_THAT_MOCK_VAD_FALLBACK=1` reports the
+  fallback without loading Silero. A Windows release build has no console, so it prints nothing there and the exit code
+  is all a caller sees: run `start /wait repeat-that.exe --rt-self-check` and read `%ERRORLEVEL%`, or
+  `Start-Process -Wait -PassThru repeat-that.exe --rt-self-check` in PowerShell and read `$p.ExitCode`.
 - Svelte + TypeScript UI in `app/src`, built with Vite.
 
 ## Threading
@@ -240,7 +247,8 @@ GitHub Actions builds:
 - Windows: NSIS `.exe` (per-user install, no admin rights), x64 only for v0.1 (ARM64 later: `ort` has no CPU build for
   it yet)
 - Linux: `.deb` (+ AppImage later)
-- macOS: universal `.dmg`, signed with a Developer ID Application certificate and notarized with `notarytool` (the
+- macOS: Apple Silicon `.dmg` (no Intel or universal build: Microsoft ships no x86_64 or universal ONNX Runtime after
+  1.23.2), signed with a Developer ID Application certificate and notarized with `notarytool` (the
   ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
   credentials are GitHub Actions secrets, listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization).
 - Every release publishes a `SHA256SUMS` file so users can verify downloads

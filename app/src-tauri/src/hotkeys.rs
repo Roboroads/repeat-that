@@ -7,7 +7,7 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 use crate::actions::AppAction;
-use crate::ipc::{HotkeyBindings, HotkeyState, HotkeyStates};
+use crate::ipc::{ConfigureOutcome, HotkeyBackendKind, HotkeyBindings, HotkeyState, HotkeyStates, HotkeyTriggers};
 use crate::locking::lock;
 use crate::settings::{HOTKEY_ACTIONS, parse_accel};
 
@@ -22,20 +22,45 @@ pub enum KeyEdge {
 /// Called for every press and release of one registered combination, from whichever thread the OS reports on.
 pub type EdgeHandler = Box<dyn Fn(KeyEdge) + Send + Sync>;
 
-/// Registers key combinations with the OS. The real one is the global-shortcut plugin; tests use a fake.
+/// Registers key combinations with the OS. The real ones are the global-shortcut plugin and the desktop's shortcut
+/// portal; tests use a fake.
 pub trait ShortcutBackend: Send + Sync {
-    /// Registers `accel` and calls `on_edge` for every press and release. An error means the OS refused, usually
-    /// because another app holds the combination.
-    fn register(&self, accel: &str, on_edge: EdgeHandler) -> Result<(), String>;
+    /// Hands the backend the handler of every hotkey action, once, before anything is registered. A backend where the
+    /// OS lists the actions itself (the portal binds all three, with or without a key of ours) keeps them; the others
+    /// register their own.
+    fn attach(&self, _handlers: Vec<(AppAction, EdgeHandler)>) {}
+    /// Registers `accel` for `action` and calls `on_edge` for every press and release. An error means the OS refused,
+    /// usually because another app holds the combination.
+    fn register(&self, action: AppAction, accel: &str, on_edge: EdgeHandler) -> Result<(), String>;
     /// Best effort: a combination that is already gone has nothing to unregister.
-    fn unregister(&self, accel: &str);
+    fn unregister(&self, action: AppAction, accel: &str);
+    /// A round of `register` and `unregister` calls is over. A backend that has to ask the OS for all its keys at once
+    /// (the portal shows one dialog for them) does that here.
+    fn commit(&self) {}
+    /// How the hotkeys work: see [`HotkeyBackendKind`]. A backend can give up on its own, and then says `None`.
+    fn kind(&self) -> HotkeyBackendKind {
+        HotkeyBackendKind::Plugin
+    }
+    /// The key the OS assigned to each action, for a backend where the OS decides.
+    fn triggers(&self) -> HotkeyTriggers {
+        HotkeyTriggers::default()
+    }
+    /// Whether the hotkeys can be switched off for a moment (while the window records a combination). Where the user
+    /// records nothing in the window, there is nothing to switch off.
+    fn can_suspend(&self) -> bool {
+        true
+    }
+    /// Asks the OS to show where the user changes the keys.
+    fn configure(&self) -> Result<ConfigureOutcome, String> {
+        Ok(ConfigureOutcome::Unsupported)
+    }
 }
 
 /// [`ShortcutBackend`] on `tauri-plugin-global-shortcut`.
 pub struct PluginBackend<R: Runtime>(pub AppHandle<R>);
 
 impl<R: Runtime> ShortcutBackend for PluginBackend<R> {
-    fn register(&self, accel: &str, on_edge: EdgeHandler) -> Result<(), String> {
+    fn register(&self, _action: AppAction, accel: &str, on_edge: EdgeHandler) -> Result<(), String> {
         self.0
             .global_shortcut()
             .on_shortcut(accel, move |_app, _shortcut, event| {
@@ -47,9 +72,25 @@ impl<R: Runtime> ShortcutBackend for PluginBackend<R> {
             .map_err(|err| err.to_string())
     }
 
-    fn unregister(&self, accel: &str) {
+    fn unregister(&self, _action: AppAction, accel: &str) {
         // Best effort, as documented on the trait.
         let _ = self.0.global_shortcut().unregister(accel);
+    }
+}
+
+/// [`ShortcutBackend`] for a desktop with no way to have global hotkeys. It registers nothing; the command-line actions
+/// are what the user binds instead.
+pub struct NoBackend;
+
+impl ShortcutBackend for NoBackend {
+    fn register(&self, _action: AppAction, _accel: &str, _on_edge: EdgeHandler) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn unregister(&self, _action: AppAction, _accel: &str) {}
+
+    fn kind(&self) -> HotkeyBackendKind {
+        HotkeyBackendKind::None
     }
 }
 
@@ -131,6 +172,14 @@ struct Inner {
     suspended: bool,
 }
 
+/// How the hotkeys work, for the status.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HotkeyReport {
+    pub backend: HotkeyBackendKind,
+    /// The keys the OS assigned, under the portal.
+    pub triggers: HotkeyTriggers,
+}
+
 /// Keeps the OS registrations in line with the settings and runs the action of a pressed hotkey.
 pub struct HotkeyManager {
     backend: Box<dyn ShortcutBackend>,
@@ -142,10 +191,17 @@ pub struct HotkeyManager {
 impl HotkeyManager {
     /// Registers nothing yet; call [`apply`](Self::apply).
     pub fn new(backend: Box<dyn ShortcutBackend>, dispatch: Arc<dyn Fn(AppAction) + Send + Sync>) -> Self {
+        let tracker: Arc<Mutex<PressTracker>> = Arc::default();
+        backend.attach(
+            HOTKEY_ACTIONS
+                .iter()
+                .map(|&action| (action, edge_handler(&tracker, &dispatch, action)))
+                .collect(),
+        );
         HotkeyManager {
             backend,
             dispatch,
-            tracker: Arc::default(),
+            tracker,
             inner: Mutex::new(Inner {
                 desired: HotkeyBindings {
                     replay: None,
@@ -172,6 +228,9 @@ impl HotkeyManager {
     /// Unregisters every hotkey (`true`, while the window records a combination) or registers the wanted ones again
     /// (`false`, which also retries the ones another app held). Returns whether that changed anything.
     pub fn set_suspended(&self, suspended: bool) -> bool {
+        if !self.backend.can_suspend() {
+            return false;
+        }
         let mut inner = lock(&self.inner);
         if inner.suspended == suspended {
             return false;
@@ -181,14 +240,47 @@ impl HotkeyManager {
         true
     }
 
-    /// Where each hotkey stands.
+    /// Where each hotkey stands. Where the OS decides the keys (the portal) an action is `Ok` once the OS has given it
+    /// a key and `Unbound` until then, whatever is stored, and with no hotkeys at all every action is `Unbound`.
     pub fn states(&self) -> HotkeyStates {
         let inner = lock(&self.inner);
+        let kind = self.backend.kind();
         let mut states = HotkeyStates::UNBOUND;
-        for (state, slot) in states.slots_mut().into_iter().zip(&inner.slots) {
-            *state = slot.state;
+        if kind == HotkeyBackendKind::None {
+            return states;
+        }
+        let assigned = self.backend.triggers();
+        for ((state, slot), assigned) in states.slots_mut().into_iter().zip(&inner.slots).zip(assigned.slots()) {
+            *state = match kind {
+                HotkeyBackendKind::Portal => {
+                    if assigned.is_some() {
+                        HotkeyState::Ok
+                    } else {
+                        HotkeyState::Unbound
+                    }
+                }
+                _ => slot.state,
+            };
         }
         states
+    }
+
+    /// How the hotkeys work now, and the keys the OS assigned.
+    pub fn report(&self) -> HotkeyReport {
+        let backend = self.backend.kind();
+        HotkeyReport {
+            backend,
+            triggers: if backend == HotkeyBackendKind::Portal {
+                self.backend.triggers()
+            } else {
+                HotkeyTriggers::default()
+            },
+        }
+    }
+
+    /// Asks the OS to show where the user changes the keys, see [`ShortcutBackend::configure`].
+    pub fn configure(&self) -> Result<ConfigureOutcome, String> {
+        self.backend.configure()
     }
 
     /// Brings the OS registrations to `inner.desired`, touching only what differs.
@@ -216,7 +308,7 @@ impl HotkeyManager {
                 _ => false,
             };
             if !still_wanted && let Some((_, accel)) = slot.live.take() {
-                self.backend.unregister(&accel);
+                self.backend.unregister(action, &accel);
                 lock(&self.tracker).release(action);
             }
         }
@@ -237,7 +329,10 @@ impl HotkeyManager {
                 }
                 Wanted::Bound(shortcut, accel) => {
                     slot.tried = Some(*shortcut);
-                    match self.backend.register(accel, self.edge_handler(action)) {
+                    match self
+                        .backend
+                        .register(action, accel, edge_handler(&self.tracker, &self.dispatch, action))
+                    {
                         Ok(()) => {
                             slot.live = Some((*shortcut, accel.clone()));
                             slot.state = HotkeyState::Ok;
@@ -250,25 +345,32 @@ impl HotkeyManager {
                 }
             }
         }
+        self.backend.commit();
     }
+}
 
-    fn edge_handler(&self, action: AppAction) -> EdgeHandler {
-        let tracker = Arc::clone(&self.tracker);
-        let dispatch = Arc::clone(&self.dispatch);
-        Box::new(move |edge| {
-            // The lock is released before the action runs: it may do anything, including touching the hotkeys.
-            let run = lock(&tracker).on_edge(action, edge);
-            if run {
-                dispatch(action);
-            }
-        })
-    }
+/// The handler for `action`'s hotkey: a press runs the action unless the key is already held.
+fn edge_handler(
+    tracker: &Arc<Mutex<PressTracker>>,
+    dispatch: &Arc<dyn Fn(AppAction) + Send + Sync>,
+    action: AppAction,
+) -> EdgeHandler {
+    let tracker = Arc::clone(tracker);
+    let dispatch = Arc::clone(dispatch);
+    Box::new(move |edge| {
+        // The lock is released before the action runs: it may do anything, including touching the hotkeys.
+        let run = lock(&tracker).on_edge(action, edge);
+        if run {
+            dispatch(action);
+        }
+    })
 }
 
 /// A backend that registers into memory, for tests here and of the settings service.
 #[cfg(test)]
 pub mod fake {
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
@@ -277,9 +379,37 @@ pub mod fake {
         pub log: Mutex<Vec<String>>,
         pub handlers: Mutex<Vec<(String, EdgeHandler)>>,
         pub refused: Mutex<HashSet<String>>,
+        /// The actions the manager registered, in order, whatever their combination.
+        pub actions: Mutex<Vec<AppAction>>,
+        /// The actions whose handlers the manager attached, and the handlers.
+        pub attached: Mutex<Vec<AppAction>>,
+        pub attached_handlers: Mutex<Vec<EdgeHandler>>,
+        /// How many rounds of registrations were over (`commit` calls).
+        pub commits: AtomicUsize,
+        /// What the backend says it is; `Plugin` unless a test changes it.
+        pub kind: Mutex<HotkeyBackendKind>,
+        pub triggers: Mutex<HotkeyTriggers>,
+        pub keeps_hotkeys_on: AtomicBool,
+        pub configure_answer: Mutex<Option<Result<ConfigureOutcome, String>>>,
     }
 
     impl FakeBackend {
+        pub fn set_kind(&self, kind: HotkeyBackendKind) {
+            *self.kind.lock().unwrap() = kind;
+        }
+
+        pub fn set_triggers(&self, replay: Option<&str>, stop: Option<&str>, catch_up: Option<&str>) {
+            *self.triggers.lock().unwrap() = HotkeyTriggers {
+                replay: replay.map(String::from),
+                stop: stop.map(String::from),
+                catch_up: catch_up.map(String::from),
+            };
+        }
+
+        pub fn commits(&self) -> usize {
+            self.commits.load(Ordering::SeqCst)
+        }
+
         pub fn refuse(&self, accel: &str) {
             self.refused.lock().unwrap().insert(accel.to_string());
         }
@@ -319,8 +449,9 @@ pub mod fake {
 
     /// The manager owns its backend; a test keeps a second handle on it.
     impl ShortcutBackend for Arc<FakeBackend> {
-        fn register(&self, accel: &str, on_edge: EdgeHandler) -> Result<(), String> {
+        fn register(&self, action: AppAction, accel: &str, on_edge: EdgeHandler) -> Result<(), String> {
             self.log.lock().unwrap().push(format!("register {accel}"));
+            self.actions.lock().unwrap().push(action);
             if self.refused.lock().unwrap().contains(accel) {
                 return Err("already taken".into());
             }
@@ -332,9 +463,40 @@ pub mod fake {
             Ok(())
         }
 
-        fn unregister(&self, accel: &str) {
+        fn unregister(&self, _action: AppAction, accel: &str) {
             self.log.lock().unwrap().push(format!("unregister {accel}"));
             self.handlers.lock().unwrap().retain(|(a, _)| a != accel);
+        }
+
+        fn attach(&self, handlers: Vec<(AppAction, EdgeHandler)>) {
+            for (action, handler) in handlers {
+                self.attached.lock().unwrap().push(action);
+                self.attached_handlers.lock().unwrap().push(handler);
+            }
+        }
+
+        fn commit(&self) {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn kind(&self) -> HotkeyBackendKind {
+            *self.kind.lock().unwrap()
+        }
+
+        fn triggers(&self) -> HotkeyTriggers {
+            self.triggers.lock().unwrap().clone()
+        }
+
+        fn can_suspend(&self) -> bool {
+            !self.keeps_hotkeys_on.load(Ordering::SeqCst)
+        }
+
+        fn configure(&self) -> Result<ConfigureOutcome, String> {
+            self.configure_answer
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(Ok(ConfigureOutcome::Unsupported))
         }
     }
 }
@@ -745,6 +907,184 @@ mod tests {
             serde_json::json!({ "replay": "ok", "stop": "inUse", "catchUp": "invalid" })
         );
         assert_eq!(serde_json::to_value(HotkeyState::Unbound).unwrap(), "unbound");
+    }
+
+    // Which backend, and what it does with the manager
+
+    #[test]
+    fn each_action_is_registered_under_its_own_name() {
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        assert_eq!(
+            *s.backend.actions.lock().unwrap(),
+            [AppAction::Replay, AppAction::Stop, AppAction::CatchUp]
+        );
+    }
+
+    #[test]
+    fn a_round_of_registrations_is_committed_once() {
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        assert_eq!(s.backend.commits(), 1);
+        s.manager
+            .apply(&bindings(Some("Ctrl+Shift+R"), Some(BACKSPACE), Some(ENTER)));
+        assert_eq!(s.backend.commits(), 2);
+    }
+
+    #[test]
+    fn the_report_names_the_backend_and_the_keys_the_os_assigned() {
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        assert_eq!(
+            s.manager.report(),
+            HotkeyReport {
+                backend: HotkeyBackendKind::Plugin,
+                triggers: HotkeyTriggers::default()
+            }
+        );
+
+        s.backend.set_kind(HotkeyBackendKind::Portal);
+        s.backend
+            .set_triggers(Some("Ctrl+Alt+Space"), None, Some("Ctrl+Alt+Enter"));
+        let report = s.manager.report();
+        assert_eq!(report.backend, HotkeyBackendKind::Portal);
+        assert_eq!(report.triggers.replay.as_deref(), Some("Ctrl+Alt+Space"));
+        assert_eq!(report.triggers.stop, None);
+        assert_eq!(report.triggers.catch_up.as_deref(), Some("Ctrl+Alt+Enter"));
+    }
+
+    #[test]
+    fn the_plugin_never_reports_triggers() {
+        // Only the portal assigns keys; whatever a plugin backend might say, the window shows its own settings.
+        let s = setup();
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.set_triggers(Some("Ctrl+Alt+Space"), None, None);
+        assert_eq!(s.manager.report().triggers, HotkeyTriggers::default());
+    }
+
+    #[test]
+    fn under_the_portal_a_key_the_os_assigned_is_ok_and_one_it_did_not_is_unbound() {
+        let s = setup();
+        s.backend.set_kind(HotkeyBackendKind::Portal);
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend
+            .set_triggers(Some("Ctrl+Alt+Space"), None, Some("Ctrl+Alt+Enter"));
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::Unbound, HotkeyState::Ok)
+        );
+    }
+
+    #[test]
+    fn without_hotkeys_every_state_is_unbound() {
+        let s = setup();
+        s.backend.set_kind(HotkeyBackendKind::None);
+        s.manager.apply(&HotkeyBindings::default());
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Unbound, HotkeyState::Unbound, HotkeyState::Unbound)
+        );
+        assert_eq!(s.manager.report().backend, HotkeyBackendKind::None);
+    }
+
+    #[test]
+    fn a_backend_that_gives_up_later_turns_the_states_unbound() {
+        let s = setup();
+        s.backend.set_kind(HotkeyBackendKind::Portal);
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.set_triggers(
+            Some("Ctrl+Alt+Space"),
+            Some("Ctrl+Alt+Backspace"),
+            Some("Ctrl+Alt+Enter"),
+        );
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::Ok, HotkeyState::Ok)
+        );
+        s.backend.set_kind(HotkeyBackendKind::None);
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Unbound, HotkeyState::Unbound, HotkeyState::Unbound)
+        );
+    }
+
+    #[test]
+    fn under_the_portal_what_is_stored_does_not_decide_the_state() {
+        // The stored combinations are only what was asked for; an action with an empty or unreadable one is still the
+        // portal's, and is fine once the OS has given it a key.
+        let s = setup();
+        s.backend.set_kind(HotkeyBackendKind::Portal);
+        s.manager.apply(&bindings(Some("Ctrl+Frobnicate"), None, Some(ENTER)));
+        s.backend.set_triggers(Some("Meta+R"), Some("Meta+S"), None);
+        assert_eq!(
+            s.manager.states(),
+            states(HotkeyState::Ok, HotkeyState::Ok, HotkeyState::Unbound)
+        );
+    }
+
+    #[test]
+    fn the_backend_gets_the_handler_of_every_action_before_anything_is_registered() {
+        let s = setup();
+        assert_eq!(
+            *s.backend.attached.lock().unwrap(),
+            [AppAction::Replay, AppAction::Stop, AppAction::CatchUp]
+        );
+        assert!(s.backend.log().is_empty());
+    }
+
+    #[test]
+    fn the_attached_handlers_share_the_press_tracking_of_the_registered_ones() {
+        let s = setup();
+        let handlers = s.backend.attached_handlers.lock().unwrap();
+        let replay = &handlers[0];
+        replay(KeyEdge::Pressed);
+        replay(KeyEdge::Pressed);
+        assert_eq!(*s.fired.lock().unwrap(), [AppAction::Replay]);
+        replay(KeyEdge::Released);
+        replay(KeyEdge::Pressed);
+        assert_eq!(*s.fired.lock().unwrap(), [AppAction::Replay, AppAction::Replay]);
+    }
+
+    #[test]
+    fn suspending_does_nothing_where_the_backend_cannot_be_suspended() {
+        let s = setup();
+        s.backend
+            .keeps_hotkeys_on
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        s.manager.apply(&HotkeyBindings::default());
+        s.backend.clear_log();
+        assert!(!s.manager.set_suspended(true), "nothing changed");
+        assert!(s.backend.log().is_empty());
+        assert_eq!(s.backend.registered(), [SPACE, BACKSPACE, ENTER]);
+        assert!(!s.manager.set_suspended(false));
+    }
+
+    #[test]
+    fn configure_is_the_backends_answer() {
+        let s = setup();
+        assert_eq!(s.manager.configure(), Ok(ConfigureOutcome::Unsupported));
+        *s.backend.configure_answer.lock().unwrap() = Some(Ok(ConfigureOutcome::Opened));
+        assert_eq!(s.manager.configure(), Ok(ConfigureOutcome::Opened));
+        *s.backend.configure_answer.lock().unwrap() = Some(Err("the portal went away".into()));
+        assert_eq!(s.manager.configure(), Err("the portal went away".to_string()));
+    }
+
+    #[test]
+    fn no_backend_registers_nothing_and_says_so() {
+        let fired = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&fired);
+        let manager = HotkeyManager::new(
+            Box::new(NoBackend),
+            Arc::new(move |action| sink.lock().unwrap().push(action)),
+        );
+        manager.apply(&HotkeyBindings::default());
+        assert_eq!(manager.report().backend, HotkeyBackendKind::None);
+        assert_eq!(
+            manager.states(),
+            states(HotkeyState::Unbound, HotkeyState::Unbound, HotkeyState::Unbound)
+        );
+        assert_eq!(manager.configure(), Ok(ConfigureOutcome::Unsupported));
+        assert!(fired.lock().unwrap().is_empty());
     }
 
     #[test]

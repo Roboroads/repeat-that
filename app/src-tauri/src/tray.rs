@@ -10,7 +10,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::actions::{self, AppAction};
-use crate::ipc::{CaptureStateName, HotkeyBindings, HotkeyState, HotkeyStates, Playback, Status};
+use crate::ipc::{CaptureStateName, HotkeyBackendKind, HotkeyBindings, HotkeyState, HotkeyStates, Playback, Status};
 use crate::settings::HOTKEY_ACTIONS;
 use crate::source::UNSUPPORTED;
 
@@ -171,6 +171,21 @@ impl HotkeyLabels {
             }
         }
         labels
+    }
+}
+
+impl HotkeyLabels {
+    /// The labels for `status`: the stored combinations that work with the plugin, the keys the desktop assigned under
+    /// the portal, and none when there are no hotkeys.
+    pub fn for_status(bindings: &HotkeyBindings, status: &Status) -> Self {
+        match status.desktop.hotkey_backend {
+            HotkeyBackendKind::Plugin => Self::from_states(bindings, &status.hotkeys),
+            HotkeyBackendKind::Portal => {
+                let [replay, stop, catch_up] = status.desktop.hotkey_triggers.slots().map(Clone::clone);
+                HotkeyLabels { replay, catch_up, stop }
+            }
+            HotkeyBackendKind::None => HotkeyLabels::default(),
+        }
     }
 }
 
@@ -471,7 +486,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, model: &TrayModel) -> tauri::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ipc::CaptureStatus;
+    use crate::ipc::{CaptureStatus, DesktopStatus, HotkeyTriggers};
 
     fn secs(s: u64) -> Duration {
         Duration::from_secs(s)
@@ -836,6 +851,103 @@ mod tests {
             HotkeyLabels::from_states(&unbound, &HotkeyStates::UNBOUND),
             HotkeyLabels::default()
         );
+    }
+
+    fn status_on(backend: HotkeyBackendKind, hotkeys: HotkeyStates, triggers: HotkeyTriggers) -> Status {
+        Status {
+            hotkeys,
+            desktop: DesktopStatus {
+                hotkey_backend: backend,
+                hotkey_triggers: triggers,
+                ..DesktopStatus::default()
+            },
+            ..Status::default()
+        }
+    }
+
+    fn all_ok() -> HotkeyStates {
+        HotkeyStates {
+            replay: HotkeyState::Ok,
+            stop: HotkeyState::Ok,
+            catch_up: HotkeyState::Ok,
+        }
+    }
+
+    #[test]
+    fn with_the_plugin_the_labels_are_the_stored_combinations_that_work() {
+        let status = status_on(HotkeyBackendKind::Plugin, all_ok(), HotkeyTriggers::default());
+        assert_eq!(
+            HotkeyLabels::for_status(&HotkeyBindings::default(), &status),
+            bound_hotkeys()
+        );
+    }
+
+    #[test]
+    fn under_the_portal_the_labels_are_the_keys_the_desktop_assigned() {
+        // The stored combinations are only what was asked for; the desktop's answer is what works.
+        let status = status_on(
+            HotkeyBackendKind::Portal,
+            HotkeyStates {
+                replay: HotkeyState::Ok,
+                stop: HotkeyState::Unbound,
+                catch_up: HotkeyState::Ok,
+            },
+            HotkeyTriggers {
+                replay: Some("Meta+Shift+R".into()),
+                stop: None,
+                catch_up: Some("Ctrl+Alt+Enter".into()),
+            },
+        );
+        assert_eq!(
+            HotkeyLabels::for_status(&HotkeyBindings::default(), &status),
+            HotkeyLabels {
+                replay: Some("Meta+Shift+R".into()),
+                catch_up: Some("Ctrl+Alt+Enter".into()),
+                stop: None,
+            }
+        );
+    }
+
+    #[test]
+    fn under_the_portal_an_action_without_a_key_shows_the_bare_label() {
+        let status = status_on(
+            HotkeyBackendKind::Portal,
+            HotkeyStates::UNBOUND,
+            HotkeyTriggers::default(),
+        );
+        let labels = HotkeyLabels::for_status(&HotkeyBindings::default(), &status);
+        assert_eq!(labels, HotkeyLabels::default());
+        let model = build_model(&TrayStatus::default(), &labels);
+        assert_eq!(item(&model, "replay").label, "Replay");
+    }
+
+    #[test]
+    fn with_no_hotkeys_the_menu_names_none() {
+        let status = status_on(HotkeyBackendKind::None, all_ok(), HotkeyTriggers::default());
+        assert_eq!(
+            HotkeyLabels::for_status(&HotkeyBindings::default(), &status),
+            HotkeyLabels::default()
+        );
+    }
+
+    #[test]
+    fn a_portal_key_reaches_the_menu_item() {
+        let status = status_on(
+            HotkeyBackendKind::Portal,
+            all_ok(),
+            HotkeyTriggers {
+                replay: Some("Meta+Shift+R".into()),
+                stop: Some("Meta+Escape".into()),
+                catch_up: None,
+            },
+        );
+        let model = build_model(
+            &TrayStatus::default(),
+            &HotkeyLabels::for_status(&HotkeyBindings::default(), &status),
+        );
+        assert_eq!(item(&model, "replay").label, "Replay (Meta+Shift+R)");
+        assert_eq!(item(&model, "stop").label, "Stop (Meta+Escape)");
+        assert_eq!(item(&model, "catch_up").label, "Catch-up");
     }
 
     #[test]

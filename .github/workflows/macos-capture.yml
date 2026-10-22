@@ -1,0 +1,92 @@
+name: macOS capture
+
+# End-to-end test of the macOS capture backend (crates/rt-capture/tests/macos_audio.rs) on a GitHub macOS runner:
+# afplay plays a tone into the BlackHole virtual device, and the test captures, ducks and mutes it, and records what
+# the device plays from its input. .github/scripts/macos-ci-audio.sh installs BlackHole (on the runner only) and tries
+# to give the runner the audio capture permission, after running the test without the permission while nothing was
+# asked yet. When the grant works, every test must pass; when it doesn't, only the test without the permission runs
+# and the summary says so. Not a required check: it first has to prove it runs reliably.
+
+on:
+  pull_request:
+    paths:
+      - crates/rt-capture/**
+      - crates/rt-core/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/scripts/macos-ci-audio.sh
+      - .github/workflows/macos-capture.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/rt-capture/**
+      - crates/rt-core/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/scripts/macos-ci-audio.sh
+      - .github/workflows/macos-capture.yml
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels that PR's older run; every push to main runs on its own.
+concurrency:
+  group: macos-capture-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  capture:
+    name: macOS capture
+    runs-on: macos-latest
+    timeout-minutes: 45
+    # `shell: bash` adds pipefail, so a test that fails behind `| tee` fails the step.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the probe and the test
+        id: build
+        run: |
+          cargo build -p rt-capture --example probe
+          test_binary=$(cargo test -p rt-capture --test macos_audio --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .target.name == "macos_audio" and .executable != null)
+                     | .executable')
+          echo "test_binary=$test_binary" >>"$GITHUB_OUTPUT"
+          echo "macOS $(sw_vers -productVersion) ($(uname -m))"
+      - name: Set up audio and permissions
+        id: audio
+        run: .github/scripts/macos-ci-audio.sh target/debug/examples/probe "${{ steps.build.outputs.test_binary }}"
+      - name: Probe
+        run: |
+          target/debug/examples/probe list || true
+          target/debug/examples/probe icon /System/Library/CoreServices/Finder.app 64 || true
+      - name: Capture test
+        if: steps.audio.outputs.tcc == 'granted'
+        env:
+          RT_REQUIRE_TCC: "1"
+        run: cargo test -p rt-capture --test macos_audio -- --ignored --nocapture --test-threads=1 2>&1 | tee capture-test.log
+      - name: Capture test without the permission
+        if: steps.audio.outputs.tcc != 'granted'
+        run: |
+          echo "::warning::The runner couldn't be given the audio capture permission, so only the test without it runs."
+          cargo test -p rt-capture --test macos_audio -- --ignored --nocapture --test-threads=1 without_permission \
+            2>&1 | tee capture-test.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Capture test"
+            echo
+            if [ -f capture-test.log ]; then
+              grep '^summary: ' capture-test.log | sed 's/^summary: /- /' || echo "- (no figures)"
+              grep -E '^test .* \.\.\. |^test result' capture-test.log | sed 's/^/    /' || true
+            else
+              echo "- did not run"
+            fi
+          } >>"$GITHUB_STEP_SUMMARY"

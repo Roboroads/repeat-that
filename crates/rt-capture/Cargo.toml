@@ -36,12 +36,59 @@ libc = "0.2"
 pipewire = { version = "0.10", features = ["v0_3_65"] }
 png = "0.18"
 
+# Core Audio process taps, TCC and app icons. The objc2 crates are MIT or Zlib/Apache-2.0/MIT, libc MIT/Apache-2.0.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSBitmapImageRep",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSImage",
+    "NSImageRep",
+    "NSWorkspace",
+    "objc2-core-foundation",
+] }
+objc2-core-audio = { version = "0.3", default-features = false, features = [
+    "std",
+    "AudioHardware",
+    "objc2",
+    "objc2-core-audio-types",
+    "objc2-foundation",
+] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFArray",
+    "CFBase",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSBundle",
+    "NSFileManager",
+    "NSGeometry",
+    "NSProcessInfo",
+    "NSString",
+    "NSUUID",
+    "NSValue",
+] }
+
 [dev-dependencies]
 rt-core = { path = "../rt-core" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The end-to-end test reads volumes and links from `pw-dump`.
 serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# The end-to-end test records what the virtual device plays (Apache-2.0, as rt-engine uses it).
+cpal = "0.18"
 
 [target.'cfg(windows)'.dev-dependencies]
 # Same features as above; the end-to-end test reads session volumes on its own.

@@ -173,7 +173,7 @@ What it does, in order, stopping at the first problem:
 1. The release must exist (published or draft) and `platform` must be an optional platform. With `artifacts_run_id`,
    the earlier run is checked as described above.
 2. The downloaded files must all belong to that platform, and their names must carry the tag's version
-   (`Repeat-That_0.2.0_universal.dmg` for `v0.2.0`). A file of another platform or another version fails.
+   (`Repeat-That_0.2.0_aarch64.dmg` for `v0.2.0`). A file of another platform or another version fails.
 3. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
    missing from the release. Without `replace`, the release must not have a file for that platform yet.
 4. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new line, and every line
