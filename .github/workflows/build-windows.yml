@@ -116,8 +116,13 @@ jobs:
       # Builds the frontend (beforeBuildCommand) and the app, then bundles it. No tagName/releaseId: the action only
       # builds, and the file is staged and uploaded below so the release assets have predictable names.
       # The bundle targets come from app/src-tauri/tauri.windows.conf.json (NSIS only); the next step checks that.
+      # REPEAT_THAT_UPDATER_PUBKEY compiles the update public key into the app (updater.rs reads it with option_env!). The
+      # repository variable is empty until the key exists, and then the app has no updater: builds work either way.
+      # publish-release.yml signs the installer afterwards: it is the update payload of Windows.
       - name: Build installer
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          REPEAT_THAT_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         with:
           projectPath: app
 

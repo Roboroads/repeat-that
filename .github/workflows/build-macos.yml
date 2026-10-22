@@ -17,6 +17,11 @@ name: Build macOS installers
 #     app version matches the tag, and the release-note job adds the "macOS is untested" paragraph to the release
 #     notes. A run with a tag on any other branch fails: a .dmg for a release is always signed.
 #
+# Besides the .dmg it makes the update bundle, `Repeat-That_<version>_aarch64.app.tar.gz` (the stapled .app, at the root of
+# the archive), which the app's updater downloads, checks it like the .dmg and uploads it as `release-macos-<file name>`
+# too. publish-release.yml (or the late attach) signs it and writes the manifest. It is made when the repository variable
+# TAURI_UPDATER_PUBKEY is set, and in dry runs; a release made before the update key exists has no update files at all.
+#
 # This workflow never calls publish-release.yml. That one calls this one, and GitHub refuses workflows that call each
 # other in a loop. To add the .dmg to a release that went out without it (the late attach), run this workflow on main
 # with the tag. Once that run has succeeded, run publish-release.yml in late-attach mode with artifacts_run_id set to
@@ -204,11 +209,14 @@ jobs:
       # Tauri imports the certificate into a keychain of its own, signs the app with the hardened runtime and
       # Entitlements.plist, notarizes the app and staples its ticket, then signs the .dmg. Two steps with the same
       # build, because Tauri takes an empty APPLE_CERTIFICATE as a certificate to import: the ad hoc build must not have
-      # the variables at all.
+      # the variables at all. REPEAT_THAT_UPDATER_PUBKEY compiles the update public key into the app (updater.rs reads it
+      # with option_env!). The repository variable is empty until the key exists, and then the app has no updater: builds
+      # work either way.
       - name: Build, sign and notarize the app
         if: env.SIGNED == 'true'
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
+          REPEAT_THAT_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -224,6 +232,7 @@ jobs:
         if: env.SIGNED != 'true'
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         env:
+          REPEAT_THAT_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
           APPLE_SIGNING_IDENTITY: "-"
         with:
           projectPath: app
@@ -288,22 +297,63 @@ jobs:
           xcrun stapler staple "$DMG"
           echo "Notarization of $(basename "$DMG"): $status (submission $id), ticket stapled" > notarization.txt
 
+      # The self-check says whether an update key is compiled in, so it must say so exactly when the variable is set.
       - name: Check the .dmg
         env:
           DMG: ${{ steps.stage.outputs.dmg }}
           IDENTITY: ${{ env.SIGNED == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          UPDATER: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
         run: |
-          if [[ "$SIGNED" == true ]]; then
-            .github/scripts/check-macos-bundle.sh --signed "$IDENTITY" "$DMG" 2>&1 | tee bundle-check.log
-          else
-            .github/scripts/check-macos-bundle.sh "$DMG" 2>&1 | tee bundle-check.log
+          flags=()
+          if [[ "$SIGNED" == true ]]; then flags+=(--signed "$IDENTITY"); fi
+          if [[ "$UPDATER" == true ]]; then flags+=(--updater); fi
+          .github/scripts/check-macos-bundle.sh "${flags[@]}" "$DMG" 2>&1 | tee bundle-check.log
+
+      # The update bundle: the .app that Tauri built (and, in a signed build, notarized and stapled) in an archive, with the
+      # .app at its root. COPYFILE_DISABLE and no xattrs, so macOS adds no `._` files and no extended attributes to the
+      # archive: the updater unpacks it into the app, where they would break the signature. The dry runs make it
+      # too, so the checks and the signing in publish-release.yml run on every pull request.
+      - name: Make the update bundle
+        id: update
+        if: ${{ vars.TAURI_UPDATER_PUBKEY != '' || inputs.tag == '' }}
+        env:
+          DMG: ${{ steps.stage.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle=target/aarch64-apple-darwin/release/bundle/macos
+          apps=("$bundle"/*.app)
+          if [[ ${#apps[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one .app under $bundle"
+            find "$bundle" -maxdepth 2 | sort
+            exit 1
           fi
+          archive="${DMG%.dmg}.app.tar.gz"
+          COPYFILE_DISABLE=1 tar --no-xattrs --no-acls -czf "$archive" -C "$bundle" "$(basename "${apps[0]}")"
+          ls -l "$archive"
+          {
+            echo "bundle=$archive"
+            echo "artifact=release-macos-$(basename "$archive")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check the update bundle
+        if: ${{ steps.update.outcome == 'success' }}
+        env:
+          BUNDLE: ${{ steps.update.outputs.bundle }}
+          IDENTITY: ${{ env.SIGNED == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          UPDATER: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
+        run: |
+          flags=()
+          if [[ "$SIGNED" == true ]]; then flags+=(--signed "$IDENTITY"); fi
+          if [[ "$UPDATER" == true ]]; then flags+=(--updater); fi
+          .github/scripts/check-macos-bundle.sh "${flags[@]}" --update-bundle "$BUNDLE" 2>&1 | tee update-check.log
 
       # publish-release.yml writes SHA256SUMS over every platform; this is only for whoever tries the build.
       - name: Summary
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         env:
           DMG: ${{ steps.stage.outputs.dmg }}
+          BUNDLE: ${{ steps.update.outputs.bundle }}
           VERSION: ${{ steps.stage.outputs.version }}
         run: |
           {
@@ -326,6 +376,19 @@ jobs:
             echo '```'
             cat bundle-check.log 2>/dev/null || echo "(the checks did not run)"
             echo '```'
+            if [[ -n "$BUNDLE" ]]; then
+              echo
+              echo "#### Update bundle"
+              echo
+              echo '```'
+              (cd "$(dirname "$BUNDLE")" && ls -l "$(basename "$BUNDLE")" && shasum -a 256 "$(basename "$BUNDLE")")
+              echo
+              cat update-check.log 2>/dev/null || echo "(the checks did not run)"
+              echo '```'
+            else
+              echo
+              echo "No update bundle: TAURI_UPDATER_PUBKEY is not set, so this release has no update files."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The artifact name starts with release-macos- so publish-release.yml picks it up (release-*) and knows the
@@ -336,6 +399,17 @@ jobs:
         with:
           name: ${{ steps.stage.outputs.artifact }}
           path: ${{ steps.stage.outputs.dmg }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+      # Its own artifact (the file name is the end of the name), like the Linux packages. Not signed here: the key is
+      # in the Environment of publish-release.yml, which is the one place that signs.
+      - name: Upload the update bundle
+        if: ${{ steps.update.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.update.outputs.artifact }}
+          path: ${{ steps.update.outputs.bundle }}
           compression-level: 0
           if-no-files-found: error
           retention-days: 30

@@ -20,19 +20,24 @@
 # once it is end of life (Fedora 40 since May 2025) and the mirrors drop it. A Fedora whose mirrors don't answer falls
 # back to the archive too, so a release that has just gone end of life doesn't block anything.
 #
+# With --updater the packages were built with the update public key (the repository variable TAURI_UPDATER_PUBKEY is
+# set), so the self-check must say the build has an updater; without it, that it has none.
+#
 # The self-check plays and captures nothing and needs no display. Prints every check as "ok: ..." or "FAIL: ..." and
 # exits 1 when one failed. Needs linux-packages-lib.sh next to it.
 #
-# Usage: smoke-linux-package.sh [--refused] [--archive] DIR
+# Usage: smoke-linux-package.sh [--refused] [--archive] [--updater] DIR
 set -euo pipefail
 
-usage="usage: smoke-linux-package.sh [--refused] [--archive] DIR"
+usage="usage: smoke-linux-package.sh [--refused] [--archive] [--updater] DIR"
 refused=false
 archive=false
+updater=false
 while [[ "${1:-}" == --* ]]; do
   case $1 in
     --refused) refused=true ;;
     --archive) archive=true ;;
+    --updater) updater=true ;;
     *)
       echo "$usage" >&2
       exit 2
@@ -56,8 +61,8 @@ if ! find_packages "$dir"; then
   ls -l "$dir"
   exit 1
 fi
-# No update key is compiled into these builds (yet), so the self-check says there is no updater.
-expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\",\"updater\":false}"
+# The self-check says whether an update key is compiled in, which the builds do exactly when the variable is set.
+expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\",\"updater\":$updater}"
 
 echo "System: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"')"
 

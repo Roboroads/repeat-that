@@ -2,33 +2,61 @@
 # Checks a macOS .dmg the way people will get it: it mounts the image read-only and checks the app inside, so what is
 # checked is what ships. .github/workflows/build-macos.yml runs it on every build.
 #
+# With --update-bundle the file is the .app.tar.gz that the app's updater downloads instead of a .dmg: it must hold one
+# .app at its root (the updater drops the first path component of every entry and puts the rest where the old app is)
+# and nothing that macOS adds to an archive on its own (`._` files, which would end up inside the app and break its
+# signature). The archive is extracted and the app checked like the one in an image, so what an update installs is what
+# is checked. Only the checks that are about the image itself are left out.
+#
 # Every build, the ad hoc signed builds of pull requests too:
 #   * the image holds exactly one .app;
 #   * its Info.plist has NSAudioCaptureUsageDescription, LSUIElement true and LSMinimumSystemVersion 14.2;
 #   * the binary is arm64 only (Apple Silicon), and built for no newer macOS than LSMinimumSystemVersion;
 #   * `codesign --verify --deep --strict` passes, the hardened runtime is on, and the entitlements are exactly those in
 #     app/src-tauri/Entitlements.plist;
-#   * the app's self-check (`--rt-self-check`) reports Silero on aarch64, with the bundle's version.
+#   * the app's self-check (`--rt-self-check`) reports Silero on aarch64, with the bundle's version, and whether it has
+#     an updater: false, or true with --updater (the repository variable TAURI_UPDATER_PUBKEY is set, so the build has
+#     the update public key compiled in).
 # With --signed (signed dry runs and releases) also:
 #   * the app is signed with IDENTITY (the Developer ID Application certificate), not ad hoc, and so is the image;
 #   * Gatekeeper accepts the image and the app as notarized (spctl), and both have their ticket stapled.
+# (For an update bundle: the app, not the image.)
 #
 # Prints every check as "ok: ..." or "FAIL: ..." and exits 1 when one failed. Needs macOS (hdiutil, codesign, plutil,
 # lipo, otool, spctl, xcrun) and python3. Written for bash 3.2, the one macOS has.
 #
-# Usage: check-macos-bundle.sh [--signed IDENTITY] DMG
+# Usage: check-macos-bundle.sh [--signed IDENTITY] [--updater] [--update-bundle] FILE
 set -euo pipefail
 
-usage="usage: check-macos-bundle.sh [--signed IDENTITY] DMG"
+usage="usage: check-macos-bundle.sh [--signed IDENTITY] [--updater] [--update-bundle] FILE"
 identity=""
-if [ "${1:-}" = "--signed" ]; then
-  identity=${2:-}
-  if [ -z "$identity" ]; then
-    echo "$usage" >&2
-    exit 2
-  fi
-  shift 2
-fi
+updater=false
+update_bundle=false
+while [ $# -gt 0 ]; do
+  case $1 in
+    --signed)
+      identity=${2:-}
+      if [ -z "$identity" ]; then
+        echo "$usage" >&2
+        exit 2
+      fi
+      shift 2
+      ;;
+    --updater)
+      updater=true
+      shift
+      ;;
+    --update-bundle)
+      update_bundle=true
+      shift
+      ;;
+    --*)
+      echo "$usage" >&2
+      exit 2
+      ;;
+    *) break ;;
+  esac
+done
 if [ $# -ne 1 ] || [ ! -f "$1" ]; then
   echo "$usage" >&2
   exit 2
@@ -67,10 +95,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Image: $(basename "$dmg")"
+if [ "$update_bundle" = true ]; then
+  echo "Update bundle: $(basename "$dmg")"
+else
+  echo "Image: $(basename "$dmg")"
+fi
 
 # The image itself: only a signed build signs and notarizes it. Tauri doesn't sign an ad hoc build's image.
-if [ -n "$identity" ]; then
+if [ -n "$identity" ] && [ "$update_bundle" = false ]; then
   if out=$(codesign --verify --strict --verbose=2 "$dmg" 2>&1); then
     ok "the image's signature is valid"
   else
@@ -98,25 +130,60 @@ if [ -n "$identity" ]; then
   echo "$out" | indent
 fi
 
-mkdir "$mnt"
-if ! out=$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mnt" "$dmg" 2>&1); then
-  fail "the image doesn't mount"
-  echo "$out" | indent
-  echo "1 check failed"
-  exit 1
+if [ "$update_bundle" = true ]; then
+  # What the updater makes of the archive: the first component of every path is dropped, so it must be the one .app.
+  holder="the archive"
+  entries=$(tar -tzf "$dmg" 2>&1) || {
+    fail "the archive can't be read"
+    echo "$entries" | indent
+    echo "1 check failed"
+    exit 1
+  }
+  top=$(printf '%s\n' "$entries" | cut -d/ -f1 | sort -u)
+  if [ "$(printf '%s\n' "$top" | grep -c .)" -eq 1 ] && printf '%s\n' "$top" | grep -q '\.app$'; then
+    ok "the archive has one folder at its root, $top"
+  else
+    fail "the archive must have exactly one .app at its root, it has:"
+    echo "$top" | head -n 10 | indent
+  fi
+  appledouble=$(printf '%s\n' "$entries" | grep -E '(^|/)\._' | head -n 5 || true)
+  if [ -z "$appledouble" ]; then
+    ok "the archive has no AppleDouble (._) files"
+  else
+    fail "the archive has AppleDouble files, which would end up inside the app:"
+    echo "$appledouble" | indent
+  fi
+  root="$work/update"
+  mkdir "$root"
+  if ! out=$(tar -xzf "$dmg" -C "$root" 2>&1); then
+    fail "the archive doesn't extract"
+    echo "$out" | indent
+    echo "$failures check(s) failed"
+    exit 1
+  fi
+else
+  holder="the image"
+  root=$mnt
+  mkdir "$mnt"
+  if ! out=$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mnt" "$dmg" 2>&1); then
+    fail "the image doesn't mount"
+    echo "$out" | indent
+    echo "1 check failed"
+    exit 1
+  fi
+  mounted=true
 fi
-mounted=true
 
-apps=$(find "$mnt" -mindepth 1 -maxdepth 1 -name '*.app' -type d)
+apps=$(find "$root" -mindepth 1 -maxdepth 1 -name '*.app' -type d)
 count=$(printf '%s' "$apps" | grep -c . || true)
 if [ "$count" -ne 1 ]; then
-  fail "the image holds $count apps, expected 1"
-  find "$mnt" -mindepth 1 -maxdepth 1 | indent
+  fail "$holder holds $count apps, expected 1"
+  find "$root" -mindepth 1 -maxdepth 1 | indent
   echo "$failures check(s) failed"
   exit 1
 fi
 app=$apps
-ok "the image holds one app: $(basename "$app")"
+ok "$holder holds one app: $(basename "$app")"
 
 plist="$app/Contents/Info.plist"
 # One key's value; empty when the key is missing.
@@ -221,7 +288,7 @@ else
 fi
 echo "self-check (exit $status): $report"
 if [ -s "$work/self-check.err" ]; then indent <"$work/self-check.err"; fi
-if out=$(python3 - "$report" "$version" <<'EOF'
+if out=$(python3 - "$report" "$version" "$updater" <<'EOF'
 import json, sys
 try:
     report = json.loads(sys.argv[1])
@@ -230,14 +297,14 @@ except ValueError:
 if not isinstance(report, dict):
     print("its output is not one line of JSON")
     sys.exit(1)
-expected = {"vad": "silero", "arch": "aarch64", "os": "macos", "version": sys.argv[2]}
+expected = {"vad": "silero", "arch": "aarch64", "os": "macos", "version": sys.argv[2], "updater": sys.argv[3] == "true"}
 wrong = [f"{key} is {report.get(key)!r}, expected {value!r}" for key, value in expected.items() if report.get(key) != value]
 if wrong:
     print("; ".join(wrong))
     sys.exit(1)
 EOF
 ) && [ "$status" -eq 0 ]; then
-  ok "the self-check reports Silero on aarch64, version $version"
+  ok "the self-check reports Silero on aarch64, version $version, updater $updater"
 else
   fail "the self-check failed (exit $status): $out"
 fi
