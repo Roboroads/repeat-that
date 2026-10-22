@@ -517,8 +517,12 @@ filter on pull requests for the same reason `ci.yml` has none: a required check 
 Like the rest of the ruleset, the two checks count once it is applied (see [Branch protection](#branch-protection)).
 
 A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`
-(the `Site plan` job). It fetches the introduction video if there is one, then runs the type check, the unit tests, the
-build, `npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
+(the `Site plan` job). The update files of a release (the `.sig` files, the `latest-*.json` manifests and the macOS
+`.app.tar.gz`) have lines in `SHA256SUMS` like the installers, but the script leaves them out of the download data
+without a warning: they are for the app's updater, not for people.
+
+The run then fetches the introduction video if there is one, and runs the type check, the unit tests, the build,
+`npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
 (`.nojekyll` and `.well-known/security.txt`), deploys, and asks the live site for its front page, `security.txt` and
 `build-info.txt`.
 
