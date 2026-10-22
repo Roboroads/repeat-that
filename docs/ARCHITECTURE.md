@@ -130,8 +130,9 @@ disconnected.
 - **Target app**: remembered by executable path (case-insensitive on Windows), or by name when there is none (the mock
   source), never by PID, which changes when the app restarts. Without a running capture the control thread looks for
   it every 2 s: *waiting* while it's missing, *capturing* once found, *error* (retried) if the capture fails to start,
-  *unsupported* (not retried) where capture can't work. When the app quits, the sentence in progress is closed and the
-  buffer kept, so a replay still works while it restarts.
+  *not allowed* (retried, buffer kept) while the OS doesn't let the app capture audio (macOS), *unsupported* (not
+  retried) where capture can't work. When the app quits, the sentence in progress is closed and the buffer kept, so a
+  replay still works while it restarts.
 - **Replay**: the output stream is opened per replay (the chosen device, else the default) and closed once the replay
   caught up with live and its tail played, so the app doesn't hold the device while idle and follows default-device
   changes. A device that fails mid-replay is replaced by the default, from where the player was. With nothing buffered
@@ -167,8 +168,12 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 - The engine starts at launch with the stored settings. Its source is `WasapiSource` on Windows (with a duck journal
   of volumes in the app's local data directory, and a duck guard). Elsewhere debug builds play the rt-core speech
   fixture as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` plays another WAV on any OS, and in debug
-  builds `REPEAT_THAT_NULL_OUTPUT=1` plays replays into nothing. Quit stops the engine, which wipes the buffer and gives
-  the app its volume back.
+  builds `REPEAT_THAT_NULL_OUTPUT=1` plays replays into nothing and `REPEAT_THAT_MOCK_PERMISSION=denied` refuses
+  captures as macOS does without the permission, until "Ask again" in the window. Quit stops the engine, which wipes
+  the buffer and gives the app its volume back.
+- While capture is *not allowed*, the status bar shows the steps to allow it and the buttons the OS supports
+  (`capture_permission_help`): "Open System Settings" on macOS 15 and later, "Ask again" on 14.2 and later. Both are
+  commands in `app/src-tauri/src/permission.rs`, so the opener plugin stays limited to this project's GitHub pages.
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
 - Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,

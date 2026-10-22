@@ -208,12 +208,16 @@ impl Control {
         }
     }
 
+    /// The state for a capture that failed with `error`. Only `Unsupported` stops the polling; the rest is tried again,
+    /// so a permission the user gives later starts the capture by itself. The buffer is kept either way.
     fn failed(&mut self, error: CaptureError) -> CaptureState {
         match error {
             CaptureError::Unsupported(why) => {
                 self.unsupported = true;
                 CaptureState::Unsupported(why)
             }
+            // Already a sentence for the user.
+            CaptureError::PermissionDenied(how) => CaptureState::PermissionDenied(how),
             other => CaptureState::Error(other.to_string()),
         }
     }

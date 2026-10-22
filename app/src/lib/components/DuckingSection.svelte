@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Settings } from '../api';
-  import { LIMITS } from '../defaults';
+  import { duckLevelLimits } from '../defaults';
   import type { SettingsStore } from '../store.svelte';
   import Section from './Section.svelte';
   import Slider from './Slider.svelte';
@@ -15,6 +15,8 @@
 
   // The slider works in whole percent; the backend stores a fraction.
   const percent = (fraction: number) => Math.round(fraction * 100);
+  // Down to 0 on macOS, where that mutes the app during a replay; 5% elsewhere.
+  const limits = duckLevelLimits();
 </script>
 
 <Section title="Ducking" id="ducking">
@@ -28,10 +30,10 @@
     id="duck-level"
     label="Volume during replay"
     value={percent(settings.duck.level)}
-    min={percent(LIMITS.duckLevel.min)}
-    max={percent(LIMITS.duckLevel.max)}
-    step={percent(LIMITS.duckLevel.step)}
-    format={(v) => `${v}%`}
+    min={percent(limits.min)}
+    max={percent(limits.max)}
+    step={percent(limits.step)}
+    format={(v) => (v === 0 ? 'Muted' : `${v}%`)}
     disabled={!settings.duck.enabled}
     oncommit={(value) => store.update((current) => ({ duck: { ...current.duck, level: value / 100 } }))}
   />

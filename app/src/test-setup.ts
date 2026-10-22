@@ -4,6 +4,7 @@ import { afterEach } from 'vitest';
 
 afterEach(() => {
   clearMocks();
-  // A test may have faked the page visibility.
+  // A test may have faked the page visibility or the OS.
   Reflect.deleteProperty(document, 'visibilityState');
+  Reflect.deleteProperty(navigator, 'platform');
 });

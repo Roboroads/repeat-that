@@ -21,6 +21,14 @@ const application = path.join(targetDir, 'debug', 'repeat-that');
 
 const driverCommand = process.env.TAURI_DRIVER ?? 'tauri-driver';
 
+/**
+ * Variables some spec files start their app with, by file name. `permission.e2e.ts` gets an app that pretends the OS
+ * doesn't let it capture audio until "Ask again" (debug builds only, see src-tauri/src/source.rs).
+ */
+const SPEC_ENV: Record<string, NodeJS.ProcessEnv> = {
+  'permission.e2e.ts': { REPEAT_THAT_MOCK_PERMISSION: 'denied' },
+};
+
 /** What one session runs: a private D-Bus, a tauri-driver (with the app below it) and the app's folders. */
 interface Session {
   root: string;
@@ -126,8 +134,9 @@ export const config: WebdriverIO.Config = {
    *    call can hang for good, with the app stuck in the kernel where nothing can kill it. Software rendering is also
    *    what a CI runner has, so the test runs the same everywhere.
    * The null output and the fixture mock are what a debug build uses on Linux anyway (see src-tauri/src/source.rs).
+   * A spec file in `SPEC_ENV` gets its variables on top; the others never see them, even when they are set here.
    */
-  async beforeSession(config) {
+  async beforeSession(config, _capabilities, specs) {
     const root = await mkdtemp(path.join(tmpdir(), 'repeat-that-e2e-'));
     const names = ['home', 'tmp', 'run', 'config', 'data', 'cache'];
     const folders = Object.fromEntries(names.map((name) => [name, path.join(root, name)]));
@@ -156,6 +165,8 @@ export const config: WebdriverIO.Config = {
       REPEAT_THAT_NULL_OUTPUT: '1',
     };
     delete env.REPEAT_THAT_MOCK_WAV;
+    for (const own of Object.values(SPEC_ENV)) for (const name of Object.keys(own)) delete env[name];
+    for (const spec of specs) Object.assign(env, SPEC_ENV[path.basename(new URL(spec, 'file://').pathname)]);
     const driver = spawn(driverCommand, ['--port', String(port), '--native-port', String(nativePort)], {
       env,
       detached: true,

@@ -19,7 +19,7 @@ export interface Settings {
   replaySpeed: number;
   /** 1.25..2.0, default 1.5 */
   catchUpSpeed: number;
-  /** level 0.05..1.0, default 0.2 */
+  /** level 0.05..1.0 (0..1.0 on macOS, where 0 mutes the app), default 0.2 */
   duck: { enabled: boolean; level: number };
   hotkeys: { replay: Accel; stop: Accel; catchUp: Accel };
   autostart: boolean;
@@ -35,7 +35,11 @@ export type HotkeyState = 'ok' | 'inUse' | 'invalid' | 'unbound';
  */
 export type HotkeyBackend = 'plugin' | 'portal' | 'none';
 
-export type CaptureState = 'noTarget' | 'waiting' | 'capturing' | 'paused' | 'error' | 'unsupported';
+/**
+ * `error` (a failed start) and `notAllowed` (the OS doesn't let the app capture audio, macOS) are tried again every
+ * 2 s; `unsupported` is final. `notAllowed` keeps the buffer, and its message says how to allow it.
+ */
+export type CaptureState = 'noTarget' | 'waiting' | 'capturing' | 'paused' | 'error' | 'notAllowed' | 'unsupported';
 export type Playback = 'idle' | 'replaying' | 'catchingUp';
 
 export interface Status {
@@ -63,6 +67,17 @@ export interface Status {
  * asked to, or it is waiting for the answer to a dialog it has open and was not asked again.
  */
 export type ConfigureOutcome = 'opened' | 'unsupported' | 'busy';
+
+/**
+ * What `capture_permission_help` answers: which of the other two permission commands work here. Both `false` outside
+ * macOS.
+ */
+export interface PermissionHelp {
+  /** `open_capture_permission_settings` opens the settings page with the switch (macOS 15 and later). */
+  canOpenSettings: boolean;
+  /** `ask_for_capture_permission` makes the OS ask once more. */
+  canAskAgain: boolean;
+}
 
 export interface AppEntry {
   pid: number;
@@ -140,6 +155,11 @@ export const suspendHotkeys = (suspended: boolean) => call('suspend_hotkeys', { 
 export const configureShortcuts = () => call<ConfigureOutcome>('configure_shortcuts');
 /** Quits the app, for a desktop with no tray menu to do it from. */
 export const quitApp = () => call('quit_app');
+export const capturePermissionHelp = () => call<PermissionHelp>('capture_permission_help');
+/** Makes the OS ask for the permission again; capture starts by itself once the user allows it. */
+export const askForCapturePermission = () => call('ask_for_capture_permission');
+/** Opens the OS settings where the permission is given. */
+export const openCapturePermissionSettings = () => call('open_capture_permission_settings');
 
 export type Unlisten = () => void;
 

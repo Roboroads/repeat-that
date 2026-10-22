@@ -2,8 +2,9 @@
 //! [`SettingsService`](crate::service::SettingsService) and the audio engine.
 //!
 //! Most are plain (not `async`) commands on purpose: those run on the main thread, which is where registering hotkeys
-//! happens anyway, so an update never waits on the main thread from another thread. The two that ask the OS for its
-//! apps or devices can take a while, so they are `async` and do that on a thread of their own.
+//! happens anyway, so an update never waits on the main thread from another thread. The ones that ask the OS for its
+//! apps or devices, or run one of its tools, can be slow, so they are `async` and do that on a thread of their own.
+//! The commands about the permission to capture audio are in [`permission`](crate::permission).
 
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ use crate::actions::{self, AppAction};
 use crate::engine::{self, SharedAppEngine};
 use crate::icons::SharedIcons;
 use crate::ipc::{AppEntry, CommandError, ConfigureOutcome, OutputDevice, Settings, Status};
+use crate::permission;
 use crate::service::{self, SettingsService};
 use crate::shortcut_page::PageOpener;
 
@@ -36,6 +38,9 @@ pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'stat
         catch_up,
         configure_shortcuts,
         quit_app,
+        permission::capture_permission_help,
+        permission::ask_for_capture_permission,
+        permission::open_capture_permission_settings,
     ]
 }
 
@@ -162,7 +167,7 @@ fn capture_error(err: CaptureError) -> CommandError {
 }
 
 /// Runs `work` on a thread for blocking work and waits for it without holding up a command thread.
-async fn off_the_main_thread<T: Send + 'static>(
+pub(crate) async fn off_the_main_thread<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, CommandError> + Send + 'static,
 ) -> Result<T, CommandError> {
     tauri::async_runtime::spawn_blocking(work)
@@ -217,6 +222,11 @@ mod tests {
         for cmd in commands {
             if cmd == "quit_app" {
                 // Ends the app, which the mock runtime can't do; see `the_quit_command_is_registered`.
+                continue;
+            }
+            if cfg!(target_os = "macos") && permission::TOUCHES_THE_OS.contains(&cmd.as_str()) {
+                // Would reset the permission of the test runner or open System Settings on the CI machine. Elsewhere
+                // they only say there is nothing to allow.
                 continue;
             }
             // Answered or refused for a reason of its own, never refused as unknown.

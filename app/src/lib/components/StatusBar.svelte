@@ -3,6 +3,7 @@
   import { hotkeyHint } from '../hotkey';
   import { describeStatus, outputWarnings } from '../status';
   import type { SettingsStore } from '../store.svelte';
+  import PermissionHelp from './PermissionHelp.svelte';
 
   interface Props {
     store: SettingsStore;
@@ -14,6 +15,7 @@
   const text = $derived(describeStatus(store.status, settings.target));
   const warnings = $derived(store.status ? outputWarnings(store.status) : []);
   const state = $derived(store.status?.capture.state ?? 'noTarget');
+  // Not allowed keeps the buffer, so Replay and Pause stay enabled then.
   const nothingToCapture = $derived(state === 'noTarget' || state === 'unsupported');
   const playing = $derived((store.status?.playback ?? 'idle') !== 'idle');
 
@@ -25,9 +27,14 @@
   <!-- The chosen app, with its icon, is in the app selector below. -->
   <div class="lines">
     <p class="headline {text.tone}" aria-live="polite">{text.headline}</p>
-    {#if text.detail}<p class="muted">{text.detail}</p>{/if}
+    <!-- While capture isn't allowed, the help below says how to allow it, in place of the backend's sentence. -->
+    {#if text.detail && state !== 'notAllowed'}<p class="muted">{text.detail}</p>{/if}
     {#if text.playback}<p class="playback">{text.playback}</p>{/if}
   </div>
+
+  {#if state === 'notAllowed'}
+    <PermissionHelp message={text.detail} />
+  {/if}
 
   <div class="buttons">
     <button type="button" class="primary" disabled={nothingToCapture} title={hint('replay')} onclick={() => store.replay()}>

@@ -11,11 +11,12 @@ import type {
   HotkeyName,
   HotkeyState,
   OutputDevice,
+  PermissionHelp,
   Settings,
   Status,
 } from './api';
 import { matchesTarget } from './apps';
-import { clamp, defaultSettings, LIMITS } from './defaults';
+import { clamp, defaultSettings, duckLevelLimits, LIMITS } from './defaults';
 
 export const SCENARIOS = [
   'first-run',
@@ -26,6 +27,7 @@ export const SCENARIOS = [
   'portal',
   'no-hotkeys',
   'no-tray',
+  'not-allowed',
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -37,12 +39,24 @@ export interface MockBackendInit {
   statusOverrides?: Partial<Status>;
   /** What `configure_shortcuts` answers: the desktop shows its shortcut settings, or can't be asked to. */
   configureOutcome?: ConfigureOutcome;
+  /**
+   * Whether the OS lets the app capture audio, as macOS asks. `denied` makes a running target `notAllowed` until
+   * `ask_for_capture_permission`, which allows it at once. Allowed by default.
+   */
+  permission?: 'allowed' | 'denied';
+  /** What `capture_permission_help` answers; nothing to allow by default, as outside macOS. */
+  permissionHelp?: PermissionHelp;
   /** Where `status` and `settings-changed` go. */
   emit?: (event: string, payload: unknown) => void;
 }
 
 const HOTKEY_NAMES: HotkeyName[] = ['replay', 'stop', 'catchUp'];
 const HOTKEY_LABELS: Record<HotkeyName, string> = { replay: 'Replay', stop: 'Stop', catchUp: 'Catch up' };
+/** What the pretend macOS says while capture isn't allowed: the sentence macOS 15 gets. */
+export const MOCK_HOW_TO_ALLOW =
+  'Turn on Repeat That in System Settings > Privacy & Security > Screen & System Audio Recording.';
+/** What the permission commands say where there is nothing to allow, as on Linux. */
+const NOTHING_TO_ALLOW = "This OS doesn't ask for permission to capture audio";
 /** Pretend another app owns this one, to show the "In use by another app" state. */
 const TAKEN_BY_ANOTHER_APP = 'Ctrl+Shift+Escape';
 const ACCEL_SHAPE = /^((Ctrl|Alt|Shift|Super)\+)*[A-Za-z0-9]+$/;
@@ -112,6 +126,14 @@ export function scenarioInit(scenario: Scenario): MockBackendInit {
       };
     case 'no-tray':
       return { apps: mockApps(), settings: { target, firstRunDone: true }, statusOverrides: { trayAvailable: false } };
+    case 'not-allowed':
+      // macOS 15 without the permission to capture audio.
+      return {
+        apps: mockApps(),
+        settings: { target, firstRunDone: true },
+        permission: 'denied',
+        permissionHelp: { canOpenSettings: true, canAskAgain: true },
+      };
     case 'problems':
       return {
         apps: mockApps(),
@@ -136,6 +158,8 @@ export class MockBackend {
   devices: OutputDevice[];
   statusOverrides: Partial<Status>;
   configureOutcome: ConfigureOutcome;
+  permission: 'allowed' | 'denied';
+  permissionHelp: PermissionHelp;
   /** Every command received, oldest first. */
   readonly calls: Array<{ cmd: string; args: unknown }> = [];
   /** Replaces a command, to make it fail or hang in a test. */
@@ -153,6 +177,8 @@ export class MockBackend {
     this.devices = init.devices ?? mockDevices();
     this.statusOverrides = init.statusOverrides ?? {};
     this.configureOutcome = init.configureOutcome ?? 'opened';
+    this.permission = init.permission ?? 'allowed';
+    this.permissionHelp = init.permissionHelp ?? { canOpenSettings: false, canAskAgain: false };
     this.send = init.emit ?? (() => {});
   }
 
@@ -197,6 +223,16 @@ export class MockBackend {
       case 'quit_app':
         // The real app ends; the mock page has nowhere to go.
         return null;
+      case 'capture_permission_help':
+        return { ...this.permissionHelp };
+      case 'ask_for_capture_permission':
+        if (!this.permissionHelp.canAskAgain) return fail('backend', NOTHING_TO_ALLOW);
+        // The user chooses Allow at once; the real engine takes up to 2 s to notice.
+        this.permission = 'allowed';
+        return this.push();
+      case 'open_capture_permission_settings':
+        if (!this.permissionHelp.canOpenSettings) return fail('backend', NOTHING_TO_ALLOW);
+        return null;
       default:
         return fail('backend', `Unknown command: ${cmd}`);
     }
@@ -234,7 +270,7 @@ export class MockBackend {
       }),
     ) as Status['hotkeys'];
     return {
-      capture: { state, message: null },
+      capture: { state, message: state === 'notAllowed' ? MOCK_HOW_TO_ALLOW : null },
       targetName: target?.name ?? null,
       playback: this.playback,
       behindMs: this.playback === 'idle' ? null : Math.round(this.behindMs),
@@ -255,7 +291,8 @@ export class MockBackend {
     const target = this.settings.target;
     if (target === null) return 'noTarget';
     if (this.paused) return 'paused';
-    return this.apps.some((app) => matchesTarget(target, app)) ? 'capturing' : 'waiting';
+    if (!this.apps.some((app) => matchesTarget(target, app))) return 'waiting';
+    return this.permission === 'denied' ? 'notAllowed' : 'capturing';
   }
 
   private wipe(): void {
@@ -285,7 +322,8 @@ export class MockBackend {
     next.bufferSeconds = clamp(next.bufferSeconds, LIMITS.bufferSeconds.min, LIMITS.bufferSeconds.max);
     next.replaySpeed = clamp(next.replaySpeed, LIMITS.replaySpeed.min, LIMITS.replaySpeed.max);
     next.catchUpSpeed = clamp(next.catchUpSpeed, LIMITS.catchUpSpeed.min, LIMITS.catchUpSpeed.max);
-    next.duck.level = clamp(next.duck.level, LIMITS.duckLevel.min, LIMITS.duckLevel.max);
+    const duckLevel = duckLevelLimits();
+    next.duck.level = clamp(next.duck.level, duckLevel.min, duckLevel.max);
 
     for (const name of HOTKEY_NAMES) {
       const accel = next.hotkeys[name];
