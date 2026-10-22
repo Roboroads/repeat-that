@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Checks the Linux packages the way people get them: it unpacks the .deb, the .rpm and the AppImage and checks what is
-# inside, so what is checked is what ships. .github/workflows/build-linux.yml runs it on every build, in the debian:12
-# container the packages are built in; smoke-linux-package.sh then installs them on each supported distribution.
+# inside, so what is checked is what ships. .github/workflows/build-linux.yml runs it on every build, in the
+# ubuntu:24.04 container the packages are built in; smoke-linux-package.sh then installs them on each supported
+# distribution.
 #
 #   * DIR holds exactly one Repeat-That_<v>_amd64.deb, one Repeat-That-<v>-1.x86_64.rpm and one
 #     Repeat-That_<v>_amd64.AppImage, all of the same version (--version's, when given), and nothing else;
 #   * the .deb and the .rpm are called repeat-that, are for x86-64 and depend on WebKitGTK, GTK, the AppIndicator
-#     library (loaded at run time, so the bundler lists it), PipeWire's client library and ALSA's, and recommend the
-#     PipeWire daemon and WirePlumber;
+#     library (loaded at run time, so the bundler lists it), PipeWire's client library and ALSA's, glibc 2.38 and GCC
+#     13's libstdc++, and recommend the PipeWire daemon and WirePlumber;
 #   * both install the same files: the binary, the desktop entry under the app ID (me.roboroads.repeat-that.desktop,
 #     the name the portal and the desktop match the app by) and its icons, plus the bundler's own "Repeat That.desktop",
 #     which must be hidden. Both desktop files pass desktop-file-validate;
-#   * the binary links libpipewire-0.3 and needs no newer glibc than Debian 12's (2.36);
+#   * the binary links libpipewire-0.3 and needs no newer glibc and libstdc++ than the packages ask for (glibc 2.38,
+#     GLIBCXX_3.4.31). Weak references don't count: the binary starts without them (Rust's standard library looks
+#     up pidfd_spawnp that way);
 #   * the AppImage is a type 2 AppImage whose root desktop entry is the real one (visible, valid, its icon at the root),
 #     with no libpipewire-0.3 or libspa-0.2 inside: a bundled PipeWire client would load the host's PipeWire plugins,
 #     which belong to another version. The tray library and WebKit's helper processes must be inside.
@@ -40,8 +43,10 @@ dir=$(cd "$1" && pwd)
 
 app_id=me.roboroads.repeat-that
 hidden_entry="Repeat That.desktop"
-# The oldest glibc the binary may need: Debian 12's, the oldest supported system (Ubuntu 24.04 and Fedora 40 are newer).
-glibc_max=2.36
+# The newest glibc and libstdc++ symbol versions the binary may need: what the packages depend on (libc6 (>= 2.38) and
+# libstdc++6 (>= 13), or the same as rpm sonames). The statically linked ONNX Runtime is what needs them.
+glibc_max=2.38
+glibcxx_max=3.4.31
 
 failures=0
 ok() { echo "ok: $*"; }
@@ -136,7 +141,7 @@ echo "Version: ${version:-unknown}"
 
 # Checks an unpacked package (or AppDir) $2 that installs into usr/: the binary and how it was linked.
 check_binary() {
-  local label=$1 root=$2 binary="$2/usr/bin/repeat-that" newest
+  local label=$1 root=$2 binary="$2/usr/bin/repeat-that" lib max newest
   if [[ -x "$binary" ]]; then
     ok "$label: /usr/bin/repeat-that"
   else
@@ -148,12 +153,17 @@ check_binary() {
   else
     fail "$label: the binary doesn't link libpipewire-0.3.so.0"
   fi
-  newest=$(readelf -V --wide "$binary" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -n 1 || true)
-  if [[ -n "$newest" && "$(printf '%s\n%s\n' "$newest" "$glibc_max" | sort -V | tail -n 1)" == "$glibc_max" ]]; then
-    ok "$label: the binary needs glibc $newest, no newer than $glibc_max"
-  else
-    fail "$label: the binary needs glibc ${newest:-?}, newer than $glibc_max (Debian 12)"
-  fi
+  # The version needs (readelf -V) that are not weak: "Name: GLIBC_2.38  Flags: none".
+  for lib in GLIBC GLIBCXX; do
+    if [[ $lib == GLIBC ]]; then max=$glibc_max; else max=$glibcxx_max; fi
+    newest=$(readelf -V --wide "$binary" | sed -n "s/.*Name: ${lib}_\([0-9][0-9.]*\)  Flags: none.*/\1/p" |
+      sort -uV | tail -n 1 || true)
+    if [[ -n "$newest" && "$(printf '%s\n%s\n' "$newest" "$max" | sort -V | tail -n 1)" == "$max" ]]; then
+      ok "$label: the binary needs ${lib}_$newest, no newer than ${lib}_$max"
+    else
+      fail "$label: the binary needs ${lib}_${newest:-?}, newer than ${lib}_$max that the packages ask for"
+    fi
+  done
 }
 
 # Checks the desktop entry the app is known by: valid, shown, starting the binary, with the app ID's icon.
@@ -231,7 +241,8 @@ for pair in Package=repeat-that "Version=$version" Architecture=amd64; do
   fi
 done
 has_all ".deb Depends" "$(split_list "$(deb_field Depends)")" libwebkit2gtk-4.1-0 libgtk-3-0 \
-  libayatana-appindicator3-1 "libpipewire-0.3-0t64 | libpipewire-0.3-0" "libasound2t64 | libasound2"
+  libayatana-appindicator3-1 "libpipewire-0.3-0t64 | libpipewire-0.3-0" "libasound2t64 | libasound2" \
+  "libc6 (>= $glibc_max)" "libstdc++6 (>= 13)"
 has_all ".deb Recommends" "$(split_list "$(deb_field Recommends)")" pipewire wireplumber
 mkdir "$work/deb"
 dpkg-deb -x "$deb" "$work/deb"
@@ -248,7 +259,8 @@ for pair in "%{NAME}=repeat-that" "%{VERSION}=$version" "%{RELEASE}=1" "%{ARCH}=
   fi
 done
 has_all ".rpm Requires" "$(rpm_query --requires)" "libwebkit2gtk-4.1.so.0()(64bit)" "libgtk-3.so.0()(64bit)" \
-  "libayatana-appindicator3.so.1()(64bit)" "libpipewire-0.3.so.0()(64bit)" "libasound.so.2()(64bit)"
+  "libayatana-appindicator3.so.1()(64bit)" "libpipewire-0.3.so.0()(64bit)" "libasound.so.2()(64bit)" \
+  "libc.so.6(GLIBC_$glibc_max)(64bit)" "libstdc++.so.6(GLIBCXX_$glibcxx_max)(64bit)"
 has_all ".rpm Recommends" "$(rpm_query --recommends)" pipewire wireplumber
 mkdir "$work/rpm"
 rpm2cpio "$rpm" | (cd "$work/rpm" && cpio -idm --quiet)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the Linux packages on the system it runs on, the way a user would, and checks that the app starts there.
-# .github/workflows/build-linux.yml runs it as root in a fresh container of each supported distribution (Debian 12 and
-# 13, Ubuntu 24.04, Fedora 40), on the files check-linux-packages.sh has checked.
+# .github/workflows/build-linux.yml runs it as root in a fresh container of each supported distribution (Debian 13,
+# Ubuntu 24.04, Fedora 40), on the files check-linux-packages.sh has checked.
 #
 #   * the .deb (with apt) or the .rpm (with dnf) installs with its required dependencies alone, no recommended ones;
 #   * the installed binary has every library it links (ldd) and its self-check (`--rt-self-check`) reports Silero with
@@ -11,14 +11,22 @@
 #     package's dependencies brought in, PipeWire's and ALSA's among them);
 #   * the package uninstalls and takes its files with it.
 #
+# With --refused it checks the opposite, on a system that is too old (Debian 12): the package manager must refuse the
+# package, naming the glibc or libstdc++ it needs, rather than install a binary that can't start.
+#
 # The self-check plays and captures nothing and needs no display. Prints every check as "ok: ..." or "FAIL: ..." and
 # exits 1 when one failed.
 #
-# Usage: smoke-linux-package.sh DIR
+# Usage: smoke-linux-package.sh [--refused] DIR
 set -euo pipefail
 
+refused=false
+if [[ "${1:-}" == --refused ]]; then
+  refused=true
+  shift
+fi
 if [[ $# -ne 1 || ! -d "$1" ]]; then
-  echo "usage: smoke-linux-package.sh DIR" >&2
+  echo "usage: smoke-linux-package.sh [--refused] DIR" >&2
   exit 2
 fi
 dir=$(cd "$1" && pwd)
@@ -78,6 +86,18 @@ check_self_check() {
 
 echo
 echo "Installing $(basename "$package")"
+if [[ $refused == true ]]; then
+  if out=$(install_packages "$package" 2>&1); then
+    fail "$(basename "$package") installs, but this system is too old to run it"
+  elif grep -qE 'libc6|libstdc\+\+6|GLIBC_|GLIBCXX_' <<<"$out"; then
+    ok "$(basename "$package") is refused for the glibc or libstdc++ it needs"
+  else
+    fail "$(basename "$package") is refused, but not for glibc or libstdc++"
+  fi
+  indent <<<"$out" | tail -n 15
+  if [[ $failures -gt 0 ]]; then exit 1; fi
+  exit 0
+fi
 if install_packages "$package" 2>&1 | tail -n 5; then
   ok "$(basename "$package") installs"
 else

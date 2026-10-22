@@ -130,8 +130,9 @@ fn the_rpm_installs_what_the_deb_installs() {
 fn the_packages_depend_on_pipewire_and_alsa() {
     // The binary links libpipewire-0.3 (capture, ducking, replay output) and libasound (cpal's ALSA host). The bundler
     // adds WebKitGTK, GTK and the AppIndicator library itself, so only these two are listed. Debian 13 and Ubuntu 24.04
-    // renamed both packages for the 64-bit time_t transition, Debian 12 has the old names. The rpm names the sonames,
-    // as the bundler does for its own, so any rpm distribution resolves them (Fedora: pipewire-libs, alsa-lib).
+    // renamed both packages for the 64-bit time_t transition; the old names stay as alternatives for derivatives that
+    // kept them. The rpm names the sonames, as the bundler does for its own, so any rpm distribution resolves them
+    // (Fedora: pipewire-libs, alsa-lib).
     let deb = listed("deb", "depends");
     assert!(
         deb.contains(&"libpipewire-0.3-0t64 | libpipewire-0.3-0".to_string()),
@@ -146,6 +147,22 @@ fn the_packages_depend_on_pipewire_and_alsa() {
     for package in ["deb", "rpm"] {
         assert_eq!(listed(package, "recommends"), ["pipewire", "wireplumber"], "{package}");
     }
+}
+
+#[test]
+fn the_packages_ask_for_the_glibc_and_libstdcxx_the_speech_detector_needs() {
+    // The ONNX Runtime that `ort` links in statically is built against glibc 2.38 and GCC 13's libstdc++
+    // (`__isoc23_strtol`, GLIBCXX_3.4.31), so the binary doesn't start on older systems such as Debian 12. Saying so
+    // makes the package manager refuse to install there. check-linux-packages.sh checks the binary against these.
+    let deb = listed("deb", "depends");
+    assert!(deb.contains(&"libc6 (>= 2.38)".to_string()), "{deb:?}");
+    assert!(deb.contains(&"libstdc++6 (>= 13)".to_string()), "{deb:?}");
+    let rpm = listed("rpm", "depends");
+    assert!(rpm.contains(&"libc.so.6(GLIBC_2.38)(64bit)".to_string()), "{rpm:?}");
+    assert!(
+        rpm.contains(&"libstdc++.so.6(GLIBCXX_3.4.31)(64bit)".to_string()),
+        "{rpm:?}"
+    );
 }
 
 #[test]

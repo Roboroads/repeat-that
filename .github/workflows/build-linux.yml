@@ -9,9 +9,11 @@ name: Build Linux packages
 #   * with a tag (workflow_call from publish-release.yml): builds exactly that release, and fails when the app version
 #     doesn't match the tag. A draft release has no tag yet, so a run for a draft gets the commit to build in `sha`.
 #
-# The packages are built in a debian:12 container, the oldest supported system, so the binary needs no newer glibc
-# than Debian 12's and the AppImage carries Debian 12's libraries. The `install` jobs then install the .deb on Debian 12,
-# Debian 13 and Ubuntu 24.04 and the .rpm on Fedora 40, and run the AppImage on each.
+# The packages are built in an ubuntu:24.04 container. Its glibc (2.39) is the oldest of the supported systems (Ubuntu
+# 24.04 and Fedora 40 have 2.39, Debian 13 has 2.41), so the binary needs nothing newer, and the AppImage carries
+# Ubuntu 24.04's libraries. Debian 12 is too old: the ONNX Runtime that `ort` links in needs glibc 2.38 and GCC 13's
+# libstdc++, which the packages declare. The `install` jobs install the .deb on Debian 13 and Ubuntu 24.04 and the .rpm
+# on Fedora 40 and run the AppImage on each, and check that apt refuses the .deb on Debian 12.
 
 on:
   workflow_call:
@@ -64,7 +66,7 @@ jobs:
   build:
     name: Packages (Linux x64)
     runs-on: ubuntu-latest
-    container: debian:12
+    container: ubuntu:24.04
     timeout-minutes: 60
     # bash with pipefail: a container's default shell has no pipefail, which would hide a failed check behind `tee`.
     defaults:
@@ -93,6 +95,8 @@ jobs:
       # gdk-pixbuf query tools for the AppImage's GTK plugin, rpm, rpm2cpio and cpio to read the .rpm, and
       # desktop-file-validate.
       - name: Install system packages
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
@@ -200,7 +204,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # The artifact names start with release-linux- so publish-release.yml picks them up (release-*) and knows the
-      # platform. Each is a zip holding one package; the packages are compressed already, so no compression.
+      # platform. Each is a zip holding one package; the packages are compressed already, so no compression. A re-run of
+      # the job replaces the files of the earlier attempt instead of failing on the names.
       - name: Upload the .deb
         uses: actions/upload-artifact@v7
         with:
@@ -209,6 +214,7 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
       - name: Upload the .rpm
         uses: actions/upload-artifact@v7
         with:
@@ -217,6 +223,7 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
       - name: Upload the AppImage
         uses: actions/upload-artifact@v7
         with:
@@ -225,6 +232,7 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 30
+          overwrite: true
 
   # Installs the packages on a fresh container of each supported distribution and starts the app's self-check, so a
   # dependency that doesn't resolve, a missing library or a glibc that is too old fails the build, not a user's install.
@@ -241,10 +249,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { system: Debian 12, image: "debian:12" }
           - { system: Debian 13, image: "debian:13" }
           - { system: Ubuntu 24.04, image: "ubuntu:24.04" }
           - { system: Fedora 40, image: "fedora:40" }
+          # Too old (glibc 2.36, GCC 12): apt must refuse the .deb instead of installing a binary that can't start.
+          - { system: Debian 12 (refused), image: "debian:12", refused: true }
     steps:
       # The images have no git, so the checkout downloads the commit through the API, which is all the script needs.
       - uses: actions/checkout@v7
@@ -258,4 +267,8 @@ jobs:
           path: packages
 
       - name: Install and start
+        if: ${{ !matrix.refused }}
         run: bash .github/scripts/smoke-linux-package.sh packages
+      - name: Install is refused
+        if: ${{ matrix.refused }}
+        run: bash .github/scripts/smoke-linux-package.sh --refused packages
