@@ -284,10 +284,11 @@ time it took to get the app back after a `kill -9`.
 
 Nobody can click the permission dialog on a runner. `macos-ci-audio.sh` therefore first runs the test without the
 permission, while nothing has been asked yet, and then writes the grant into the runner's TCC databases. That worked on
-the first runs: the status went from `NotAsked` to `Allowed`, and all seven tests ran with `RT_REQUIRE_TCC=1` and
-passed. If a future runner image stops accepting it, the script reports `tcc=missing`, only the test without the
-permission runs, and the summary says that the others were skipped. That is a warning and not a failure, so read the
-summary now and then.
+the first runs: the status went from `NotAsked` to `Allowed`. The test without the permission passed before the grant
+(it skips itself once capture is allowed), and the other six ran after it with `RT_REQUIRE_TCC=1` and passed. If a
+future runner image stops accepting the grant, the script reports `tcc=missing`, only the test without the permission
+runs, and the summary says that the others were skipped. That is a warning and not a failure, so read the summary now
+and then.
 
 The test binary is unsigned and runs outside the hardened runtime, so this doesn't cover the real permission dialog, the
 System Settings pane, or the notarized app. The
