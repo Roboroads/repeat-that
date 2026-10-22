@@ -1,0 +1,249 @@
+name: site
+
+# Builds the website (site/) and deploys it to GitHub Pages at https://repeat-that.roboroads.me. Docs/MAINTAINING.md has
+# the details under Website; the design is in site/README.md.
+#
+# The page shows the download links of the latest release, and a release can't start a workflow (publish-release.yml
+# publishes with GITHUB_TOKEN), so the site is rebuilt on these triggers:
+#   * workflow_run of release-please and Publish release on main. release-please.yml runs on every push to main and calls
+#     the publish workflow for a new release, so that covers every release. A Publish release run of its own is the late
+#     macOS attach, or a release redone by hand; the new file and the new SHA256SUMS are on the site after it.
+#   * a push to main that touches the site or the docs it renders, and the same paths on a pull request (a build and
+#     test run, no deploy).
+#   * a daily run, which keeps the Expires date of security.txt in the future.
+#   * workflow_dispatch, for a new demo video (gh workflow run site.yml).
+# Every run builds from the latest release, so a run that is replaced by a newer one loses nothing.
+#
+# A build that finds the release data inconsistent fails, and the previous deploy stays live. While GitHub Pages is
+# turned off for the repository, the deploy job warns and ends instead of failing.
+
+on:
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - '*.md'
+      - 'app/src-tauri/icons/svg/app.svg'
+      - '.github/scripts/site_release.py'
+      - '.github/scripts/test_site_release.py'
+      - '.github/scripts/release_assets.py'
+      - '.github/workflows/site.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'docs/**'
+      - '*.md'
+      - 'app/src-tauri/icons/svg/app.svg'
+      - '.github/scripts/site_release.py'
+      - '.github/scripts/test_site_release.py'
+      - '.github/scripts/release_assets.py'
+      - '.github/workflows/site.yml'
+  workflow_run:
+    workflows: [release-please, Publish release]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and a deploy in progress is never cancelled. Of the runs that wait, only the newest is kept. A
+# pull request gets a group of its own, so a deploy never replaces its check and its check never holds up a deploy.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('site-pr-{0}', github.ref) || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build
+    # A workflow_run is also started by a pull request from a fork whose branch is called main. It would build the
+    # default branch anyway, so nothing of the fork runs, but there is no reason to build for it.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ASTRO_TELEMETRY_DISABLED: '1'
+    defaults:
+      run:
+        working-directory: site
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      domain: ${{ steps.domain.outputs.domain }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19' # site/package.json asks for 22.19 or later
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Unit tests of the release data script
+        run: python3 -m unittest discover -s "$GITHUB_WORKSPACE/.github/scripts" -p 'test_site_release.py'
+
+      # The site is built from the latest release, and from the SHA256SUMS that belongs to it. A repository without a
+      # release gets a site that says so. Any other failure (the API is down, the release has no SHA256SUMS, the data
+      # is inconsistent) fails the build, so the previous site stays live and the next trigger tries again.
+      - name: Read the latest release
+        id: release
+        run: |
+          data="$RUNNER_TEMP/site-data"
+          mkdir -p "$data"
+          script="$GITHUB_WORKSPACE/.github/scripts/site_release.py"
+          if ! gh release view --json tagName,name,publishedAt,url,isDraft,isPrerelease,assets > "$data/release-view.json" 2> "$data/release-view.err"; then
+            if grep -q 'release not found' "$data/release-view.err"; then
+              echo "::notice::The repository has no release yet, so the site says that"
+              python3 "$script" --none --output "$data/release.json"
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cat "$data/release-view.err" >&2
+            echo "::error::Could not read the latest release"
+            exit 1
+          fi
+          tag=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["tagName"])' "$data/release-view.json")
+          if ! gh release download "$tag" --pattern SHA256SUMS --dir "$data"; then
+            echo "::error::Could not download SHA256SUMS of release $tag"
+            exit 1
+          fi
+          python3 "$script" --release-json "$data/release-view.json" --sums "$data/SHA256SUMS" --repo "$GITHUB_REPOSITORY" --output "$data/release.json"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Building the site for release ${tag}." >> "$GITHUB_STEP_SUMMARY"
+
+      # The demo video lives on the site-media prerelease (publish-release.yml refuses files it didn't build, so it can't
+      # sit on a version release). Without demo.mp4 the site has no video section.
+      - name: Fetch the demo video
+        run: |
+          log="$RUNNER_TEMP/site-data/media.err"
+          if gh release download site-media --pattern demo.mp4 --pattern demo-poster.jpg --pattern demo.vtt --dir public/media 2> "$log"; then
+            ls -l public/media
+          elif grep -qE 'release not found|no assets match' "$log"; then
+            echo "::notice::The site-media release has no demo video, so the site has no video section"
+          else
+            cat "$log" >&2
+            echo "::error::Could not read the site-media release"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - name: Build
+        env:
+          SITE_RELEASE_JSON: ${{ runner.temp }}/site-data/release.json
+        run: npm run build
+      - run: npm run check:dist
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+      - name: Read the domain
+        id: domain
+        run: echo "domain=$(tr -d '[:space:]' < dist/CNAME)" >> "$GITHUB_OUTPUT"
+
+      # The artifact is uploaded on pull requests too: that is the only way to try the action itself, and a Dependabot
+      # bump of it runs through here before it is merged. Nothing deploys it.
+      # Version 4 of this action left out hidden files, and with them .well-known/. Version 5 has the input below.
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ github.workspace }}/site/dist
+          include-hidden-files: true
+
+      # What was uploaded is the tar the action leaves in RUNNER_TEMP. The files that have to be in it are the ones a
+      # tar without hidden files would lose.
+      - name: Check the uploaded site
+        run: |
+          tar -tf "$RUNNER_TEMP/artifact.tar" > "$RUNNER_TEMP/site-data/artifact-files.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/site-data/artifact-files.txt") entries in the artifact"
+          missing=0
+          for file in ./index.html ./CNAME ./.nojekyll ./.well-known/security.txt; do
+            if ! grep -qxF "$file" "$RUNNER_TEMP/site-data/artifact-files.txt"; then
+              echo "::error::The uploaded site has no $file"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            head -n 50 "$RUNNER_TEMP/site-data/artifact-files.txt"
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy
+    needs: build
+    # Only the default branch is deployed. A manual run on another branch builds and tests only.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      # Pages is a user step (docs/MAINTAINING.md, Website). Until then every push would fail here, so this warns.
+      - name: Check that GitHub Pages is on
+        id: pages
+        run: |
+          docs="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/main/docs/MAINTAINING.md#website"
+          if source=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type 2> "$RUNNER_TEMP/pages.err"); then
+            if [ "$source" != workflow ]; then
+              echo "::error title=GitHub Pages has the wrong source::Pages deploys from '$source'. Set Settings > Pages > Source to GitHub Actions. See $docs"
+              exit 1
+            fi
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/pages.err"; then
+            echo "::warning title=GitHub Pages is off::The site was built but not deployed, because GitHub Pages is not turned on for this repository. See $docs"
+            echo "The site was built, but GitHub Pages is off, so nothing was deployed. See [Website]($docs)." >> "$GITHUB_STEP_SUMMARY"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            cat "$RUNNER_TEMP/pages.err" >&2
+            echo "::error::Could not read the Pages settings"
+            exit 1
+          fi
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/deploy-pages@v5
+
+      # The page has to answer with the release it was built for, and security.txt has to be served from .well-known.
+      # A new deploy can take a few seconds to reach the CDN, hence the retries and the query string, which makes the
+      # request miss a copy that was cached before the deploy. The base path of the site is "/", which only works on
+      # the custom domain, so on the github.io address of the repository this check is skipped.
+      - name: Check the live site
+        if: steps.deployment.outcome == 'success'
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          DOMAIN: ${{ needs.build.outputs.domain }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          echo "Deployed $PAGE_URL" >> "$GITHUB_STEP_SUMMARY"
+          host="${PAGE_URL#*://}"
+          host="${host%%/*}"
+          if [ "$host" != "$DOMAIN" ]; then
+            echo "::warning title=Not on the custom domain::The site is at $PAGE_URL, not on $DOMAIN, so its links (base path /) don't work yet and the live check is skipped. Set the custom domain under Settings > Pages."
+            exit 0
+          fi
+          base="${PAGE_URL%/}"
+          fetch() {
+            curl --fail --silent --show-error --location --max-time 20 "$1?check=$GITHUB_RUN_ID-$attempt"
+          }
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            if page=$(fetch "$base/") && { [ -z "$TAG" ] || grep -qF "$TAG" <<< "$page"; } && fetch "$base/.well-known/security.txt" > /dev/null; then
+              echo "The live site answers with release ${TAG:-none}"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::$base/ didn't answer with release ${TAG:-none} and a security.txt within two minutes"
+          exit 1

@@ -68,18 +68,19 @@ release notes, README, settings window and [install guide](docs/install-macos.md
 This milestone starts after milestone 4, because the site needs the v0.1 release to link to, and can run in
 parallel with 5–7.
 
-- [ ] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist) (on a free plan, GitHub Pages needs a public repository)
-- [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release (whose `SHA256SUMS` ships with the installers from milestone 4), and a link to [how to verify a download](docs/verify-downloads.md)
+- [x] Make the repository public, following the [going public checklist](docs/MAINTAINING.md#going-public-checklist) (on a free plan, GitHub Pages needs a public repository). Done 2026-10-20
+- [ ] GitHub Pages site: landing page that says what the app does, download links to the latest release (whose `SHA256SUMS` ships with the installers from milestone 4), and a link to [how to verify a download](docs/verify-downloads.md). The site (`site/`) and its deploy workflow are on `main`; it goes live when the DNS record, the Pages source and the custom domain are set, see [Website](docs/MAINTAINING.md#website)
 - [ ] Short demo video of a replay in a call (Discord or Teams)
-- [ ] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary
+- [x] How-to-use guide: install per OS, picking an app, hotkeys, catch-up, ducking and a privacy summary ([`docs/guide.md`](docs/guide.md), also on the site)
 - [ ] Apply for free open-source code signing from SignPath Foundation (Windows), with the website as the project page
 
 The demo video never contains audio captured from someone else's call. It uses the mock backend with synthetic or
 licensed speech, or a staged conversation recorded outside the app with everyone's consent. That is a consented
 exception for marketing material only, and the app itself still never writes audio to disk (see
 [PRIVACY.md](PRIVACY.md)). Large media stays out of git history, Pages-only branches included: the video and any other
-big files go to release assets or an external host. The site plays the video from a `<video>` tag on a release asset, or
-from a `youtube-nocookie.com` embed that only loads after a click, so opening the page contacts no third party.
+big files go to release assets or an external host. The site plays the video from a `<video>` tag. The deploy copies the
+file out of the `site-media` prerelease into the site, so it comes from the site's own domain and nothing loads until
+someone presses play. Opening the page contacts no third party.
 
 ## Later / ideas
 - [ ] Translations (English, Dutch first)

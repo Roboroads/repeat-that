@@ -257,7 +257,11 @@ are in:
 - the first lines of `.github/ISSUE_TEMPLATE/macos.yml`;
 - the settings window: `app/src/lib/components/MacosNotice.svelte`, its test `MacosNotice.test.ts`, its use in
   `GeneralSection.svelte`, and the entry for it in the links test in `app/src-tauri/src/lib.rs`;
-- the release notes: the `Release note` job of `build-macos.yml` and `macos-release-note.sh`.
+- the release notes: the `Release note` job of `build-macos.yml` and `macos-release-note.sh`;
+- the website: the notice in `site/src/components/DownloadCard.astro`, the note under the hero button in
+  `site/src/pages/index.astro`, the browser test of that notice in `site/tests/e2e/all.spec.ts`, and the quotes of the
+  README in `site/tests/fixtures/readme-requirements.md` and `site/tests/unit/requirements.test.ts`. The site also
+  renders `docs/guide.md`, which has the notice too.
 
 `grep -rniE "untested|on a real Mac"` finds them (the comment in `Entitlements.plist` matches too; it is not a notice).
 
@@ -382,6 +386,143 @@ click-through). Signing through SignPath is on the checklist below. The macOS `.
 [macOS signing and notarization](#macos-signing-and-notarization). There's no auto-updater, so there is no update
 signing key to look after.
 
+## Website
+
+The site at <https://repeat-that.roboroads.me> is built from [`site/`](../site) with Astro and deployed to GitHub Pages
+by [`site.yml`](../.github/workflows/site.yml). [`site/README.md`](../site/README.md) has the commands and says what a
+build reads. The site renders the Markdown in `docs/` and in the repository root, and writes the download links of the
+latest release into the pages when it is built, so a visitor's browser contacts no other site.
+
+### When it runs
+
+`site.yml` runs on:
+
+- a push to `main` that touches `site/`, `docs/`, a Markdown file in the root, `app/src-tauri/icons/svg/app.svg`, the
+  release data script (`site_release.py`, its tests and `release_assets.py`) or the workflow itself
+- every finished run of `release-please` or `Publish release` on `main`. A release can't start a workflow
+  (`publish-release.yml` publishes it with `GITHUB_TOKEN`), so this is how a new release gets onto the site, and how the
+  `.dmg` of a [late attach](#late-macos-attach) does. `release-please` runs on every push to `main`, so most of these
+  runs rebuild the page that is already there
+- a schedule, every day at 04:17 UTC
+- `gh workflow run site.yml`, for example after uploading the demo video
+
+A pull request that touches the same paths gets the build and the tests but no deploy. `ci.yml` counts `site/` as
+documentation, so such a PR doesn't wait for the Rust builds.
+
+A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`. It
+fetches the demo video if there is one, then runs the type check, the unit tests, the build, `npm run check:dist` and the
+browser tests. It uploads `site/dist`, checks that the upload kept the hidden files (`.nojekyll` and
+`.well-known/security.txt`), deploys, and asks the live site for its front page and `security.txt`.
+
+When the release data doesn't add up (an asset without a line in `SHA256SUMS`, a line for a file that isn't on the
+release, a malformed line), the build fails with an error that names the problem and the previous deploy stays up. The
+next trigger tries again. Deploys run one at a time, a deploy in progress is never cancelled, and of the runs waiting
+behind it only the newest is kept. Dependabot opens one npm PR a week for `site/`.
+
+### Turning on GitHub Pages and the domain
+
+Until this is done the Deploy job ends with the warning "GitHub Pages is off" and everything else passes. These steps
+are the maintainer's:
+
+1. At the provider of `roboroads.me`, add a `CNAME` record for `repeat-that` that points to `roboroads.github.io.`.
+2. Recommended: verify `roboroads.me` under the GitHub account's Settings → Pages → Add a domain. GitHub asks for a TXT
+   record named `_github-pages-challenge-Roboroads.roboroads.me`. With it, nobody else can claim the subdomain if the
+   `CNAME` record is ever left pointing at nothing.
+3. In the repository, Settings → Pages: Source is GitHub Actions, the custom domain is `repeat-that.roboroads.me`, and
+   Enforce HTTPS can be ticked once the certificate has been issued. From the command line:
+
+   ```sh
+   gh api -X POST repos/Roboroads/repeat-that/pages -f build_type=workflow
+   gh api -X PUT repos/Roboroads/repeat-that/pages -f cname=repeat-that.roboroads.me
+   gh workflow run site.yml
+   ```
+
+`site/public/CNAME` holds the domain as well. GitHub ignores that file when Actions does the deploy, so it only records
+where the site lives, and `check:dist` fails the build if it goes missing. If Pages is on but its source is a branch,
+the Deploy job fails and says so.
+
+The last step of a deploy, "Check the live site", needs the custom domain. The site is built for the base path `/`,
+which doesn't work at `roboroads.github.io/repeat-that/`, so on that address the step warns and stops.
+
+### Topics and the social preview
+
+```sh
+gh repo edit Roboroads/repeat-that --homepage https://repeat-that.roboroads.me \
+  --add-topic accessibility,adhd,audio,voice-chat,discord,teams,tauri,rust
+```
+
+The social preview has no API. Upload `site/public/og.png` (1280 by 640) under Settings → General → Social preview.
+`site/README.md` says how that picture is made.
+
+### Demo video
+
+The video is played from the site's own domain. Its files sit on a prerelease called `site-media`, and the deploy copies
+them into the site. They can't be on a version release, because `publish-release.yml` refuses files it didn't build.
+release-please ignores the `site-media` tag: it only reads tags that look like `X.Y.Z`, and `check-release-config.py
+--tags` only looks up `v<release-as>`. A prerelease is never the "latest" release either, so the download data doesn't
+change.
+
+```sh
+gh release create site-media --prerelease --title "Website media (not a release)" \
+  --notes "Files for the website, not an app release." demo.mp4 demo-poster.jpg demo.vtt
+
+# later, to replace a file
+gh release upload site-media demo.mp4 --clobber
+
+gh workflow run site.yml
+```
+
+`demo.mp4` is the video (H.264 and AAC, ideally under 20 MB). `demo-poster.jpg` and the captions in `demo.vtt` are
+optional. Without `demo.mp4` the site has no video section. The player has `preload="none"`, so nothing is fetched until
+someone presses play. The video never contains audio captured from someone else's call, see [ROADMAP.md](../ROADMAP.md).
+
+### The well-known folder and security.txt
+
+Everything in `site/public/.well-known/` is published as it is, under `https://repeat-that.roboroads.me/.well-known/`.
+Jekyll doesn't run, because the site goes up as an artifact, and both `check:dist` and the check after the upload fail
+the build if a hidden file is missing.
+
+The build writes `.well-known/security.txt` (RFC 9116) itself. `Contact` is private vulnerability reporting, `Policy` is
+the security policy, `Canonical` is the file's own address and `Expires` is the build date plus 180 days. The daily run
+keeps it current. GitHub switches scheduled workflows off after 60 days without activity in the repository, and then the
+file runs out 180 days after the last build. `gh workflow enable site.yml` and `gh workflow run site.yml` fix that.
+
+### Flathub and this site
+
+Flathub verifies the Flatpak `me.roboroads.RepeatThat` at `https://roboroads.me/.well-known/org.flathub.VerifiedApps.txt`.
+The domain comes from the app ID, so it is the bare `roboroads.me` and not this site. A token placed in
+`site/public/.well-known/` would be served at `repeat-that.roboroads.me`, where it verifies nothing; host it wherever
+`roboroads.me` itself is served. The Tauri identifier stays `me.roboroads.repeat-that`, and only the Flatpak uses
+`me.roboroads.RepeatThat`.
+
+## SignPath Foundation application
+
+Apply once the site is live: the application asks for a project website, and the policy page it points at is
+[`code-signing.md`](code-signing.md), served at `https://repeat-that.roboroads.me/code-signing/`. SignPath's
+[terms](https://signpath.org/terms) are the authority, so read them again before applying. They ask for these, and this
+is where Repeat That stands:
+
+- an OSI-approved license: GPL-3.0-or-later
+- a project that has a release and is maintained: `v0.1.0` is out
+- two-factor authentication on every account that touches the project: turn it on for the GitHub account, and for the
+  SignPath account once there is one
+- a code signing policy and a privacy statement on the website: the policy page, and its Privacy section
+- builds from the repository's source on a CI service: GitHub Actions on GitHub-hosted runners, from release tags
+
+Draft of the project description for the form (change it to fit the fields):
+
+> Repeat That is a desktop app that keeps the last seconds of speech from one application in memory and replays them on
+> a hotkey, for people who lose the thread during calls. Repository: https://github.com/Roboroads/repeat-that
+> (GPL-3.0-or-later). Website: https://repeat-that.roboroads.me. Code signing policy:
+> https://repeat-that.roboroads.me/code-signing/. The first release, v0.1.0, is on GitHub. We want to sign the Windows
+> installer (`Repeat-That_<version>_x64-setup.exe`) and `repeat-that.exe`. GitHub Actions builds both on GitHub-hosted
+> runners from a release tag (`publish-release.yml`). The project has one maintainer, who is its only committer,
+> reviewer and approver. The app sends nothing over the network unless the user asks it to, and captured audio stays in
+> memory.
+
+When SignPath accepts the project, a follow-up adds the signing step to the Windows build and changes the code signing
+page and the SmartScreen notes (`grep -rniE "smartscreen|code-signed"` finds them).
+
 ## Going public checklist
 
 - [x] Make the repository public (2026-10-20)
@@ -390,9 +531,12 @@ signing key to look after.
   forever for a check that never runs.
 - [x] Turn on private vulnerability reporting (Settings → Security) and add a `SECURITY.md`
 - [x] Turn on Dependabot alerts and security updates (version updates are already set up in `.github/dependabot.yml`)
-- [ ] Publish the GitHub Pages site (milestone 8 in the roadmap; on a free plan, Pages needs the public repo)
+- [ ] Publish the GitHub Pages site (milestone 8 in the roadmap; on a free plan, Pages needs the public repo). The site
+  and its workflow are on `main`; what is left is the DNS record, the Pages source and the custom domain, see
+  [Website](#website). The topics and the social preview below are under it too
 - [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing. The Pages site has to be live
-  first, because SignPath asks for a project website and a public repository
+  first, because SignPath asks for a project website and a public repository. The prerequisites and a draft of the
+  application are under [SignPath Foundation application](#signpath-foundation-application)
 - [ ] Add topics and a social preview image so people can find the project
 
 ## macOS signing and notarization
