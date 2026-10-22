@@ -5,8 +5,8 @@ apple-signing Environment on its job, yet without `secrets: inherit` in the call
 with no error from GitHub (the macOS build of Publish release on main failed that way). Secrets also go only one hop:
 for release-please.yml -> publish-release.yml -> build-macos.yml, each call must pass them on.
 
-The workflow files are read as plain text (the runner's Python has no YAML parser), which is enough for the shape they
-all have: jobs two spaces in under `jobs:`, their keys four spaces in.
+The workflow files are read as plain text, so the tests need nothing beyond the standard library. That is enough for the
+shape they all have: jobs two spaces in under `jobs:`, their keys four spaces in.
 """
 
 import re
