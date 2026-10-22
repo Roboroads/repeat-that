@@ -301,7 +301,10 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   `org.kde.kglobalaccel`: the sandbox hides that name otherwise, so Plasma 6.3's portal would list the shortcuts under
   the Flatpak ID. A default key that stays unassigned on Plasma is one that another component already holds
   (kglobalacceld skips a taken key, and the portal only offers a key for an action it has not seen), for instance the
-  same app installed as a package. The Flatpak's identifier is `me.roboroads.RepeatThat`
+  same app installed as a package. This was checked with a real kglobalacceld 6.3.5 and the calls of the portal's
+  `setActions`: a fresh component gets all three default keys, and the same keys under a second component come out
+  empty, for the Flatpak ID and the package's ID alike. The package takes the same route (the portal), so it only seems
+  to work when it registers its keys first, or on X11, where the plugin grabs the keys without KDE. The Flatpak's identifier is `me.roboroads.RepeatThat`
   (`tauri.flatpak.conf.json`, merged at build time through `TAURI_CONFIG`), so the single-instance D-Bus name
   `me.roboroads.RepeatThat.SingleInstance` is in the sandbox's own namespace and `flatpak run … --replay` reaches the
   running app. How the Flatpak is built and checked is in [MAINTAINING.md](MAINTAINING.md#flatpak).

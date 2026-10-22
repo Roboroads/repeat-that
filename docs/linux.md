@@ -30,8 +30,11 @@ How the hotkeys work depends on the session you are logged in to.
   unassigned**, another shortcut already has it: Plasma leaves out, without a word, a key that another component
   holds, and only offers a key when it first sees an action. This happens when Repeat That is installed twice, say the
   `.deb` or the AppImage next to the Flatpak: the other install keeps the same three keys under
-  `me.roboroads.repeat-that`. Remove the entry you don't use in System Settings → Shortcuts, or give the unassigned
-  actions other keys there.
+  `me.roboroads.repeat-that`. Plasma keeps what it has for an action, empty included, so freeing the key later doesn't
+  give it to the action: remove the entry you don't use in System Settings → Shortcuts, then press **Default** next to
+  each unassigned action of the entry you keep (or give them other keys there). To see who has the keys, run
+  `grep -B1 -A4 roboroads ~/.config/kglobalshortcutsrc`: each action reads `current key,default key,name`, so
+  `replay=,Ctrl+Alt+Space,replay` lost its key and `replay=Ctrl+Alt+Space,Ctrl+Alt+Space,replay` has it.
 - **Wayland without the portal.** GNOME 46 (Ubuntu 24.04), Sway, Hyprland and others have no GlobalShortcuts portal, so
   Repeat That can't have global hotkeys there. The Hotkeys section says so and lists the three commands below, each with
   a Copy button. Bind them as custom shortcuts in your desktop, and they do the same job.
