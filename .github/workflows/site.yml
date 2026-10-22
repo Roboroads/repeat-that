@@ -8,8 +8,10 @@ name: site
 #   * workflow_run of release-please and Publish release on main. release-please.yml runs on every push to main and calls
 #     the publish workflow for a new release, so that covers every release. A Publish release run of its own is the late
 #     macOS attach, or a release redone by hand; the new file and the new SHA256SUMS are on the site after it.
-#   * a push to main that touches the site or the docs it renders, and the same paths on a pull request (a build and
-#     test run, no deploy).
+#   * a push to main that touches the site or the docs it renders (the paths below, which SITE_PATHS repeats).
+#   * a pull request: the plan job looks at what the PR changes and builds and tests only when it touches those paths. It
+#     has no `paths` filter of its own, because a required check that never runs leaves a PR waiting for ever (see the
+#     same remark in ci.yml). Nothing is deployed from a pull request.
 #   * a daily run, which keeps the Expires date of security.txt in the future.
 #   * workflow_dispatch, for a new demo video (gh workflow run site.yml).
 # Every run builds from the latest release, so a run that is replaced by a newer one loses nothing.
@@ -19,15 +21,6 @@ name: site
 
 on:
   pull_request:
-    paths:
-      - 'site/**'
-      - 'docs/**'
-      - '*.md'
-      - 'app/src-tauri/icons/svg/app.svg'
-      - '.github/scripts/site_release.py'
-      - '.github/scripts/test_site_release.py'
-      - '.github/scripts/release_assets.py'
-      - '.github/workflows/site.yml'
   push:
     branches: [main]
     paths:
@@ -59,41 +52,57 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    name: Build
+  # Decides what this run does and reads the release the site is built from. It is cheap and always runs, so it is also
+  # what a pull request that doesn't touch the site is checked by. Build and Deploy are skipped when it says so.
+  plan:
+    name: Site plan
     # A workflow_run is also started by a pull request from a fork whose branch is called main. It would build the
-    # default branch anyway, so nothing of the fork runs, but there is no reason to build for it.
+    # default branch anyway, so nothing of the fork runs, but there is no reason to plan for it.
     if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      ASTRO_TELEMETRY_DISABLED: '1'
-    defaults:
-      run:
-        working-directory: site
+      # What the site is built from, as git pathspecs. The `paths` of the push trigger above are the same list.
+      SITE_PATHS: |-
+        site
+        docs
+        :(glob)*.md
+        app/src-tauri/icons/svg/app.svg
+        .github/scripts/site_release.py
+        .github/scripts/test_site_release.py
+        .github/scripts/release_assets.py
+        .github/workflows/site.yml
     outputs:
+      build: ${{ steps.scope.outputs.build }}
       tag: ${{ steps.release.outputs.tag }}
-      domain: ${{ steps.domain.outputs.domain }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
         with:
-          node-version: '22.19' # site/package.json asks for 22.19 or later
-          cache: npm
-          cache-dependency-path: site/package-lock.json
+          fetch-depth: 2
 
-      - name: Unit tests of the release data script
-        run: python3 -m unittest discover -s "$GITHUB_WORKSPACE/.github/scripts" -p 'test_site_release.py'
+      # The checkout of a pull request is the merge of it into its base, so HEAD^1..HEAD is what the PR changes (ci.yml
+      # does the same). Whenever the diff can't be made, the answer stays build.
+      - name: Find out whether the change touches the site
+        id: scope
+        run: |
+          mapfile -t paths <<< "$SITE_PATHS"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && git diff --quiet HEAD^1 HEAD -- "${paths[@]}"; then
+            echo "This pull request doesn't touch the site, so there is nothing to build."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
 
       # The site is built from the latest release, and from the SHA256SUMS that belongs to it. A repository without a
       # release gets a site that says so. Any other failure (the API is down, the release has no SHA256SUMS, the data
       # is inconsistent) fails the build, so the previous site stays live and the next trigger tries again.
       - name: Read the latest release
         id: release
+        if: steps.scope.outputs.build == 'true'
         run: |
           data="$RUNNER_TEMP/site-data"
           mkdir -p "$data"
@@ -117,6 +126,47 @@ jobs:
           python3 "$script" --release-json "$data/release-view.json" --sums "$data/SHA256SUMS" --repo "$GITHUB_REPOSITORY" --output "$data/release.json"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Building the site for release ${tag}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Hand the release data to the build
+        if: steps.scope.outputs.build == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-inputs
+          path: ${{ runner.temp }}/site-data/release.json
+          retention-days: 1
+          if-no-files-found: error
+
+  build:
+    name: Build site
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ASTRO_TELEMETRY_DISABLED: '1'
+    defaults:
+      run:
+        working-directory: site
+    outputs:
+      domain: ${{ steps.domain.outputs.domain }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: site-inputs
+          path: ${{ runner.temp }}/site-data
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19' # site/package.json asks for 22.19 or later
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Unit tests of the release data script
+        run: python3 -m unittest discover -s "$GITHUB_WORKSPACE/.github/scripts" -p 'test_site_release.py'
 
       # The demo video lives on the site-media prerelease (publish-release.yml refuses files it didn't build, so it can't
       # sit on a version release). Without demo.mp4 the site has no video section.
@@ -177,7 +227,7 @@ jobs:
 
   deploy:
     name: Deploy
-    needs: build
+    needs: [plan, build]
     # Only the default branch is deployed. A manual run on another branch builds and tests only.
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -222,14 +272,14 @@ jobs:
       # The release is found by its link, which the page has whenever there is a release (also when no file of it is
       # listed) and ends in a quote, so v0.1.1 doesn't match a stale page of v0.1.10. A new deploy can take a few
       # seconds to reach the CDN, hence the retries and the query string, which makes the request miss a copy that was
-      # cached before the deploy. The base path of the site is "/", which only works on
-      # the custom domain, so on the github.io address of the repository this check is skipped.
+      # cached before the deploy. The base path of the site is "/", which only works on the custom domain, so on the
+      # github.io address of the repository this check is skipped.
       - name: Check the live site
         if: steps.deployment.outcome == 'success'
         env:
           PAGE_URL: ${{ steps.deployment.outputs.page_url }}
           DOMAIN: ${{ needs.build.outputs.domain }}
-          TAG: ${{ needs.build.outputs.tag }}
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           echo "Deployed $PAGE_URL" >> "$GITHUB_STEP_SUMMARY"
           host="${PAGE_URL#*://}"

@@ -8,8 +8,9 @@ Notes for maintainers. Contributors don't need any of this.
 
 - no direct pushes, force pushes or deleting the branch
 - changes land through a pull request, squash-merged (so history stays linear)
-- CI must pass on Linux, Windows and macOS (plus the end-to-end test of the app on Linux), the PR title must be a
-  Conventional Commit, and all review threads must be resolved
+- CI must pass on Linux, Windows and macOS (plus the end-to-end test of the app on Linux), the website checks
+  (`Site plan` and `Site build`, see [Website](#when-it-runs)), the PR title must be a Conventional Commit, and all
+  review threads must be resolved
 - 0 required approvals, so a solo maintainer can merge their own PRs
 
 The repository is public, so GitHub enforces rulesets on it. It is not applied yet, see the
@@ -406,8 +407,12 @@ latest release into the pages when it is built, so a visitor's browser contacts 
 - a schedule, every day at 04:17 UTC
 - `gh workflow run site.yml`, for example after uploading the demo video
 
-A pull request that touches the same paths gets the build and the tests but no deploy. `ci.yml` counts `site/` as
-documentation, so such a PR doesn't wait for the Rust builds.
+Every pull request gets the `Site plan` job, which looks at what the PR changes. When it touches those paths, `Site build`
+runs the build and the tests, and nothing is deployed. When it doesn't, the build is skipped, and a skipped job counts as
+passed. Both are required checks in [`.github/rulesets/main.json`](../.github/rulesets/main.json). `ci.yml` counts
+`site/` as documentation, so nothing else looks at a PR that only changes the site, and the workflow has no `paths`
+filter on pull requests for the same reason `ci.yml` has none: a required check that doesn't run leaves the PR waiting.
+Like the rest of the ruleset, the two checks count once it is applied (see [Branch protection](#branch-protection)).
 
 A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`. It
 fetches the demo video if there is one, then runs the type check, the unit tests, the build, `npm run check:dist` and the
