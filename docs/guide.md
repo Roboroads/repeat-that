@@ -189,6 +189,7 @@ countries, and you are responsible for following the ones that apply to you.
 
 Two short falling tones mean the buffer is empty. Common reasons:
 
+- No app is picked, or capture is paused. The status line in the window says "No app selected" or "Paused".
 - You just picked the app or resumed from a pause. Both start with an empty buffer.
 - The app hasn't played any speech since then, or the speech was too quiet for the Detection setting. Try High.
 - The speech was played by a different app than the one you picked.
