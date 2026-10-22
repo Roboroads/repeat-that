@@ -2,16 +2,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import Base from "../layouts/Base.astro";
-import { getDocs, REPO_BLOB_URL, routeParam, routesBySource } from "../lib/docs";
+import { getDocs, REPO_BLOB_URL, repoRoot, routeParam, routesBySource } from "../lib/docs";
 import { renderDoc } from "../lib/render-doc";
 
 export async function getStaticPaths() {
   const docs = getDocs();
   const routes = routesBySource(docs);
-  const repoRoot = resolve(process.cwd(), "..");
   return Promise.all(
     docs.map(async (doc) => {
-      const { html, title, summary } = await renderDoc(readFileSync(resolve(repoRoot, doc.source), "utf8"), doc.source, routes);
+      const { html, title, summary } = await renderDoc(readFileSync(resolve(repoRoot(), doc.source), "utf8"), doc.source, routes);
       return { params: { doc: routeParam(doc.route) }, props: { html, title, summary, source: doc.source } };
     }),
   );

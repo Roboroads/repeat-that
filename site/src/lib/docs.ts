@@ -55,11 +55,19 @@ export function listDocs(repoRoot: string, warn: (message: string) => void): Doc
   return found;
 }
 
+/**
+ * The root of the repository: the parent of the site folder, which is where the build and the tests run. Astro bundles
+ * the pages, so a path relative to this file wouldn't point at the source any more.
+ */
+export function repoRoot(): string {
+  return resolve(process.cwd(), "..");
+}
+
 let cached: DocEntry[] | undefined;
 
-/** `listDocs` for the build: the repository root is the parent of the site folder, and the warnings print once. */
+/** `listDocs` for the build. The warnings print once. */
 export function getDocs(): DocEntry[] {
-  cached ??= listDocs(resolve(process.cwd(), ".."), (message) => console.warn(`[site] warning: ${message}`));
+  cached ??= listDocs(repoRoot(), (message) => console.warn(`[site] warning: ${message}`));
   return cached;
 }
 

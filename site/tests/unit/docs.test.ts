@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DOCS, listDocs, routeParam } from "../../src/lib/docs";
+import { DOCS, listDocs, repoRoot, routeParam } from "../../src/lib/docs";
 
 const scratchRoot = join(process.cwd(), ".tmp");
 let repo: string;
@@ -40,6 +40,13 @@ describe("the route map", () => {
     expect(new Set(DOCS.map((d) => d.route)).size).toBe(DOCS.length);
     expect(new Set(DOCS.map((d) => d.source)).size).toBe(DOCS.length);
     for (const doc of DOCS) expect(doc.route).toMatch(/^\/.+\/$/);
+  });
+});
+
+describe("repoRoot", () => {
+  it("is the folder above the site folder the build runs in", () => {
+    expect(existsSync(join(repoRoot(), "site", "package.json"))).toBe(true);
+    expect(existsSync(join(repoRoot(), "README.md"))).toBe(true);
   });
 });
 
