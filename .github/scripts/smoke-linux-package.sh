@@ -15,7 +15,7 @@
 # package, naming the glibc or libstdc++ it needs, rather than install a binary that can't start.
 #
 # The self-check plays and captures nothing and needs no display. Prints every check as "ok: ..." or "FAIL: ..." and
-# exits 1 when one failed.
+# exits 1 when one failed. Needs linux-packages-lib.sh next to it.
 #
 # Usage: smoke-linux-package.sh [--refused] DIR
 set -euo pipefail
@@ -32,26 +32,15 @@ fi
 dir=$(cd "$1" && pwd)
 app_id=me.roboroads.repeat-that
 
-failures=0
-ok() { echo "ok: $*"; }
-fail() {
-  echo "FAIL: $*"
-  failures=$((failures + 1))
-}
-indent() { sed 's/^/    /'; }
+# ok, fail, indent and find_packages.
+# shellcheck source=linux-packages-lib.sh
+source "$(dirname "$0")/linux-packages-lib.sh"
 
-shopt -s nullglob
-debs=("$dir"/*.deb)
-rpms=("$dir"/*.rpm)
-appimages=("$dir"/*.AppImage)
-shopt -u nullglob
-if [[ ${#debs[@]} -ne 1 || ${#rpms[@]} -ne 1 || ${#appimages[@]} -ne 1 ]]; then
-  echo "FAIL: expected one .deb, one .rpm and one .AppImage in $dir" >&2
-  ls -l "$dir" >&2
+# Sets deb, rpm, appimage and version.
+if ! find_packages "$dir"; then
+  ls -l "$dir"
   exit 1
 fi
-# Repeat-That_0.2.0_amd64.deb -> 0.2.0
-version=$(basename "${debs[0]}" | cut -d_ -f2)
 expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\"}"
 
 echo "System: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"')"
@@ -72,7 +61,7 @@ else
   echo "FAIL: neither apt-get nor dnf on this system" >&2
   exit 1
 fi
-if [[ $kind == deb ]]; then package=${debs[0]}; else package=${rpms[0]}; fi
+if [[ $kind == deb ]]; then package=$deb; else package=$rpm; fi
 
 # Checks one self-check run: its output must be exactly the expected line, and its exit code 0.
 check_self_check() {
@@ -138,7 +127,6 @@ done
 
 # The AppImage on the same system. A container has no FUSE, so it extracts itself into TMPDIR first. Artifacts lose the
 # executable bit, and downloads from a release don't have it either.
-appimage=${appimages[0]}
 chmod +x "$appimage"
 check_self_check "the AppImage" env APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --rt-self-check
 

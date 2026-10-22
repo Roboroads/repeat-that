@@ -20,7 +20,7 @@
 #     which belong to another version. The tray library and WebKit's helper processes must be inside.
 #
 # Prints every check as "ok: ..." or "FAIL: ..." and exits 1 when one failed. Needs dpkg-deb, rpm, rpm2cpio, cpio,
-# desktop-file-validate and readelf (binutils). Unpacks into a folder under TMPDIR.
+# desktop-file-validate and readelf (binutils), and linux-packages-lib.sh next to it. Unpacks into a folder under TMPDIR.
 #
 # Usage: check-linux-packages.sh [--version X.Y.Z] DIR
 set -euo pipefail
@@ -48,14 +48,9 @@ hidden_entry="Repeat That.desktop"
 glibc_max=2.38
 glibcxx_max=3.4.31
 
-failures=0
-ok() { echo "ok: $*"; }
-fail() {
-  echo "FAIL: $*"
-  failures=$((failures + 1))
-}
-# Prints command output indented under the check it belongs to.
-indent() { sed 's/^/    /'; }
+# ok, fail, indent and find_packages.
+# shellcheck source=linux-packages-lib.sh
+source "$(dirname "$0")/linux-packages-lib.sh"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -86,24 +81,6 @@ has_all() {
 
 # --- the files -------------------------------------------------------------------------------------------------------
 
-shopt -s nullglob
-debs=("$dir"/*.deb)
-rpms=("$dir"/*.rpm)
-appimages=("$dir"/*.AppImage)
-shopt -u nullglob
-
-for kind in deb rpm AppImage; do
-  case $kind in
-    deb) count=${#debs[@]} ;;
-    rpm) count=${#rpms[@]} ;;
-    AppImage) count=${#appimages[@]} ;;
-  esac
-  if [[ $count -eq 1 ]]; then
-    ok "one .$kind"
-  else
-    fail "expected one .$kind in $dir, found $count"
-  fi
-done
 others=$(find "$dir" -mindepth 1 -maxdepth 1 -not -name '*.deb' -not -name '*.rpm' -not -name '*.AppImage')
 if [[ -z "$others" ]]; then
   ok "no other files"
@@ -111,33 +88,14 @@ else
   fail "files that are not packages:"
   indent <<<"$others"
 fi
-if [[ ${#debs[@]} -ne 1 || ${#rpms[@]} -ne 1 || ${#appimages[@]} -ne 1 ]]; then
+# Sets deb, rpm, appimage and version.
+if ! find_packages "$dir"; then
   echo "$failures check(s) failed"
   exit 1
 fi
-deb=${debs[0]}
-rpm=${rpms[0]}
-appimage=${appimages[0]}
-
-# The names people download. GitHub turns spaces into dots, so there must be none.
-versions=()
-for file in "$deb" "$rpm" "$appimage"; do
-  name=$(basename "$file")
-  if [[ "$name" =~ ^Repeat-That_([0-9]+\.[0-9]+\.[0-9]+)_amd64\.(deb|AppImage)$ ||
-    "$name" =~ ^Repeat-That-([0-9]+\.[0-9]+\.[0-9]+)-1\.x86_64\.rpm$ ]]; then
-    ok "$name is named as expected"
-    versions+=("${BASH_REMATCH[1]}")
-  else
-    fail "$name is not named Repeat-That_<v>_amd64.deb, Repeat-That-<v>-1.x86_64.rpm or Repeat-That_<v>_amd64.AppImage"
-  fi
-done
-version=${expected_version:-${versions[0]:-}}
-for found in "${versions[@]}"; do
-  if [[ "$found" != "$version" ]]; then
-    fail "the files are not all version $version (one is $found)"
-  fi
-done
-echo "Version: ${version:-unknown}"
+if [[ -n "$expected_version" && "$version" != "$expected_version" ]]; then
+  fail "the packages are version $version, not $expected_version"
+fi
 
 # --- what the .deb and the .rpm install ------------------------------------------------------------------------------
 

@@ -47,6 +47,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/scripts/check-linux-packages.sh
+      - .github/scripts/linux-packages-lib.sh
       - .github/scripts/smoke-linux-package.sh
       - .github/workflows/build-linux.yml
 
