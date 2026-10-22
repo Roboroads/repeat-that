@@ -260,7 +260,9 @@ on the network). Two errors are let through until the app is on Flathub: `appid-
 (`https://roboroads.me` has to answer, see [Flathub](#flathub)) and `appstream-screenshots-not-mirrored-in-ostree`
 (Flathub fetches the screenshot, which is a link to the main branch, and keeps its own copy). A third,
 `appstream-missing-screenshots`, is let through only while the screenshot isn't on `main` yet, on the change that adds it.
-Anything else the linter reports fails the build.
+Anything else the linter reports fails the build, except in a release run (one with a tag): the linter comes with a
+floating container image and looks things up on the network, so a new rule or a network failure must not hold back
+Windows and Linux too. There its errors are annotations on the run, and the step doesn't fail the job.
 
 **Not covered by CI.** There is no PipeWire in that container, so capture, replay and ducking inside the sandbox are
 tried by hand on a desktop: pick an app, replay it with the hotkey and with `flatpak run me.roboroads.RepeatThat

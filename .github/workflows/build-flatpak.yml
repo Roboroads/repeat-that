@@ -208,7 +208,13 @@ jobs:
       #                                                  metainfo links to, so the build can't fetch it: a change that
       #                                                  adds or moves it. It is an error again once it is there
       # `finish-args-arbitrary-xdg-run-access` is not among them: the linter accepts xdg-run/pipewire-0.
+      #
+      # The linter comes with the container image, which is floating, and looks things up on the network. A new lint rule
+      # or a network failure must not hold back a release of Windows and Linux too, so for a release (a run with a tag)
+      # its errors are annotations and don't fail the job. They do on a pull request and on a dry run, where it is the
+      # check that keeps the Flathub submission in a state Flathub accepts.
       - name: Lint for Flathub
+        continue-on-error: ${{ inputs.tag != '' }}
         run: |
           set -euo pipefail
           allow=(--allow appid-url-not-reachable --allow appstream-screenshots-not-mirrored-in-ostree)
