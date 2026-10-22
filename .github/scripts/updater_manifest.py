@@ -93,6 +93,12 @@ class Target:
         return f"latest-{self.key}.json"
 
 
+# NOTE for the step that adds `update_patterns` (the update files of a platform) to release_assets.PLATFORMS: these
+# payload patterns stay here, because they pick the one file the app downloads among a platform's files (Linux also has
+# a .deb and an .rpm that are no payload). That step only has to make sure PLATFORMS claims each of them: the Windows
+# and Linux ones are in `patterns` already, `*.app.tar.gz` is the new one macOS needs in `update_patterns`. The tests
+# compare the two (test_the_payload_patterns_of_the_files_that_are_release_files_already_are_theirs): extend that one
+# to the macOS pattern then.
 TARGETS = (
     Target("windows", "windows-x86_64", "nsis", "*-setup.exe"),
     Target("macos", "darwin-aarch64", "app", "*.app.tar.gz"),
