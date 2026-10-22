@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
+use crate::host_env;
 use crate::session::{Env, ProcessEnv};
 
 /// Programs that open the shortcut page of a desktop, best first, each with its arguments.
@@ -117,7 +118,8 @@ impl System for RealSystem {
 
     fn spawn(&self, argv: &[String]) -> Result<(), String> {
         let (program, args) = argv.split_first().ok_or("there is nothing to start")?;
-        let mut child = Command::new(program)
+        // The settings program is the host's: from an AppImage it must not get the AppImage's libraries.
+        let mut child = host_env::command(program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

@@ -28,7 +28,7 @@ describe('openExternal', () => {
     expect(open).toHaveBeenCalledWith(URL_TO_OPEN, '_blank', 'noopener,noreferrer');
   });
 
-  it('asks the opener plugin inside Tauri', async () => {
+  it('asks the app inside Tauri', async () => {
     const calls: unknown[] = [];
     insideTauri((cmd, args) => {
       calls.push({ cmd, args });
@@ -36,14 +36,14 @@ describe('openExternal', () => {
 
     await openExternal(URL_TO_OPEN);
 
-    expect(calls).toEqual([{ cmd: 'plugin:opener|open_url', args: { url: URL_TO_OPEN } }]);
+    expect(calls).toEqual([{ cmd: 'open_link', args: { url: URL_TO_OPEN } }]);
     expect(open).not.toHaveBeenCalled();
   });
 
-  it('falls back to a browser tab when the plugin is not there', async () => {
+  it('falls back to a browser tab when the app can not open it', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     insideTauri(() => {
-      throw 'Command plugin:opener|open_url not found';
+      throw { kind: 'backend', message: 'xdg-open: No such file or directory' };
     });
 
     await openExternal(URL_TO_OPEN);

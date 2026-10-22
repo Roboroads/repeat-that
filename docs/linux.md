@@ -1,7 +1,8 @@
 # Repeat That on Linux
 
-Linux support is planned for milestone 5. This page covers how Repeat That fits into a Linux desktop: where the hotkeys
-come from, how to run its actions from the command line, and what happens when the desktop has no tray.
+This page covers how Repeat That fits into a Linux desktop: where the hotkeys come from, how to run its actions from the
+command line, and what happens when the desktop has no tray. Installing the `.deb`, the `.rpm` or the AppImage is in
+[install-linux.md](install-linux.md).
 
 ## Hotkeys
 

@@ -5,6 +5,18 @@ Starting with v0.1, each release on the [Releases page](https://github.com/Robor
 with the line for the same file name in `SHA256SUMS`. The two must be identical. Letter case doesn't matter:
 `Get-FileHash` prints uppercase hex and `SHA256SUMS` is lowercase.
 
+The files it lists:
+
+| System | File |
+|---|---|
+| Windows | `Repeat-That_<version>_x64-setup.exe` |
+| Debian, Ubuntu | `Repeat-That_<version>_amd64.deb` |
+| Fedora | `Repeat-That-<version>-1.x86_64.rpm` |
+| Other Linux | `Repeat-That_<version>_amd64.AppImage` |
+| macOS | `Repeat-That_<version>_aarch64.dmg` |
+
+The Linux files are on releases after v0.1.0.
+
 The macOS `.dmg` (`Repeat-That_<version>_aarch64.dmg`) can arrive on the release some time after the other files,
 because the macOS build is not allowed to hold up the release. When it does, `SHA256SUMS` is replaced by a copy with
 one extra line for the `.dmg`. The existing lines never change, so a check you made earlier against the old
@@ -32,7 +44,7 @@ shasum -a 256 ~/Downloads/Repeat-That_<version>_aarch64.dmg
 Linux:
 
 ```sh
-sha256sum ~/Downloads/<file>
+sha256sum ~/Downloads/<file>     # the .deb, the .rpm or the AppImage
 ```
 
 On macOS and Linux the tool can also do the comparison. Save `SHA256SUMS` in the same folder as the download, then run

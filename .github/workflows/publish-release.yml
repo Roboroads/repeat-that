@@ -1,10 +1,10 @@
 name: Publish release
 
 # Owns every release: builds each platform, checks the builds, writes one SHA256SUMS over all assets, attaches them to
-# the GitHub release and publishes it. The build workflows (build-windows.yml, build-macos.yml, ...) only build and
-# upload their files as `release-<platform>-<file>` artifacts. .github/scripts/release_assets.py is the one place that
-# knows the platforms (which files each has, which are required) and makes the decisions; its unit tests run in every
-# full run.
+# the GitHub release and publishes it. The build workflows (build-windows.yml, build-linux.yml, build-macos.yml) only
+# build and upload their files as `release-<platform>-<file>` artifacts. .github/scripts/release_assets.py is the one
+# place that knows the platforms (which files each has, which are required) and makes the decisions; its unit tests run
+# in every full run.
 #
 # Two modes:
 #   * full (the default). `workflow_call` from release-please.yml, or `workflow_dispatch` with a tag to redo a release.
@@ -151,6 +151,17 @@ jobs:
       tag: ${{ inputs.tag }}
       sha: ${{ inputs.sha }}
 
+  # Required, like Windows: the .deb, the .rpm and the AppImage, each checked and installed on every supported
+  # distribution by build-linux.yml before it counts as a success.
+  linux:
+    name: Linux
+    needs: check-release
+    if: ${{ !cancelled() && inputs.mode != 'late-attach' && needs.check-release.result != 'failure' }}
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      tag: ${{ inputs.tag }}
+      sha: ${{ inputs.sha }}
+
   # Optional: when it fails or is skipped, `publish` only warns and the release goes out without the .dmg. On main it
   # signs and notarizes with the apple-signing Environment, which build-macos.yml asks for itself (an Environment's
   # secrets reach a called workflow only that way); anywhere else a dry run is signed ad hoc and a tagged run fails.
@@ -167,7 +178,7 @@ jobs:
 
   publish:
     name: Publish
-    needs: [check-release, windows, macos]
+    needs: [check-release, windows, linux, macos]
     # Runs even when a build failed: its first step says which one and why nothing is published.
     if: ${{ !cancelled() && inputs.mode != 'late-attach' }}
     runs-on: ubuntu-latest

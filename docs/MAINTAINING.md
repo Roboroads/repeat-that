@@ -91,7 +91,7 @@ with `python3 -m unittest discover -s .github/scripts`.
 | Platform | Required | Files | Build job in `publish-release.yml` |
 |---|---|---|---|
 | `windows` | yes | `*-setup.exe` | `windows`, calls `build-windows.yml` |
-| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | added with the Linux packages |
+| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | `linux`, calls `build-linux.yml` |
 | `flatpak` | yes | `*.flatpak` | added with the Flatpak |
 | `macos` | **no** | `*.dmg` | `macos`, calls `build-macos.yml` |
 
@@ -139,6 +139,10 @@ it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it 
   published release, run the workflow again with `replace` ticked instead.
 - Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
+- **Releases from before a required platform** can't be run again in full mode. `v0.1.0` predates the Linux packages:
+  the `linux` job builds the tag's commit, which has neither the Linux bundle settings nor the check scripts, so it
+  fails, and with it `Publish`, as Linux is required. A full run always publishes every required platform, so a fix to
+  such a release goes out as a new release instead.
 
 ### Windows installer
 
@@ -151,6 +155,63 @@ Windows, and the build fails if another installer shows up. Install instructions
 On a pull request, the installer is a workflow artifact (kept for 30 days) named `release-windows-<file>`, so a change
 can be tried on a real Windows PC before it merges. Artifacts are downloaded as a zip holding the installer. The job
 summary shows its checksum. The workflow checks that the app version matches the tag when it is given one.
+
+### Linux packages
+
+[`build-linux.yml`](../.github/workflows/build-linux.yml) builds the x64 `.deb`, `.rpm` and AppImage with tauri-action
+in an `ubuntu:24.04` container. Its glibc (2.39) is the oldest of the supported systems (Fedora 40 has the same,
+Debian 13 a newer one), so the binary needs nothing newer, and the AppImage carries Ubuntu 24.04's libraries. The
+settings are in
+[`tauri.linux.conf.json`](../app/src-tauri/tauri.linux.conf.json): the three targets, the dependencies, the desktop
+entry and the icons. The files are staged as `Repeat-That_<version>_amd64.deb`, `Repeat-That-<version>-1.x86_64.rpm` and
+`Repeat-That_<version>_amd64.AppImage` and uploaded as one `release-linux-<file>` artifact each. Install instructions
+for users are in [`install-linux.md`](install-linux.md), and how the packages are put together is under Releases in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#releases).
+
+Two jobs check them, and a failure in either fails the `linux` job of a release, which holds the release back:
+
+- `Packages (Linux x64)` runs [`check-linux-packages.sh`](../.github/scripts/check-linux-packages.sh) on the staged
+  files: names and versions, the dependencies, the files both packages install, the desktop entries
+  (`desktop-file-validate`, the hidden one included), the binary's glibc and libstdc++ needs against what the
+  packages ask for (`glibc_max` and `glibcxx_max`), and that the AppImage has
+  the real desktop entry at its root and no `libpipewire-0.3` or `libspa-0.2` inside. The job summary shows the result
+  and the checksums.
+- `Install on <system>` runs [`smoke-linux-package.sh`](../.github/scripts/smoke-linux-package.sh) as root in a fresh
+  `debian:13`, `ubuntu:24.04`, `fedora:40` and `fedora:44` container: it installs the `.deb` or the `.rpm` without
+  recommended packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays
+  nothing), validates the installed desktop entries, runs the AppImage's self-check, and uninstalls. It also takes
+  the environment the AppImage gives host programs (the hidden `--rt-host-env`), checks that nothing in it points into
+  the AppImage, and runs the system's `gio` and `dbus-uuidgen` with it. In `debian:12` it checks that apt refuses the
+  `.deb` for its glibc or libstdc++ and nothing else.
+
+On a pull request the packages are workflow artifacts (kept for 30 days), so they can be tried on a real desktop
+before the change merges. Artifacts lose the executable bit, so `chmod +x` the AppImage after unzipping it.
+
+**Dependencies.** Tauri adds WebKitGTK, GTK and the AppIndicator library to both packages itself. The config adds what
+the binary links on top of that: PipeWire's and ALSA's client libraries. Debian 13 and Ubuntu 24.04 renamed both for the
+64-bit `time_t` transition, so the `.deb` names each as an alternative (`libpipewire-0.3-0t64 | libpipewire-0.3-0`);
+the `.rpm` names sonames (`libpipewire-0.3.so.0()(64bit)`), like Tauri does for its own. When the binary starts linking
+another system library, `ldd` in the install jobs fails on the system that lacks it: add the library to both lists.
+
+**glibc and libstdc++.** The prebuilt ONNX Runtime that `ort` links in statically is built against glibc 2.38 and GCC
+13's libstdc++ (it needs `__isoc23_strtol` and GLIBCXX_3.4.31), so both packages ask for those (`libc6 (>= 2.38)` and
+`libstdc++6 (>= 13)` on the `.deb`, the matching versioned sonames on the `.rpm`) and Debian 12 can't run the app.
+When an `ort` bump needs newer ones, `check-linux-packages.sh` fails with the version the binary needs: raise the
+dependencies in `tauri.linux.conf.json`, `glibc_max`/`glibcxx_max` in the script and the test in
+`linux_package_tests.rs`, and check that every supported system still has them. Getting Debian 12 back would mean an
+ONNX Runtime built for its glibc: Microsoft's own shared library (built on an older glibc), shipped with the packages
+and loaded at run time, or one built from source in a `debian:12` container.
+
+**Fedora releases go end of life** about 13 months after they come out, and the mirrors drop them a little later.
+Fedora 40, the oldest supported one, has been end of life since May 2025, so its install job (`archive: true` in the
+matrix) takes its packages from `archives.fedoraproject.org`, which doesn't change any more. A Fedora job whose
+mirrors stop answering falls back to the archive on its own, so a release that goes end of life doesn't block
+publishing. When Fedora 44 does, replace it in the matrix by the newest Fedora. Raising the Fedora minimum is a
+decision for the README, `install-linux.md` and the matrix together.
+
+**Raising the minimum** (for example to Ubuntu 26.04): change the build container, the install matrix and the systems
+named in `install-linux.md`, the README and `ARCHITECTURE.md`. To test another distribution, add it to the matrix of
+the `install` job; the script needs `apt-get` or `dnf`.
 
 ### macOS installer
 

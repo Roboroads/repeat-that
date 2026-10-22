@@ -23,6 +23,7 @@ RPM = "Repeat-That-0.2.0-1.x86_64.rpm"
 APPIMAGE = "Repeat-That_0.2.0_amd64.AppImage"
 FLATPAK = "Repeat-That_0.2.0_x86_64.flatpak"
 DMG = "Repeat-That_0.2.0_aarch64.dmg"
+LINUX = [DEB, RPM, APPIMAGE]
 
 H1, H2, H3, H4, HA = ("1" * 64, "2" * 64, "3" * 64, "4" * 64, "a" * 64)
 
@@ -46,9 +47,9 @@ class PlatformTableTests(unittest.TestCase):
         required = {platform.name: platform.required for platform in ra.PLATFORMS}
         self.assertEqual(required, {"windows": True, "linux": True, "flatpak": True, "macos": False})
 
-    def test_only_windows_and_macos_have_a_build_job_so_far(self):
+    def test_only_flatpak_has_no_build_job_yet(self):
         built = [platform.name for platform in ra.PLATFORMS if platform.build]
-        self.assertEqual(built, ["windows", "macos"])
+        self.assertEqual(built, ["windows", "linux", "macos"])
 
     def test_no_two_platforms_claim_the_same_file(self):
         for name in (EXE, DEB, RPM, APPIMAGE, FLATPAK, DMG):
@@ -353,9 +354,20 @@ class SelectArtifactsTests(unittest.TestCase):
         self.assertIn("macos", str(caught.exception))
 
     def test_the_table_decides_which_platforms_have_jobs(self):
-        # With today's table Linux has no build job yet, so a linux artifact is out of step.
+        # With today's table the Flatpak has no build job yet, so a flatpak artifact is out of step.
         with self.assertRaises(ReleaseError):
-            ra.select_artifacts([f"release-linux-{DEB}"], self.results(windows="success", linux="success"))
+            ra.select_artifacts([f"release-flatpak-{FLATPAK}"], self.results(windows="success", flatpak="success"))
+
+    def test_with_todays_table_the_linux_artifacts_are_selected(self):
+        names = [f"release-windows-{EXE}"] + [f"release-linux-{name}" for name in LINUX]
+        selected, ignored = ra.select_artifacts(names, self.results(windows="success", linux="success"))
+        self.assertEqual((selected, ignored), (names, []))
+
+    def test_with_todays_table_a_failed_linux_build_contributes_nothing(self):
+        names = [f"release-windows-{EXE}"] + [f"release-linux-{name}" for name in LINUX]
+        selected, ignored = ra.select_artifacts(names, self.results(windows="success", linux="failure"))
+        self.assertEqual(selected, [f"release-windows-{EXE}"])
+        self.assertEqual(len(ignored), 3)
 
     def test_with_todays_table_a_macos_artifact_is_selected(self):
         names = [f"release-windows-{EXE}", f"release-macos-{DMG}"]
@@ -366,36 +378,54 @@ class SelectArtifactsTests(unittest.TestCase):
 class CheckAssetsFullTests(unittest.TestCase):
     """Full mode: what is already on the release against what this run produced."""
 
+    # What a release run produces with today's table: Windows and Linux are required and have build jobs.
+    produced = [EXE, *LINUX]
+
     def test_a_fresh_release_with_the_produced_files_passes(self):
-        self.assertEqual(ra.check_assets_full([], [EXE]), [])
+        self.assertEqual(ra.check_assets_full([], self.produced), [])
 
     def test_assets_from_this_runs_files_and_sha256sums_pass(self):
-        self.assertEqual(ra.check_assets_full([EXE, "SHA256SUMS"], [EXE]), [])
+        self.assertEqual(ra.check_assets_full([EXE, *LINUX, "SHA256SUMS"], self.produced), [])
 
     def test_an_unexpected_asset_fails_and_is_named(self):
         with self.assertRaises(ReleaseError) as caught:
-            ra.check_assets_full([EXE, "debug-symbols.zip"], [EXE])
+            ra.check_assets_full([EXE, "debug-symbols.zip"], self.produced)
         self.assertIn("debug-symbols.zip", str(caught.exception))
 
     def test_an_asset_of_a_required_platform_that_was_not_produced_fails(self):
+        old = "Repeat-That_0.1.9_amd64.deb"
         with self.assertRaises(ReleaseError) as caught:
-            ra.check_assets_full([EXE, DEB], [EXE])
-        self.assertIn(DEB, str(caught.exception))
+            ra.check_assets_full([EXE, old], self.produced)
+        self.assertIn(old, str(caught.exception))
 
     def test_a_dmg_from_an_earlier_late_attach_is_kept_when_macos_was_not_produced(self):
-        kept = ra.check_assets_full([EXE, DMG, "SHA256SUMS"], [EXE])
+        kept = ra.check_assets_full([EXE, DMG, "SHA256SUMS"], self.produced)
         self.assertEqual(kept, [DMG])
 
     def test_a_dmg_is_replaced_not_kept_when_macos_was_produced(self):
-        produced = [EXE, DEB, FLATPAK, DMG]
+        produced = [EXE, *LINUX, FLATPAK, DMG]
         self.assertEqual(ra.check_assets_full([EXE, DMG, "SHA256SUMS"], produced, platforms=all_built()), [])
 
     def test_a_dmg_with_another_name_than_the_produced_one_fails(self):
         with self.assertRaises(ReleaseError) as caught:
             ra.check_assets_full(
-                [EXE, "Repeat-That_0.1.9_aarch64.dmg"], [EXE, DEB, FLATPAK, DMG], platforms=all_built()
+                [EXE, "Repeat-That_0.1.9_aarch64.dmg"], [EXE, *LINUX, FLATPAK, DMG], platforms=all_built()
             )
+        self.assertEqual(len(caught.exception.errors), 1)
         self.assertIn("0.1.9", str(caught.exception))
+
+    def test_linux_must_produce_the_deb_the_rpm_and_the_appimage(self):
+        for missing in LINUX:
+            produced = [EXE] + [name for name in LINUX if name != missing]
+            with self.assertRaises(ReleaseError, msg=missing) as caught:
+                ra.check_assets_full([], produced)
+            self.assertEqual(len(caught.exception.errors), 1, missing)
+            self.assertIn(f"Linux produced no *.{missing.rsplit('.', 1)[1]} file", str(caught.exception))
+
+    def test_linux_that_produced_nothing_fails_once(self):
+        with self.assertRaises(ReleaseError) as caught:
+            ra.check_assets_full([], [EXE])
+        self.assertEqual(caught.exception.errors, ["Linux produced no files"])
 
     def test_a_built_required_platform_that_produced_nothing_fails(self):
         with self.assertRaises(ReleaseError) as caught:
@@ -405,15 +435,15 @@ class CheckAssetsFullTests(unittest.TestCase):
         self.assertNotIn("macOS", str(caught.exception))  # optional
 
     def test_a_platform_without_a_build_job_may_produce_nothing(self):
-        self.assertEqual(ra.check_assets_full([], [EXE]), [])
+        self.assertEqual(ra.check_assets_full([], self.produced), [])  # no Flatpak yet
 
     def test_a_produced_file_of_no_platform_fails(self):
         with self.assertRaises(ReleaseError):
-            ra.check_assets_full([], [EXE, "stray.log"])
+            ra.check_assets_full([], [*self.produced, "stray.log"])
 
     def test_every_problem_is_reported_at_once(self):
         with self.assertRaises(ReleaseError) as caught:
-            ra.check_assets_full(["one.zip", "two.zip"], [EXE])
+            ra.check_assets_full(["one.zip", "two.zip"], self.produced)
         self.assertEqual(len(caught.exception.errors), 2)
 
 
@@ -550,11 +580,20 @@ class CheckReleaseTests(unittest.TestCase):
 
     def test_an_asset_of_a_platform_without_a_build_job_fails_early(self):
         with self.assertRaises(ReleaseError) as caught:
-            ra.check_release("v0.2.0", [EXE, DEB], draft=True, mode="full")
-        self.assertIn(DEB, str(caught.exception))
+            ra.check_release("v0.2.0", [EXE, FLATPAK], draft=True, mode="full")
+        self.assertIn(FLATPAK, str(caught.exception))
 
     def test_an_asset_of_a_platform_with_a_build_job_passes_early(self):
-        ra.check_release("v0.2.0", [EXE, DEB], draft=True, mode="full", platforms=all_built())
+        ra.check_release("v0.2.0", [EXE, FLATPAK], draft=True, mode="full", platforms=all_built())
+
+    def test_with_todays_table_the_linux_packages_pass_early_on_a_draft(self):
+        self.assertEqual(ra.check_release("v0.2.0", [EXE, *LINUX, "SHA256SUMS"], draft=True, mode="full"), [])
+
+    def test_a_published_release_with_linux_packages_fails_without_replace(self):
+        with self.assertRaises(ReleaseError) as caught:
+            ra.check_release("v0.2.0", [*LINUX, "SHA256SUMS"], draft=False, mode="full")
+        for name in LINUX:
+            self.assertIn(name, str(caught.exception))
 
     def test_an_unknown_asset_fails_early_even_on_a_draft(self):
         with self.assertRaises(ReleaseError) as caught:
@@ -660,26 +699,41 @@ class GateTests(unittest.TestCase):
         self.assertIn("Flatpak", result.errors[0])
 
     def test_a_job_for_a_platform_without_a_build_flag_is_a_configuration_error(self):
-        # As the table is today Linux has build=False, so a linux job in `needs` is out of step with the script.
-        needs = self.needs(check_release="success", windows="success", macos="success", linux="success")
+        # As the table is today the Flatpak has build=False, so a flatpak job in `needs` is out of step.
+        needs = self.needs(check_release="success", windows="success", linux="success", flatpak="success")
+        needs["macos"] = {"result": "success", "outputs": {}}
         result = ra.gate(needs, release=True)
         self.assertFalse(result.ok)
-        self.assertIn("Linux", result.errors[0])
+        self.assertIn("Flatpak", result.errors[0])
 
-    def test_with_todays_table_windows_and_macos_are_needed(self):
-        result = ra.gate(self.needs(check_release="success", windows="success", macos="success"), release=True)
+    def test_with_todays_table_windows_linux_and_macos_are_needed(self):
+        needs = self.needs(check_release="success", windows="success", linux="success", macos="success")
+        result = ra.gate(needs, release=True)
         self.assertTrue(result.ok)
         self.assertEqual(result.warnings, [])
 
+    def test_with_todays_table_a_missing_linux_job_is_a_configuration_error(self):
+        result = ra.gate(self.needs(check_release="success", windows="success", macos="success"), release=True)
+        self.assertFalse(result.ok)
+        self.assertIn("Linux has build=True", result.errors[0])
+
     def test_with_todays_table_a_missing_macos_job_is_a_configuration_error(self):
-        result = ra.gate(self.needs(check_release="success", windows="success"), release=True)
+        result = ra.gate(self.needs(check_release="success", windows="success", linux="success"), release=True)
         self.assertFalse(result.ok)
         self.assertIn("macOS has build=True", result.errors[0])
 
-    def test_with_todays_table_macos_failing_still_publishes_windows(self):
-        result = ra.gate(self.needs(check_release="success", windows="success", macos="failure"), release=True)
+    def test_with_todays_table_macos_failing_still_publishes_windows_and_linux(self):
+        needs = self.needs(check_release="success", windows="success", linux="success", macos="failure")
+        result = ra.gate(needs, release=True)
         self.assertTrue(result.ok)
         self.assertEqual(result.missing_optional, ["macos"])
+
+    def test_with_todays_table_a_failing_linux_build_stops_publishing(self):
+        for state in ("failure", "cancelled", "skipped"):
+            needs = self.needs(check_release="success", windows="success", linux=state, macos="success")
+            result = ra.gate(needs, release=True)
+            self.assertFalse(result.ok, state)
+            self.assertEqual(result.errors, [f"Linux build did not succeed ({state}); nothing is published"])
 
 
 class CommandLineTests(unittest.TestCase):
@@ -730,15 +784,26 @@ class CommandLineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "release.json"
             path.write_text(release)
+            produced = [f"a/{name}" for name in (EXE, *LINUX)]
             code, out, _ = self.run_main(
-                "check-assets", "--mode", "full", "--release-json", str(path), "--produced", f"a/{EXE}"
+                "check-assets", "--mode", "full", "--release-json", str(path), "--produced", *produced
             )
         self.assertEqual(code, 0)
         self.assertEqual(out.splitlines(), [DMG])
 
+    def test_check_assets_full_fails_when_a_linux_package_is_missing(self):
+        code, _, err = self.run_main("check-assets", "--mode", "full", "--produced", EXE, DEB, APPIMAGE)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::Linux produced no *.rpm file", err)
+
     def test_gate_reads_needs_from_stdin(self):
         needs = json.dumps(
-            {"check-release": {"result": "skipped"}, "windows": {"result": "success"}, "macos": {"result": "success"}}
+            {
+                "check-release": {"result": "skipped"},
+                "windows": {"result": "success"},
+                "linux": {"result": "success"},
+                "macos": {"result": "success"},
+            }
         )
         code, _, _ = self.run_main("gate", "--needs", "-", stdin=needs)
         self.assertEqual(code, 0)

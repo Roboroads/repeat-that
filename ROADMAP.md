@@ -30,9 +30,16 @@
 - [x] Windows installer from CI, published with a `SHA256SUMS` file
 
 ## Milestone 5 — Linux
-- [ ] PipeWire capture backend, app volume via PipeWire
-- [ ] `.deb` package
-- [ ] Wayland global shortcuts via XDG portal
+- [x] PipeWire capture backend, app volume via PipeWire, tested against a real PipeWire in CI
+- [x] Wayland global shortcuts via XDG portal (KDE Plasma, GNOME 48+), command-line actions for desktops without it
+- [x] `.deb` package (Debian 13+, Ubuntu 24.04+)
+- [x] `.rpm` package (Fedora 40+)
+- [x] AppImage
+- [x] Packages installed and started in CI on Debian 13, Ubuntu 24.04, Fedora 40 and Fedora 44 (Debian 12 is too old
+  for the speech detector's ONNX Runtime, and CI checks that apt refuses the `.deb` there)
+- [x] The packages are listed in the release's `SHA256SUMS` (checked in a dry run of the publish workflow and a
+  rehearsal release; no real release has had them yet)
+- [ ] Flatpak on Flathub
 
 ## Milestone 6 — macOS (built, not yet tested on real hardware)
 Nobody on the team has a Mac, so macOS is released as untested: GitHub's macOS runners are the only test so far, and the
