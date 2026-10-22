@@ -309,10 +309,11 @@ jobs:
           if [[ "$UPDATER" == true ]]; then flags+=(--updater); fi
           .github/scripts/check-macos-bundle.sh "${flags[@]}" "$DMG" 2>&1 | tee bundle-check.log
 
-      # The update bundle: the .app that Tauri built (and, in a signed build, notarized and stapled) in an archive, with the
-      # .app at its root. COPYFILE_DISABLE and no xattrs, so macOS adds no `._` files and no extended attributes to the
-      # archive: the updater unpacks it into the app, where they would break the signature. The dry runs make it
-      # too, so the checks and the signing in publish-release.yml run on every pull request.
+      # The update bundle: the .app that ships in the .dmg (Tauri leaves none of its own behind when the .dmg is the only
+      # target; in a signed build it is notarized and stapled) in an archive, with the .app at its root. COPYFILE_DISABLE
+      # and no xattrs, so macOS adds no `._` files and no extended attributes to the archive: the updater unpacks it into
+      # the app, where they would break the signature. The dry runs make it too, so the checks and the signing in
+      # publish-release.yml run on every pull request.
       - name: Make the update bundle
         id: update
         if: ${{ vars.TAURI_UPDATER_PUBKEY != '' || inputs.tag == '' }}
@@ -321,15 +322,26 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          bundle=target/aarch64-apple-darwin/release/bundle/macos
-          apps=("$bundle"/*.app)
+          work=$(mktemp -d)
+          mnt="$work/image"
+          mkdir "$mnt"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mnt" "$DMG" > /dev/null
+          detach() { hdiutil detach "$mnt" -quiet || hdiutil detach "$mnt" -force -quiet || true; }
+          trap detach EXIT
+          apps=("$mnt"/*.app)
           if [[ ${#apps[@]} -ne 1 ]]; then
-            echo "::error::expected exactly one .app under $bundle"
-            find "$bundle" -maxdepth 2 | sort
+            echo "::error::expected exactly one .app in the .dmg"
+            ls -la "$mnt"
             exit 1
           fi
+          app=$(basename "${apps[0]}")
+          mkdir "$work/app"
+          ditto "${apps[0]}" "$work/app/$app"
+          detach
+          trap - EXIT
           archive="${DMG%.dmg}.app.tar.gz"
-          COPYFILE_DISABLE=1 tar --no-xattrs --no-acls -czf "$archive" -C "$bundle" "$(basename "${apps[0]}")"
+          COPYFILE_DISABLE=1 tar --no-xattrs --no-acls -czf "$archive" -C "$work/app" "$app"
+          rm -rf "$work"
           ls -l "$archive"
           {
             echo "bundle=$archive"
