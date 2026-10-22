@@ -105,8 +105,9 @@ A required platform must build before a release is published: if one fails, noth
 An optional platform (macOS) that fails or is skipped only warns, in the job summary and as a `::warning::`; the
 release goes out without it and the [late attach](#late-macos-attach) adds it later. Jobs that call a reusable
 workflow can't use `continue-on-error`, which is why the first step of the `Publish` job reads the result of every
-build job and decides itself. To add a platform: add a job named like the platform that `uses:` its build workflow, add
-it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it fails the run when the three disagree).
+build job and decides itself. To add a platform: add a job named like the platform that `uses:` its build workflow
+(with `secrets: inherit` if that workflow reads a secret), add it to the `needs` of `Publish`, and set `build=True` in
+`release_assets.py` (it fails the run when the three disagree).
 
 - **Pull requests.** Each build workflow runs its own dry run when a PR touches the app, the crates or the Cargo files.
   A PR that touches the publishing itself (`publish-release.yml`, a build workflow, or `release_assets.py`,
@@ -332,7 +333,10 @@ Every run ends with `check-macos-bundle.sh` on the finished `.dmg` and prints it
 summary; the list of checks is under Releases in [`ARCHITECTURE.md`](ARCHITECTURE.md#releases). It needs a Mac to run,
 so it can't be tried locally without one. The `Notarize and staple the .dmg` step prints Apple's answer; when the status
 isn't `Accepted` it also prints `notarytool log`, which says what Apple objected to. If the secrets are missing, the
-`Check the signing secrets` step names the ones that are empty.
+`Check the signing secrets` step names the ones that are empty. If it names all six while the Environment has them, the
+build was called by another workflow that didn't pass them on. A called workflow only sees the secrets its caller
+passes, Environment secrets included, so every job that calls `build-macos.yml` (and the job in `release-please.yml`
+that calls `publish-release.yml`) has `secrets: inherit`. `.github/scripts/test_workflow_secrets.py` checks every call.
 
 While the repository variable `TAURI_UPDATER_PUBKEY` is set, and in every dry run, the build also packs the `.app` of the
 `.dmg` as `Repeat-That_<version>_aarch64.app.tar.gz` (the update bundle), checks it with `check-macos-bundle.sh
@@ -908,8 +912,9 @@ paragraph once step 4 is done.
   The jobs of `publish-release.yml` that run for a tag (`Check release`, `Publish` and the late attach) use the
   Environment once the variable below is set, and not before, so its rule that only `main` may use it can't hold up a
   release that has no update key. `Check release` looks at the secrets, and `Publish` and the late attach sign with
-  them. A dry run doesn't use the Environment. GitHub doesn't show a secret again after it is saved, so the secrets are
-  not a backup: keep the key file and the password in a password manager.
+  them. A dry run doesn't use the Environment. For a release, `release-please.yml` calls `publish-release.yml` with
+  `secrets: inherit`; without it these jobs would get empty secrets, Environment or not. GitHub doesn't show a secret
+  again after it is saved, so the secrets are not a backup: keep the key file and the password in a password manager.
 - The public key is the repository variable `TAURI_UPDATER_PUBKEY`, set to the contents of the `.pub` file. It isn't
   secret. The three build workflows pass it to the build as `REPEAT_THAT_UPDATER_PUBKEY`, and
   [`updater.rs`](../app/src-tauri/src/updater.rs) compiles it into the app.
