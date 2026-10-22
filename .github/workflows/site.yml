@@ -219,8 +219,10 @@ jobs:
         uses: actions/deploy-pages@v5
 
       # The page has to answer with the release it was built for, and security.txt has to be served from .well-known.
-      # A new deploy can take a few seconds to reach the CDN, hence the retries and the query string, which makes the
-      # request miss a copy that was cached before the deploy. The base path of the site is "/", which only works on
+      # The release is found by its link, which the page has whenever there is a release (also when no file of it is
+      # listed) and ends in a quote, so v0.1.1 doesn't match a stale page of v0.1.10. A new deploy can take a few
+      # seconds to reach the CDN, hence the retries and the query string, which makes the request miss a copy that was
+      # cached before the deploy. The base path of the site is "/", which only works on
       # the custom domain, so on the github.io address of the repository this check is skipped.
       - name: Check the live site
         if: steps.deployment.outcome == 'success'
@@ -241,7 +243,7 @@ jobs:
             curl --fail --silent --show-error --location --max-time 20 "$1?check=$GITHUB_RUN_ID-$attempt"
           }
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if page=$(fetch "$base/") && { [ -z "$TAG" ] || grep -qF "$TAG" <<< "$page"; } && fetch "$base/.well-known/security.txt" > /dev/null; then
+            if page=$(fetch "$base/") && { [ -z "$TAG" ] || grep -qF "/releases/tag/$TAG\"" <<< "$page"; } && fetch "$base/.well-known/security.txt" > /dev/null; then
               echo "The live site answers with release ${TAG:-none}"
               exit 0
             fi
