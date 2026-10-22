@@ -108,9 +108,10 @@ build job and decides itself. To add a platform: add a job named like the platfo
 it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it fails the run when the three disagree).
 
 - **Pull requests.** Each build workflow runs its own dry run when a PR touches the app, the crates or the Cargo files.
-  A PR that touches the publishing itself (`publish-release.yml`, a build workflow, `release_assets.py` or its tests)
-  also runs `publish-release.yml` as a dry run: it builds every platform, runs the script's unit tests and the same
-  checks as a release, and uploads the combined `SHA256SUMS` as a workflow artifact. No release is touched.
+  A PR that touches the publishing itself (`publish-release.yml`, a build workflow, or `release_assets.py`,
+  `sign-updates.sh`, `updater_manifest.py`, `site_release.py` and their tests) also runs `publish-release.yml` as a dry
+  run: it builds every platform, runs the script's unit tests and the same checks as a release, and uploads the
+  combined `SHA256SUMS` as a workflow artifact. No release is touched.
 - **Releases.** release-please creates its GitHub release as a draft. `release-please.yml` calls
   `publish-release.yml` itself when its run created a release, rather than relying on an `on: release` trigger: that
   would fire only once the release is public, and a release that a workflow publishes with `GITHUB_TOKEN` doesn't
