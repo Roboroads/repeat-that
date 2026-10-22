@@ -185,6 +185,29 @@ describe('SettingsStore updates', () => {
 
       expect(store.updates).toMatchObject({ state: 'error', error: 'The download failed' });
     });
+
+    it('keeps an event that arrived before the answer of a check', async () => {
+      const { backend, store } = await open();
+      backend.overrides.check_for_updates = async () => {
+        await emit('update-status', at({ state: 'available', available: offer }));
+        // What the backend knew when the user asked, which is older than the event.
+        return at({ state: 'checking', manual: true });
+      };
+
+      await store.checkForUpdates();
+
+      expect(store.updates.state).toBe('available');
+      expect(store.updateCallPending).toBe(false);
+    });
+
+    it('still takes the answer of a check when no event came in', async () => {
+      const { backend, store } = await open();
+      backend.overrides.check_for_updates = () => at({ state: 'upToDate', manual: true });
+
+      await store.checkForUpdates();
+
+      expect(store.updates.state).toBe('upToDate');
+    });
   });
 
   it('has nothing to dismiss when nothing was found', async () => {

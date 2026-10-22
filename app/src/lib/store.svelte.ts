@@ -238,8 +238,11 @@ export class SettingsStore {
   async checkForUpdates(): Promise<void> {
     this.dismissedVersion = null;
     this.updateCallPending = true;
+    const eventsBefore = this.updateEvents;
     try {
-      this.updates = await api.checkForUpdates();
+      const answer = await api.checkForUpdates();
+      // The answer is what the backend knew when it replied; an event that came in meanwhile is newer than that.
+      if (this.updateEvents === eventsBefore) this.updates = answer;
     } catch (raw) {
       this.error = api.toApiError(raw).message;
     } finally {
