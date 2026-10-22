@@ -91,9 +91,19 @@ with `python3 -m unittest discover -s .github/scripts`. The `Workflow scripts` j
 folder on every pull request and every push to `main`, `test_workflow_secrets.py` among them.
 
 Workflow steps that install packages with apt run [`apt-install.sh`](../.github/scripts/apt-install.sh) instead of
-calling `apt-get`. It gives `apt-get update` 1 minute and `apt-get install` 3 minutes, and makes up to three attempts
-(`test_apt_install.py` tests this against a fake `apt-get`). Before it existed, three CI runs sat in an apt step for 30
-minutes or more until they were cancelled, and a rerun finished in under a minute.
+calling `apt-get`. Before it existed, three CI runs sat in an apt step for 30 minutes or more until they were
+cancelled, and a rerun finished in under a minute. The cause is the mirror: GitHub-hosted Ubuntu runners get their
+packages from `azure.archive.ubuntu.com`, which is sometimes painfully slow. Their sources name a list of mirrors
+(`/etc/apt/apt-mirrors.txt`, azure first), but apt only moves to the next mirror when one fails, not when one is slow.
+So on a runner whose sources name the azure mirror, the script first points them at a list of its own,
+`/etc/apt/ci-apt-mirrors.txt`: `archive.ubuntu.com`, then `mirrors.edge.kernel.org` and `mirror.us.leaseweb.net`, in
+that order. This covers both the one-line `sources.list` of Ubuntu 22.04 and the `ubuntu.sources` of 24.04. Sources that
+don't name the azure mirror are left alone, such as the `ubuntu:24.04` container of `build-linux.yml` (it uses
+`archive.ubuntu.com` already). If a mirror turns out to be a bad one, change the list in `use_other_mirrors`.
+
+The timeouts and retries are the backstop for when a mirror stalls anyway. The script gives `apt-get update` 1 minute
+and `apt-get install` 3 minutes, and makes up to three attempts (`test_apt_install.py` tests all of this against a fake
+`apt-get`):
 
 - A call that finds an apt lock held by another process waits for it inside its own time limit, and doesn't use up an
   attempt.
