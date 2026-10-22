@@ -21,7 +21,9 @@ How the hotkeys work depends on the session you are logged in to.
   Shortcuts → Apps. If you closed the first dialog without choosing, no action has a key and the
   button reads **Set up shortcuts**: it opens the dialog again. Other Wayland desktops that provide the portal work the
   same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets the
-  shortcuts up as soon as it is there.
+  shortcuts up as soon as it is there. Plasma 6.3's portal lists the shortcuts under the app ID
+  (`me.roboroads.repeat-that`) after every start, so Repeat That gives them back the name "Repeat That" in kglobalaccel
+  each time it starts. Plasma 6.4 and later get the name right themselves.
 - **Wayland without the portal.** GNOME 46 (Ubuntu 24.04), Sway, Hyprland and others have no GlobalShortcuts portal, so
   Repeat That can't have global hotkeys there. The Hotkeys section says so and lists the three commands below, each with
   a Copy button. Bind them as custom shortcuts in your desktop, and they do the same job.
