@@ -19,8 +19,9 @@ Where the icon is depends on the system:
   fit (behind the notch, on newer MacBooks). Opening Repeat That again from Applications or Spotlight shows the settings
   window either way. A click on the icon opens the menu, which has Settings in it.
 - Linux. The tray of your desktop, which needs a StatusNotifierItem host. KDE Plasma has one. GNOME doesn't, unless the
-  AppIndicator and KStatusNotifierItem Support extension is installed and turned on. Without a tray the settings window
-  opens at every start and the General section has a Quit Repeat That button, see [linux.md](linux.md#tray).
+  AppIndicator and KStatusNotifierItem Support extension is installed and turned on. Without a tray, starting Repeat
+  That from the app menu opens the settings window every time, and the General section has a Quit Repeat That button.
+  A start at login doesn't open the window. See [linux.md](linux.md#tray).
 
 The tray menu has a status line (the app it captures and how much speech is buffered, or how far behind live a replay
 is), then Replay, Catch-up, Stop, Pause capture, Settings and Quit. The icon changes while it captures and while it is
