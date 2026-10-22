@@ -76,8 +76,9 @@ fn capture_args(args: &[&str]) -> Result<(u64, Option<f32>), Error> {
     Ok((secs, duck))
 }
 
-/// The capture backend, with a duck journal (and on Windows a guard) so a probe killed mid-duck (`taskkill /F`) gives
-/// the app its volume back. macOS needs neither: its taps go away with the probe.
+/// The capture backend, with a duck journal (and on Windows, and on Linux outside a Flatpak, a guard) so a probe killed
+/// mid-duck (`taskkill /F`, `kill -9`) gives the app its volume back. macOS needs neither: its taps go away with the
+/// probe.
 fn source() -> Result<Box<dyn AppAudioSource>, Error> {
     let journal = env::temp_dir().join("repeat-that-probe-duck.journal");
     Ok(rt_capture::platform_source_with(PlatformOptions {
@@ -137,15 +138,16 @@ fn capture(source: &dyn AppAudioSource, app: &AudioApp, secs: u64, duck: Option<
     let mut next_report = Duration::from_secs(1);
     let mut ducked = false;
     while start.elapsed() < Duration::from_secs(secs) {
+        let duck_time = (Duration::from_secs(5)..Duration::from_secs(10)).contains(&start.elapsed());
         if let Some(level) = duck
             && !ducked
-            && start.elapsed() >= Duration::from_secs(5)
+            && duck_time
         {
             source.set_app_volume(app, level)?;
             ducked = true;
             println!("-- ducked to {:.0}%", level * 100.0);
         }
-        if ducked && start.elapsed() >= Duration::from_secs(10) {
+        if ducked && !duck_time {
             source.set_app_volume(app, 1.0)?;
             ducked = false;
             println!("-- volume restored");

@@ -15,7 +15,8 @@ pub struct IconImage {
 const MAX_SIZE_PX: u32 = 1024;
 
 /// The icon of the executable `exe` as a square image of `size_px` pixels, or `None` if there is none: the file is
-/// missing or has no icon, `size_px` is 0 or over 1024, or this OS has no icon support yet (Windows and macOS have).
+/// missing or has no icon, `size_px` is 0 or over 1024, or this OS has no icon support yet (Windows, Linux and macOS
+/// have). Windows reads the icon from the executable, Linux from the icon theme, through the app's `.desktop` file.
 ///
 /// Reads the file, so don't call it on a UI thread, and cache the result: the icon of an app doesn't change while it
 /// runs.
@@ -60,7 +61,7 @@ pub(crate) fn from_bgra(width: u32, height: u32, mut bgra: Vec<u8>, size: u32) -
 
 /// `image` scaled to `size`×`size` by averaging the pixels each new pixel covers, weighted by their alpha so see-through
 /// pixels don't tint their neighbours.
-fn resized(image: IconImage, size: u32) -> IconImage {
+pub(crate) fn resized(image: IconImage, size: u32) -> IconImage {
     if image.width == size && image.height == size {
         return image;
     }
@@ -124,7 +125,7 @@ mod tests {
         assert_eq!(app_icon(&this_test, MAX_SIZE_PX + 1), None);
     }
 
-    #[cfg(not(any(windows, target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     #[test]
     fn other_systems_have_no_icons_yet() {
         let this_test = std::env::current_exe().unwrap();

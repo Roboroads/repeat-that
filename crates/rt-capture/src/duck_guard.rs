@@ -3,8 +3,8 @@
 //! exit the journal is empty and the guard just ends. It only touches volumes, never audio.
 //!
 //! The guard is the app's own executable, started with hidden arguments, so the app must call [`run_if_requested`]
-//! first thing in `main`. The OS modules that have a guard (`HAS_DUCK_GUARD`) start it, for now only Windows (see
-//! `WasapiSource::with_duck_guard`).
+//! first thing in `main`. The OS modules that have a guard (`HAS_DUCK_GUARD`) start it: Windows (see
+//! `WasapiSource::with_duck_guard`) and Linux outside a Flatpak (see `PipeWireSource::with_duck_guard`).
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};

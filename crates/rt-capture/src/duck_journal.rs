@@ -5,8 +5,8 @@
 //!
 //! One line per session: `<original volume>\t<ducked volume>\t<session identifier>`.
 
-// Only the Windows backend uses this so far; the tests run everywhere.
-#![cfg_attr(not(windows), allow(dead_code))]
+// Only the Windows and Linux backends use this; the tests run everywhere.
+#![cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 
 use std::fs;
 use std::io;
