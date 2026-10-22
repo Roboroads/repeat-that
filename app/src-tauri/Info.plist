@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Tauri merges these keys into the Info.plist it writes for the macOS app bundle. LSMinimumSystemVersion comes from
+  bundle.macOS.minimumSystemVersion in tauri.macos.conf.json. .github/scripts/check-macos-bundle.sh checks all three in
+  every macOS build.
+-->
+<plist version="1.0">
+<dict>
+  <!-- Shown when macOS asks for the audio capture permission (Core Audio process taps, macOS 14.2 and later). -->
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Repeat That keeps the last few seconds of the app you pick in memory, so you can replay what was just said. Audio is never saved.</string>
+  <!-- A menu bar app: no Dock icon, not even for a moment at launch. -->
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

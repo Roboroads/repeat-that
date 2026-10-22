@@ -22,7 +22,7 @@ DEB = "Repeat-That_0.2.0_amd64.deb"
 RPM = "Repeat-That-0.2.0-1.x86_64.rpm"
 APPIMAGE = "Repeat-That_0.2.0_amd64.AppImage"
 FLATPAK = "Repeat-That_0.2.0_x86_64.flatpak"
-DMG = "Repeat-That_0.2.0_universal.dmg"
+DMG = "Repeat-That_0.2.0_aarch64.dmg"
 
 H1, H2, H3, H4, HA = ("1" * 64, "2" * 64, "3" * 64, "4" * 64, "a" * 64)
 
@@ -46,9 +46,9 @@ class PlatformTableTests(unittest.TestCase):
         required = {platform.name: platform.required for platform in ra.PLATFORMS}
         self.assertEqual(required, {"windows": True, "linux": True, "flatpak": True, "macos": False})
 
-    def test_only_windows_has_a_build_job_so_far(self):
+    def test_only_windows_and_macos_have_a_build_job_so_far(self):
         built = [platform.name for platform in ra.PLATFORMS if platform.build]
-        self.assertEqual(built, ["windows"])
+        self.assertEqual(built, ["windows", "macos"])
 
     def test_no_two_platforms_claim_the_same_file(self):
         for name in (EXE, DEB, RPM, APPIMAGE, FLATPAK, DMG):
@@ -126,7 +126,7 @@ class SumsTests(unittest.TestCase):
     def test_existing_lines_are_kept_byte_for_byte(self):
         existing = sums_text((EXE, H1), (DMG, H2))
         text = ra.build_sums({DEB: H3}, existing=existing)
-        self.assertEqual(text, sums_text((DEB, H3), (DMG, H2), (EXE, H1)))
+        self.assertEqual(text, sums_text((DMG, H2), (DEB, H3), (EXE, H1)))
         for old_line in existing.splitlines():
             self.assertIn(old_line + "\n", text)
 
@@ -205,14 +205,14 @@ class SumsTests(unittest.TestCase):
             ra.check_preserved(old, new, replaceable={DMG})
 
     def test_drop_removes_the_line_of_a_file_that_leaves_the_release(self):
-        old_dmg = "Repeat-That_0.1.9_universal.dmg"
+        old_dmg = "Repeat-That_0.1.9_aarch64.dmg"
         existing = sums_text((EXE, H1), (old_dmg, H2))
         text = ra.build_sums({DMG: H3}, existing=existing, replace=True, drop=[old_dmg])
         self.assertEqual(text, sums_text((DMG, H3), (EXE, H1)))
 
     def test_drop_of_a_name_without_a_line_is_fine(self):
         # An interrupted replace already dropped the line; running again must still work.
-        text = ra.build_sums({DMG: H3}, existing=sums_text((EXE, H1)), drop=["Repeat-That_0.1.9_universal.dmg"])
+        text = ra.build_sums({DMG: H3}, existing=sums_text((EXE, H1)), drop=["Repeat-That_0.1.9_aarch64.dmg"])
         self.assertEqual(text, sums_text((DMG, H3), (EXE, H1)))
 
     def test_drop_cannot_name_an_added_file(self):
@@ -233,18 +233,18 @@ class VersionTests(unittest.TestCase):
 
     def test_another_version_fails_and_names_the_file(self):
         with self.assertRaises(ReleaseError) as caught:
-            ra.check_versions([DMG, "Repeat-That_0.1.9_universal.dmg"], "v0.2.0")
-        self.assertIn("Repeat-That_0.1.9_universal.dmg", str(caught.exception))
+            ra.check_versions([DMG, "Repeat-That_0.1.9_aarch64.dmg"], "v0.2.0")
+        self.assertIn("Repeat-That_0.1.9_aarch64.dmg", str(caught.exception))
         self.assertNotIn(DMG, str(caught.exception))
 
     def test_a_longer_version_does_not_match_a_shorter_tag(self):
-        for name in ("Repeat-That_0.2.0.1_universal.dmg", "Repeat-That_10.2.0_universal.dmg"):
+        for name in ("Repeat-That_0.2.0.1_aarch64.dmg", "Repeat-That_10.2.0_aarch64.dmg"):
             with self.assertRaises(ReleaseError, msg=name):
                 ra.check_versions([name], "v0.2.0")
 
     def test_a_file_without_a_version_fails(self):
         with self.assertRaises(ReleaseError):
-            ra.check_versions(["Repeat-That_universal.dmg"], "v0.2.0")
+            ra.check_versions(["Repeat-That_aarch64.dmg"], "v0.2.0")
 
 
 RUN = {
@@ -353,9 +353,14 @@ class SelectArtifactsTests(unittest.TestCase):
         self.assertIn("macos", str(caught.exception))
 
     def test_the_table_decides_which_platforms_have_jobs(self):
-        # With today's table only windows has a build job, so a macos artifact is out of step.
+        # With today's table Linux has no build job yet, so a linux artifact is out of step.
         with self.assertRaises(ReleaseError):
-            ra.select_artifacts([f"release-macos-{DMG}"], self.results(windows="success", macos="success"))
+            ra.select_artifacts([f"release-linux-{DEB}"], self.results(windows="success", linux="success"))
+
+    def test_with_todays_table_a_macos_artifact_is_selected(self):
+        names = [f"release-windows-{EXE}", f"release-macos-{DMG}"]
+        selected, ignored = ra.select_artifacts(names, self.results(windows="success", macos="success"))
+        self.assertEqual((selected, ignored), (names, []))
 
 
 class CheckAssetsFullTests(unittest.TestCase):
@@ -388,7 +393,7 @@ class CheckAssetsFullTests(unittest.TestCase):
     def test_a_dmg_with_another_name_than_the_produced_one_fails(self):
         with self.assertRaises(ReleaseError) as caught:
             ra.check_assets_full(
-                [EXE, "Repeat-That_0.1.9_universal.dmg"], [EXE, DEB, FLATPAK, DMG], platforms=all_built()
+                [EXE, "Repeat-That_0.1.9_aarch64.dmg"], [EXE, DEB, FLATPAK, DMG], platforms=all_built()
             )
         self.assertIn("0.1.9", str(caught.exception))
 
@@ -434,7 +439,7 @@ class CheckAssetsLateTests(unittest.TestCase):
 
     def test_a_file_whose_version_is_not_the_tags_fails(self):
         with self.assertRaises(ReleaseError) as caught:
-            self.check(produced=["Repeat-That_0.1.9_universal.dmg"], tag="v0.2.0")
+            self.check(produced=["Repeat-That_0.1.9_aarch64.dmg"], tag="v0.2.0")
         self.assertIn("0.1.9", str(caught.exception))
         self.check(tag="v0.2.0")  # DMG is 0.2.0
 
@@ -467,7 +472,7 @@ class CheckAssetsLateTests(unittest.TestCase):
         self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([], [DMG], []))
 
     def test_replace_removes_an_existing_dmg_with_another_name(self):
-        old = "Repeat-That_0.1.9_universal.dmg"
+        old = "Repeat-That_0.1.9_aarch64.dmg"
         release, sums = [EXE, old, "SHA256SUMS"], sums_text((EXE, H1), (old, H2))
         plan = self.check(release=release, sums=sums, replace=True)
         self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([], [], [old]))
@@ -476,7 +481,7 @@ class CheckAssetsLateTests(unittest.TestCase):
         self.assertIn(old, str(caught.exception))
 
     def test_replace_covers_every_existing_dmg(self):
-        old, older = "Repeat-That_0.1.9_universal.dmg", "Repeat-That_0.1.8_universal.dmg"
+        old, older = "Repeat-That_0.1.9_aarch64.dmg", "Repeat-That_0.1.8_aarch64.dmg"
         plan = self.check(
             release=[EXE, old, DMG, older, "SHA256SUMS"],
             sums=sums_text((EXE, H1), (old, H2), (DMG, H3), (older, H4)),
@@ -490,7 +495,7 @@ class CheckAssetsLateTests(unittest.TestCase):
         self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([DMG], [], []))
 
     def test_an_unlisted_dmg_this_run_did_not_produce_fails_without_replace(self):
-        stray = "Repeat-That_0.1.9_universal.dmg"
+        stray = "Repeat-That_0.1.9_aarch64.dmg"
         with self.assertRaises(ReleaseError) as caught:
             self.check(release=[EXE, stray, "SHA256SUMS"])
         self.assertIn(stray, str(caught.exception))
@@ -498,7 +503,7 @@ class CheckAssetsLateTests(unittest.TestCase):
 
     def test_an_unlisted_dmg_this_run_did_not_produce_is_removed_with_replace(self):
         # What an interrupted replace leaves: the old name dropped from SHA256SUMS but not yet deleted.
-        stray = "Repeat-That_0.1.9_universal.dmg"
+        stray = "Repeat-That_0.1.9_aarch64.dmg"
         plan = self.check(release=[EXE, stray, "SHA256SUMS"], replace=True)
         self.assertEqual((plan.pending, plan.remove), ([], [stray]))
 
@@ -571,7 +576,7 @@ class CheckReleaseTests(unittest.TestCase):
         self.assertEqual(replaced, [])
 
     def test_late_mode_with_replace_lists_every_existing_file(self):
-        other = "Repeat-That_0.1.9_universal.dmg"
+        other = "Repeat-That_0.1.9_aarch64.dmg"
         replaced = ra.check_release(
             "v0.2.0", [EXE, other, DMG, "SHA256SUMS"], draft=False, mode="late", platform="macos", replace=True
         )
@@ -655,14 +660,26 @@ class GateTests(unittest.TestCase):
         self.assertIn("Flatpak", result.errors[0])
 
     def test_a_job_for_a_platform_without_a_build_flag_is_a_configuration_error(self):
-        # As the table is today only windows has build=True, so a macos job in `needs` is out of step with the script.
-        result = ra.gate(self.needs(check_release="success", windows="success", macos="success"), release=True)
+        # As the table is today Linux has build=False, so a linux job in `needs` is out of step with the script.
+        needs = self.needs(check_release="success", windows="success", macos="success", linux="success")
+        result = ra.gate(needs, release=True)
         self.assertFalse(result.ok)
-        self.assertIn("macOS", result.errors[0])
+        self.assertIn("Linux", result.errors[0])
 
-    def test_with_todays_table_only_windows_is_needed(self):
-        result = ra.gate(self.needs(check_release="success", windows="success"), release=True)
+    def test_with_todays_table_windows_and_macos_are_needed(self):
+        result = ra.gate(self.needs(check_release="success", windows="success", macos="success"), release=True)
         self.assertTrue(result.ok)
+        self.assertEqual(result.warnings, [])
+
+    def test_with_todays_table_a_missing_macos_job_is_a_configuration_error(self):
+        result = ra.gate(self.needs(check_release="success", windows="success"), release=True)
+        self.assertFalse(result.ok)
+        self.assertIn("macOS has build=True", result.errors[0])
+
+    def test_with_todays_table_macos_failing_still_publishes_windows(self):
+        result = ra.gate(self.needs(check_release="success", windows="success", macos="failure"), release=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.missing_optional, ["macos"])
 
 
 class CommandLineTests(unittest.TestCase):
@@ -720,7 +737,9 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(out.splitlines(), [DMG])
 
     def test_gate_reads_needs_from_stdin(self):
-        needs = json.dumps({"check-release": {"result": "skipped"}, "windows": {"result": "success"}})
+        needs = json.dumps(
+            {"check-release": {"result": "skipped"}, "windows": {"result": "success"}, "macos": {"result": "success"}}
+        )
         code, _, _ = self.run_main("gate", "--needs", "-", stdin=needs)
         self.assertEqual(code, 0)
         code, _, err = self.run_main("gate", "--needs", "-", "--release", stdin=needs)
@@ -728,7 +747,7 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("::error::", err)
 
     def test_sums_drops_the_line_of_a_file_that_leaves_the_release(self):
-        old = "Repeat-That_0.1.9_universal.dmg"
+        old = "Repeat-That_0.1.9_aarch64.dmg"
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             (folder / DMG).write_bytes(b"new dmg")
@@ -750,7 +769,7 @@ class CommandLineTests(unittest.TestCase):
         )  # fmt: skip
 
     def test_check_assets_late_prints_what_the_job_must_skip_and_remove(self):
-        old = "Repeat-That_0.1.9_universal.dmg"
+        old = "Repeat-That_0.1.9_aarch64.dmg"
         with tempfile.TemporaryDirectory() as folder:
             args = self.late_args(folder, [EXE, old, DMG, "SHA256SUMS"], sums_text((EXE, H1), (old, H2)), "--replace")
             code, out, _ = self.run_main(*args)

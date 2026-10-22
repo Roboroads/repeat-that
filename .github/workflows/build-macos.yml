@@ -1,0 +1,381 @@
+name: Build macOS installers
+
+# Builds the macOS app for Apple Silicon (aarch64-apple-darwin) as a .dmg, checks the .dmg with
+# .github/scripts/check-macos-bundle.sh and uploads it as the artifact `release-macos-<file name>`. Like
+# build-windows.yml it only builds: publish-release.yml calls it as its `macos` job, writes SHA256SUMS over every
+# platform and attaches the files. macOS is optional there, so a failed build or notarization doesn't hold back the
+# other platforms.
+#
+# The `mode` job picks one of three modes and puts it in the run's summary:
+#   * dry run: a pull request, or a run without a tag on any branch but main. Signed ad hoc and not notarized. The job
+#     doesn't use the apple-signing Environment, so it has no secrets.
+#   * signed dry run: a run on main without a tag (Actions → Build macOS installers → Run workflow, or a dry run of
+#     publish-release.yml on main). Signed with the Developer ID certificate and notarized, with the secrets of the
+#     apple-signing Environment, which only main may use. The .dmg is a workflow artifact, nothing more.
+#   * release: a run on main with a tag. Either publish-release.yml calls it for a release, or someone runs it by hand
+#     for a release that went out without its .dmg. Signed and notarized like the signed dry run; it checks that the
+#     app version matches the tag, and the release-note job adds the "macOS is untested" paragraph to the release
+#     notes. A run with a tag on any other branch fails: a .dmg for a release is always signed.
+#
+# This workflow never calls publish-release.yml. That one calls this one, and GitHub refuses workflows that call each
+# other in a loop. To add the .dmg to a release that went out without it (the late attach), run this workflow on main
+# with the tag. Once that run has succeeded, run publish-release.yml in late-attach mode with artifacts_run_id set to
+# this run; the release-note job's summary prints the command. docs/MAINTAINING.md has the steps.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0. Empty for a dry run.
+        type: string
+        required: false
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build the .dmg for, for example v0.1.0 (on main only). Empty for a signed dry run.
+        type: string
+        required: false
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - app/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/scripts/check-macos-bundle.sh
+      - .github/scripts/macos-release-note.sh
+      - .github/workflows/build-macos.yml
+
+permissions:
+  contents: read
+
+# `github.workflow` is the calling workflow's name in a called workflow, so this run and the one publish-release.yml
+# starts for the same pull request don't cancel each other.
+concurrency:
+  group: build-macos-${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Checks the inputs and decides whether this run signs, in seconds and before a macOS runner is asked for.
+  mode:
+    name: Mode
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      signed: ${{ steps.mode.outputs.signed }}
+      commit: ${{ steps.mode.outputs.commit }}
+    steps:
+      - name: Check the inputs and pick the mode
+        id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$TAG" && ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must look like v0.1.0, got '$TAG'"
+            exit 1
+          fi
+          if [[ -n "$SHA" && ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit hash, got '$SHA'"
+            exit 1
+          fi
+
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            if [[ -n "$TAG" ]]; then
+              echo "::error::A .dmg for a release ($TAG) is signed, and only runs on main get the signing secrets. This run is on $GITHUB_REF; run it on main."
+              exit 1
+            fi
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            mode="dry run: signed ad hoc, not notarized"
+          else
+            # A signed build runs the build scripts of the commit it builds while the signing secrets are at hand, so
+            # it only builds a commit that is on main. For a draft that is the release commit (sha); a published
+            # release has its tag.
+            ref=${SHA:-${TAG:-$GITHUB_SHA}}
+            if ! status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$ref...main" --jq .status); then
+              echo "::error::Can't find $ref in $GITHUB_REPOSITORY. A draft release has no tag yet: give its commit as sha."
+              exit 1
+            fi
+            if [[ "$status" != identical && "$status" != ahead ]]; then
+              echo "::error::$ref is not on main (compared with main: $status). A signed build only builds commits on main."
+              exit 1
+            fi
+            commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/$ref" --jq .sha)
+            { echo "signed=true"; echo "commit=$commit"; } >> "$GITHUB_OUTPUT"
+            if [[ -n "$TAG" ]]; then
+              mode="release $TAG: signed and notarized, commit $commit"
+            else
+              mode="signed dry run: signed and notarized, commit $commit"
+            fi
+          fi
+          echo "Mode: $mode"
+          echo "### macOS build: $mode" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Installer (macOS Apple Silicon)
+    needs: mode
+    runs-on: macos-latest
+    timeout-minutes: 60
+    # Only a signed build uses the Environment and with it the signing secrets; it lets only main use them. An empty
+    # name means no Environment.
+    environment: ${{ needs.mode.outputs.signed == 'true' && 'apple-signing' || '' }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SIGNED: ${{ needs.mode.outputs.signed }}
+      # The oldest macOS the app runs on (minimumSystemVersion in tauri.macos.conf.json), so the binary is built for it.
+      MACOSX_DEPLOYMENT_TARGET: "14.2"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A signed build builds the commit the mode job checked. A dry run builds the given commit, or the event's own
+          # commit when none is given (pull requests).
+          ref: ${{ needs.mode.outputs.commit || inputs.sha }}
+          persist-credentials: false
+
+      - name: Check the signing secrets
+        if: env.SIGNED == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          missing=""
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY \
+            APPLE_API_KEY_CONTENT; do
+            if [[ -z "${!name}" ]]; then missing="$missing $name"; fi
+          done
+          if [[ -n "$missing" ]]; then
+            echo "::error::The apple-signing Environment has no value for:$missing. See macOS signing and notarization in docs/MAINTAINING.md."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22.19' # same as ci.yml: the oldest Node the docs ask for
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      # Pinned by commit, so the toolchain is chosen with an input instead of the ref.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      # Tauri reads the key from a file (APPLE_API_KEY_PATH); RUNNER_TEMP is emptied after the job.
+      - name: Write the App Store Connect API key
+        if: env.SIGNED == 'true'
+        env:
+          KEY_ID: ${{ secrets.APPLE_API_KEY }}
+          KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          key_file="$RUNNER_TEMP/AuthKey_$KEY_ID.p8"
+          printf '%s\n' "$KEY_CONTENT" > "$key_file"
+          echo "APPLE_API_KEY_PATH=$key_file" >> "$GITHUB_ENV"
+
+      # Builds the frontend (beforeBuildCommand) and the app, then bundles it: the .app, then the .dmg around it. No
+      # tagName/releaseId: the action only builds. The bundle settings come from app/src-tauri/tauri.macos.conf.json.
+      # Tauri imports the certificate into a keychain of its own, signs the app with the hardened runtime and
+      # Entitlements.plist, notarizes the app and staples its ticket, then signs the .dmg. Two steps with the same
+      # build, because Tauri takes an empty APPLE_CERTIFICATE as a certificate to import: the ad hoc build must not have
+      # the variables at all.
+      - name: Build, sign and notarize the app
+        if: env.SIGNED == 'true'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        with:
+          projectPath: app
+          args: --target aarch64-apple-darwin
+
+      # Signed ad hoc (identity `-`): with the hardened runtime and the entitlements like a signed build, but by nobody,
+      # so Gatekeeper won't open it from a download without a right-click. Tauri leaves the .dmg itself unsigned.
+      - name: Build the app (signed ad hoc)
+        if: env.SIGNED != 'true'
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
+        with:
+          projectPath: app
+          args: --target aarch64-apple-darwin
+
+      # Tauri names the .dmg after productName ("Repeat That_0.1.0_aarch64.dmg"). GitHub turns the spaces in release
+      # asset names into dots, so rename it first and let SHA256SUMS list the name people will download.
+      - name: Stage the .dmg
+        id: stage
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle=target/aarch64-apple-darwin/release/bundle
+          dmgs=("$bundle"/dmg/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "::error::expected exactly one .dmg under $bundle/dmg"
+            find "$bundle" -maxdepth 2 | sort
+            exit 1
+          fi
+          name=$(basename "${dmgs[0]}")
+          if [[ "$name" != *_aarch64.dmg ]]; then
+            echo "::error::$name is not a build for Apple Silicon (aarch64)"
+            exit 1
+          fi
+          version=$(cut -d_ -f2 <<< "$name")
+          if [[ -n "$TAG" && "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match the app version $version; is release-please-config.json bumping every version file?"
+            exit 1
+          fi
+          dmg="${name// /-}"
+          mkdir installers
+          cp "${dmgs[0]}" "installers/$dmg"
+          {
+            echo "dmg=installers/$dmg"
+            echo "artifact=release-macos-$dmg"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+      # Tauri notarized the app inside; this notarizes the .dmg around it and staples its ticket, so Gatekeeper can
+      # check the download without asking Apple. Stapling changes the file, so the checksum is taken after it.
+      - name: Notarize and staple the .dmg
+        if: env.SIGNED == 'true'
+        env:
+          DMG: ${{ steps.stage.outputs.dmg }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          xcrun notarytool submit "$DMG" "${auth[@]}" --wait --output-format json > notarization.json || true
+          cat notarization.json
+          field() { python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' notarization.json "$1" 2>/dev/null || true; }
+          id=$(field id)
+          status=$(field status)
+          if [[ "$status" != Accepted ]]; then
+            if [[ -n "$id" ]]; then xcrun notarytool log "$id" "${auth[@]}" || true; fi
+            echo "::error::Apple did not accept the .dmg for notarization (${status:-no answer}). The log is above."
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          echo "Notarization of $(basename "$DMG"): $status (submission $id), ticket stapled" > notarization.txt
+
+      - name: Check the .dmg
+        env:
+          DMG: ${{ steps.stage.outputs.dmg }}
+          IDENTITY: ${{ env.SIGNED == 'true' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+        run: |
+          if [[ "$SIGNED" == true ]]; then
+            .github/scripts/check-macos-bundle.sh --signed "$IDENTITY" "$DMG" 2>&1 | tee bundle-check.log
+          else
+            .github/scripts/check-macos-bundle.sh "$DMG" 2>&1 | tee bundle-check.log
+          fi
+
+      # publish-release.yml writes SHA256SUMS over every platform; this is only for whoever tries the build.
+      - name: Summary
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        env:
+          DMG: ${{ steps.stage.outputs.dmg }}
+          VERSION: ${{ steps.stage.outputs.version }}
+        run: |
+          {
+            echo "### macOS installer $VERSION (Apple Silicon)"
+            echo
+            if [[ "$SIGNED" == true ]]; then
+              echo "Signed with the Developer ID certificate and notarized."
+              echo
+              cat notarization.txt 2>/dev/null || echo "Not notarized: the notarization step failed."
+            else
+              echo "Signed ad hoc and not notarized: for trying on a Mac (right-click → Open), not for a release."
+            fi
+            echo
+            echo '```'
+            (cd "$(dirname "$DMG")" && ls -l && echo && shasum -a 256 "$(basename "$DMG")")
+            echo '```'
+            echo
+            echo "#### Checks"
+            echo
+            echo '```'
+            cat bundle-check.log 2>/dev/null || echo "(the checks did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The artifact name starts with release-macos- so publish-release.yml picks it up (release-*) and knows the
+      # platform. It is a zip holding the one .dmg, which is compressed already, so no compression. Last, so a build
+      # that failed a step uploads nothing.
+      - name: Upload the .dmg
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.stage.outputs.artifact }}
+          path: ${{ steps.stage.outputs.dmg }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+
+  # Release mode only. Runs after the build has succeeded, so the paragraph goes on a release once there is a .dmg for
+  # it; publish-release.yml then attaches it (or the late attach does). Running twice changes nothing.
+  release-note:
+    name: Release note
+    needs: build
+    if: ${{ inputs.tag != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # drafts are only visible with write access, and the job edits the notes
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Say in the release notes that macOS is untested
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: .github/scripts/macos-release-note.sh "$TAG"
+
+      # Run by hand for a release that went out without its .dmg: the next step is the late attach, which takes the
+      # .dmg from this run once the whole run has succeeded (this job is its last).
+      - name: How to attach the .dmg
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.workflow == '.github/workflows/build-macos.yml' }}
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          {
+            echo "### Attach the .dmg to $TAG"
+            echo
+            echo "This run built the .dmg only. Once it has succeeded, attach the .dmg and its line in SHA256SUMS with:"
+            echo
+            echo '```sh'
+            echo "gh workflow run publish-release.yml --repo $GITHUB_REPOSITORY --ref main -f mode=late-attach -f tag=$TAG -f platform=macos -f artifacts_run_id=$GITHUB_RUN_ID"
+            echo '```'
+            echo
+            echo "Or Actions → Publish release → Run workflow with mode late-attach, tag $TAG and artifacts_run_id $GITHUB_RUN_ID."
+          } >> "$GITHUB_STEP_SUMMARY"
