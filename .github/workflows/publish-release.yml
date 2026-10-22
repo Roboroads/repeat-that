@@ -204,8 +204,11 @@ jobs:
       sha: ${{ inputs.sha }}
 
   # Optional: when it fails or is skipped, `publish` only warns and the release goes out without the .dmg. On main it
-  # signs and notarizes with the apple-signing Environment, which build-macos.yml asks for itself (an Environment's
-  # secrets reach a called workflow only that way); anywhere else a dry run is signed ad hoc and a tagged run fails.
+  # signs and notarizes with the apple-signing Environment, which build-macos.yml asks for itself (a calling job can't
+  # name an Environment); anywhere else a dry run is signed ad hoc and a tagged run fails. The Environment alone isn't
+  # enough: a called workflow only sees the secrets its caller passes, Environment secrets included, and any other is
+  # an empty string with no error. Hence `secrets: inherit`, here and where release-please.yml calls this workflow
+  # (secrets go one call at a time). test_workflow_secrets.py checks every call.
   macos:
     name: macOS
     needs: check-release
@@ -213,6 +216,7 @@ jobs:
     permissions:
       contents: write # the release-note job of build-macos.yml edits the release notes
     uses: ./.github/workflows/build-macos.yml
+    secrets: inherit
     with:
       tag: ${{ inputs.tag }}
       sha: ${{ inputs.sha }}
@@ -236,11 +240,12 @@ jobs:
       REPLACE: ${{ inputs.replace }}
     steps:
       # The two files of app/ that `npm ci` reads, to install the Tauri CLI that signs the updates at the version of its
-      # lock file. Patterns of files need the non-cone mode.
+      # lock file, and the workflows, which test_workflow_secrets.py reads. Patterns of files need the non-cone mode.
       - uses: actions/checkout@v7
         with:
           sparse-checkout: |
             /.github/scripts/
+            /.github/workflows/
             /app/package.json
             /app/package-lock.json
           sparse-checkout-cone-mode: false

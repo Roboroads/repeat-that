@@ -186,6 +186,22 @@ jobs:
       - run: npm test
         if: needs.changes.outputs.code != 'false'
 
+  # The unit tests of the release and site scripts in .github/scripts: standard library only, done in seconds, so they
+  # run on every change, docs-only ones included. Among them is test_workflow_secrets.py, which checks that every job
+  # calling a reusable workflow passes the secrets it reads. The Publish job of publish-release.yml runs them again.
+  scripts:
+    name: Workflow scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Test the scripts
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
   # Drives the real desktop app (WebdriverIO and tauri-driver, on a virtual display) the way a person would: it picks the
   # fake app the harness gives it (a speech recording, see REPEAT_THAT_MOCK_WAV), replays, pauses and changes settings. See app/e2e/wdio.conf.ts. Like the
   # other jobs it runs unless the run is cancelled, and a docs-only change skips every step, not the job. WebdriverIO
