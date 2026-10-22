@@ -10,13 +10,15 @@
 #   --step NAME  the step's name, put in the ::warning:: and ::error:: lines so the annotation says which step it is
 #
 # Installs with -y and --no-install-recommends, and runs apt-get through sudo unless it already is root (a container job
-# is). Exits 0 on success, 1 when every attempt failed, 2 on a usage error. Set by environment (the defaults suit a
-# hosted runner, the tests shrink them): APT_UPDATE_TIMEOUT (60 seconds for one `apt-get update`),
-# APT_INSTALL_TIMEOUT (180 seconds for one `apt-get install`), APT_ATTEMPTS (3), APT_RETRY_PAUSE (10 seconds) and
-# APT_LOCK_POLL (5 seconds between two tries while another apt holds a lock).
+# is). On a hosted Ubuntu runner it first moves apt off azure.archive.ubuntu.com, the slow mirror behind those hangs
+# (see use_other_mirrors below). Exits 0 on success, 1 when every attempt failed, 2 on a usage error. Set by environment
+# (the defaults suit a hosted runner, the tests shrink them): APT_UPDATE_TIMEOUT (60 seconds for one `apt-get update`),
+# APT_INSTALL_TIMEOUT (180 seconds for one `apt-get install`), APT_ATTEMPTS (3), APT_RETRY_PAUSE (10 seconds),
+# APT_LOCK_POLL (5 seconds between two tries while another apt holds a lock) and APT_ETC_DIR (/etc/apt).
 #
-# One hang that a second attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case
-# is about 17 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
+# The timeouts and retries are the backstop: with the mirrors switched, a hang should be rare. One hang that a second
+# attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case is about 17 minutes.
+# Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
 set -euo pipefail
 
 usage() {
@@ -133,6 +135,41 @@ apt_call() {
   done
 }
 
+# GitHub-hosted Ubuntu runners get their packages from azure.archive.ubuntu.com, which has been painfully slow: the
+# updates and installs that sat for half an hour were all waiting on it. Their sources name a list of mirrors
+# (mirror+file:/etc/apt/apt-mirrors.txt, azure first, or on older images the azure address itself), and apt only tries
+# the next mirror when one fails, not when one is slow. So before the first `apt-get update` the sources are pointed
+# at a list of our own: archive.ubuntu.com first, then two others, which apt moves on to when one of them fails.
+# Sources that don't name the azure mirror (the ubuntu:24.04 container of build-linux.yml, other distributions) are
+# left as they are. Does nothing when run a second time.
+mirrors=(
+  "http://archive.ubuntu.com/ubuntu/"
+  "https://mirrors.edge.kernel.org/ubuntu/"
+  "https://mirror.us.leaseweb.net/ubuntu/"
+)
+etc=${APT_ETC_DIR:-/etc/apt}
+mirror_list=$etc/ci-apt-mirrors.txt
+
+use_other_mirrors() {
+  local azure='azure\.archive\.ubuntu\.com' image_list='mirror\+file:[^[:space:]]*/apt-mirrors\.txt'
+  local listed=false file files=() n
+  if grep -qs "$azure" "$etc/apt-mirrors.txt"; then listed=true; fi
+  for file in "$etc/sources.list" "$etc"/sources.list.d/*.list "$etc"/sources.list.d/*.sources; do
+    [[ -f $file ]] || continue
+    if grep -qsE "$azure" "$file" || { [[ $listed == true ]] && grep -qsE "$image_list" "$file"; }; then
+      files+=("$file")
+    fi
+  done
+  if ((${#files[@]} == 0)); then
+    return 0
+  fi
+  echo "Replacing azure.archive.ubuntu.com, the slow default mirror of the hosted runners, in ${files[*]}"
+  for n in "${!mirrors[@]}"; do
+    printf '%s\tpriority:%d\n' "${mirrors[n]}" $((n + 1))
+  done | "${sudo[@]}" tee "$mirror_list" > /dev/null || return 1
+  "${sudo[@]}" sed -i -E "s#(https?://$azure/ubuntu/?|$image_list)#mirror+file:$mirror_list#g" "${files[@]}" || return 1
+}
+
 installing=false
 
 # One attempt. On failure, `failure` says what went wrong, and `installing` whether it got as far as the install.
@@ -158,6 +195,10 @@ repair() {
   apt_call "apt-get -f install" 60 -f install -y || echo "::warning::$step: $failure; going on"
   failure=$failed
 }
+
+if ! use_other_mirrors; then
+  echo "::warning::$step: could not switch the apt mirrors; going on with the ones the system has"
+fi
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do
   if ((attempt > 1)); then

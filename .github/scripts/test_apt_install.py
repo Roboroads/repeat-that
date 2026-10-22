@@ -21,6 +21,10 @@ PACKAGES = ["pkg-config", "libgtk-3-dev", "clang"]
 
 FAKE_APT_GET = """#!/usr/bin/env bash
 echo "apt-get $*" >> "$FAKE_DIR/calls"
+etc=${APT_ETC_DIR:-/nonexistent}
+if grep -qs azure.archive.ubuntu.com "$etc/sources.list" "$etc"/sources.list.d/*; then
+  echo "saw-azure" >> "$FAKE_DIR/calls"
+fi
 sub=
 for arg in "$@"; do
   case $arg in update | install) sub=$arg ;; -f) fix=1 ;; esac
@@ -44,10 +48,16 @@ case $step in
 esac
 """
 FAKE_DPKG = '#!/usr/bin/env bash\necho "dpkg $*" >> "$FAKE_DIR/calls"\nexit "${FAKE_DPKG_STATUS:-0}"\n'
-FAKE_SUDO = '#!/usr/bin/env bash\necho "sudo $*" >> "$FAKE_DIR/calls"\nexec "$@"\n'
+FAKE_SUDO = """#!/usr/bin/env bash
+echo "sudo $*" >> "$FAKE_DIR/calls"
+if [ "$1" = "${FAKE_SUDO_FAIL:-}" ]; then exit 1; fi
+exec "$@"
+"""
 
 
-class AptInstallTest(unittest.TestCase):
+class AptCase(unittest.TestCase):
+    """The fake commands, the script run against them, and a look at what they were asked to do."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -58,6 +68,9 @@ class AptInstallTest(unittest.TestCase):
             (bindir / name).write_text(body)
             (bindir / name).chmod(0o755)
         self.bindir = bindir
+        # The script rewrites the apt sources in here, never in the real /etc/apt.
+        self.etc = self.dir / "etc-apt"
+        (self.etc / "sources.list.d").mkdir(parents=True)
 
     def run_script(self, *args, update="ok", install="ok", fix="ok", **env):
         """Runs the script; returns the finished process and how long it took."""
@@ -68,6 +81,7 @@ class AptInstallTest(unittest.TestCase):
             "FAKE_PLAN_UPDATE": update,
             "FAKE_PLAN_INSTALL": install,
             "FAKE_PLAN_FIX": fix,
+            "APT_ETC_DIR": str(self.etc),
             "APT_UPDATE_TIMEOUT": "1",
             "APT_INSTALL_TIMEOUT": "1",
             "APT_RETRY_PAUSE": "0",
@@ -103,6 +117,8 @@ class AptInstallTest(unittest.TestCase):
                     names.append("update" if line.endswith(" update") else "install")
         return names
 
+
+class AptInstallTest(AptCase):
     def test_installs_the_packages_once_when_apt_works(self):
         done, _ = self.run_script("--step", STEP, *PACKAGES)
         self.assertEqual(done.returncode, 0, done.stderr)
@@ -285,6 +301,148 @@ class AptInstallTest(unittest.TestCase):
     def test_runs_apt_directly_as_root(self):
         self.run_script("--step", STEP, *PACKAGES)
         self.assertEqual(self.calls("sudo"), [])
+
+
+# What a GitHub-hosted runner has: apt reads its mirrors from a list file, and that file starts with the azure mirror.
+# (The path of the list is the etc dir of the test, where a runner has /etc/apt.)
+AZURE_MIRRORS = (
+    "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+    "https://archive.ubuntu.com/ubuntu/\tpriority:2\n"
+    "https://security.ubuntu.com/ubuntu/\tpriority:3\n"
+)
+UBUNTU_SOURCES = """Types: deb
+URIs: {uri}
+Suites: noble noble-updates noble-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: {uri}
+Suites: noble-security
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+"""
+MICROSOFT_LIST = (
+    "deb [arch=amd64 signed-by=/etc/apt/keyrings/microsoft-prod.gpg] "
+    "https://packages.microsoft.com/ubuntu/24.04/prod noble main\n"
+)
+
+
+class AptMirrorTest(AptCase):
+    """On a hosted runner `apt-get update` is pointed away from azure.archive.ubuntu.com, which has been very slow."""
+
+    def put(self, name, text):
+        path = self.etc / name
+        path.write_text(text)
+        return path
+
+    def hosted_runner_24_04(self):
+        """Ubuntu 24.04 as GitHub ships it: deb822 sources that name the mirror list."""
+        self.put("apt-mirrors.txt", AZURE_MIRRORS)
+        self.put("sources.list.d/ubuntu.sources", UBUNTU_SOURCES.format(uri=f"mirror+file:{self.etc}/apt-mirrors.txt"))
+        self.put("sources.list.d/microsoft-prod.list", MICROSOFT_LIST)
+
+    def mirrors(self):
+        """The mirror list the script wrote: (url, priority) in the order apt tries them."""
+        lines = (self.etc / "ci-apt-mirrors.txt").read_text().splitlines()
+        return [(line.split("\t")[0], line.split("\t")[1]) for line in lines]
+
+    def test_the_sources_of_ubuntu_24_04_get_a_mirror_list_without_azure(self):
+        self.hosted_runner_24_04()
+        done, _ = self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        sources = (self.etc / "sources.list.d/ubuntu.sources").read_text()
+        self.assertEqual(sources, UBUNTU_SOURCES.format(uri=f"mirror+file:{self.etc}/ci-apt-mirrors.txt"))
+        self.assertNotIn("azure", "".join(path.read_text() for path in self.etc.rglob("ci-*")))
+        mirrors = self.mirrors()
+        self.assertGreaterEqual(len(mirrors), 3, "apt needs somewhere to fall over to")
+        self.assertEqual(mirrors[0], ("http://archive.ubuntu.com/ubuntu/", "priority:1"))
+        self.assertEqual([priority for _, priority in mirrors], [f"priority:{n}" for n in range(1, len(mirrors) + 1)])
+        for url, _ in mirrors:
+            self.assertRegex(url, r"^https?://[^/]+/.*ubuntu/$")
+
+    def test_other_repositories_are_left_alone(self):
+        self.hosted_runner_24_04()
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual((self.etc / "sources.list.d/microsoft-prod.list").read_text(), MICROSOFT_LIST)
+        self.assertEqual((self.etc / "apt-mirrors.txt").read_text(), AZURE_MIRRORS, "the image's list stays as it was")
+
+    def test_the_one_line_sources_of_ubuntu_22_04_are_rewritten_too(self):
+        self.put("apt-mirrors.txt", AZURE_MIRRORS)
+        self.put("sources.list", f"deb mirror+file:{self.etc}/apt-mirrors.txt jammy main restricted universe\n"
+                 f"deb mirror+file:{self.etc}/apt-mirrors.txt jammy-updates main restricted universe\n")
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(
+            (self.etc / "sources.list").read_text(),
+            f"deb mirror+file:{self.etc}/ci-apt-mirrors.txt jammy main restricted universe\n"
+            f"deb mirror+file:{self.etc}/ci-apt-mirrors.txt jammy-updates main restricted universe\n",
+        )
+
+    def test_sources_that_name_the_azure_mirror_directly_are_rewritten(self):
+        self.put("sources.list", "deb http://azure.archive.ubuntu.com/ubuntu/ jammy main\n"
+                 "deb [arch=amd64] http://azure.archive.ubuntu.com/ubuntu jammy-security main\n")
+        self.put("sources.list.d/ubuntu.sources", UBUNTU_SOURCES.format(uri="http://azure.archive.ubuntu.com/ubuntu/"))
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(
+            (self.etc / "sources.list").read_text(),
+            f"deb mirror+file:{self.etc}/ci-apt-mirrors.txt jammy main\n"
+            f"deb [arch=amd64] mirror+file:{self.etc}/ci-apt-mirrors.txt jammy-security main\n",
+        )
+        deb822 = (self.etc / "sources.list.d/ubuntu.sources").read_text()
+        self.assertIn(f"URIs: mirror+file:{self.etc}/ci-apt-mirrors.txt\n", deb822)
+        self.assertNotIn("azure", deb822)
+
+    def test_apt_update_runs_only_after_the_sources_are_switched(self):
+        self.hosted_runner_24_04()
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertNotIn("saw-azure", self.logged())
+        self.assertEqual(self.sequence(), ["update", "install"])
+
+    def test_the_container_image_with_its_own_mirrors_is_left_alone(self):
+        # ubuntu:24.04 as the Linux package build uses it: archive.ubuntu.com and security.ubuntu.com.
+        ubuntu = UBUNTU_SOURCES.format(uri="http://archive.ubuntu.com/ubuntu/")
+        self.put("sources.list.d/ubuntu.sources", ubuntu)
+        done, _ = self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((self.etc / "sources.list.d/ubuntu.sources").read_text(), ubuntu)
+        self.assertFalse((self.etc / "ci-apt-mirrors.txt").exists())
+        self.assertEqual([call for call in self.calls("sudo") if "apt-get" not in call], [])
+
+    def test_a_mirror_list_without_azure_is_left_alone(self):
+        self.put("apt-mirrors.txt", "https://archive.ubuntu.com/ubuntu/\tpriority:1\n")
+        sources = UBUNTU_SOURCES.format(uri=f"mirror+file:{self.etc}/apt-mirrors.txt")
+        self.put("sources.list.d/ubuntu.sources", sources)
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual((self.etc / "sources.list.d/ubuntu.sources").read_text(), sources)
+        self.assertFalse((self.etc / "ci-apt-mirrors.txt").exists())
+
+    def test_the_sources_are_switched_once_not_once_per_attempt(self):
+        self.hosted_runner_24_04()
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail fail ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len([call for call in self.calls("sudo") if " sed " in call]), 1)
+
+    def test_a_second_run_on_switched_sources_changes_nothing(self):
+        self.hosted_runner_24_04()
+        self.run_script("--step", STEP, *PACKAGES)
+        before = {path: path.read_text() for path in self.etc.rglob("*") if path.is_file()}
+        (self.dir / "calls").unlink()
+        self.run_script("--step", STEP, *PACKAGES)
+        self.assertEqual({path: path.read_text() for path in self.etc.rglob("*") if path.is_file()}, before)
+        self.assertEqual([call for call in self.calls("sudo") if "apt-get" not in call], [])
+
+    def test_a_switch_that_fails_is_a_warning_and_the_install_goes_on(self):
+        self.hosted_runner_24_04()
+        done, _ = self.run_script("--step", STEP, *PACKAGES, FAKE_SUDO_FAIL="tee")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"::warning::{STEP}: could not switch the apt mirrors", done.stdout)
+        self.assertEqual(self.sequence(), ["update", "install"])
+
+    def test_the_switch_is_announced_in_the_log(self):
+        self.hosted_runner_24_04()
+        done, _ = self.run_script("--step", STEP, *PACKAGES)
+        self.assertIn("azure.archive.ubuntu.com", done.stdout)
+        self.assertNotIn("::warning::", done.stdout)
 
 
 if __name__ == "__main__":
