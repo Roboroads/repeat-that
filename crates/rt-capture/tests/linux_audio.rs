@@ -531,11 +531,54 @@ fn a_stream_the_app_opens_while_ducked_is_ducked_and_captured() {
 
 #[test]
 #[ignore = "needs PipeWire"]
+fn a_stream_that_closes_while_ducked_leaves_no_duck_behind() {
+    let _turn = take_turn();
+    let source = PipeWireSource::new().expect("PipeWire runs");
+    let player = PlayerProcess::start("RT Closing Call");
+    player.open(TONE_HZ);
+    let app = find_app(&source, "RT Closing Call");
+    let at = |level: f32, streams: usize| {
+        wait_for(Duration::from_secs(3), || {
+            close(&volumes("RT Closing Call"), &vec![vec![level; 2]; streams], 1e-4).then_some(())
+        })
+    };
+
+    // A call ends and a new one starts during the duck: the new stream gets the ducked volume WirePlumber remembers,
+    // joins the duck, and comes back with it.
+    source.set_app_volume(&app, 0.25).unwrap();
+    at(0.25, 1).expect("ducked");
+    player.close(TONE_HZ);
+    at(0.25, 0).expect("the call ends");
+    player.open(440.0);
+    at(0.25, 1).expect("the next call joins the duck");
+    thread::sleep(Duration::from_millis(300));
+    source.set_app_volume(&app, 1.0).unwrap();
+    assert!(
+        at(1.0, 1).is_some(),
+        "restored with the duck: {:?}",
+        volumes("RT Closing Call")
+    );
+
+    // The call ends during the duck, and the next one starts after it.
+    source.set_app_volume(&app, 0.25).unwrap();
+    at(0.25, 1).expect("ducked again");
+    player.close(440.0);
+    at(0.25, 0).expect("the call ends");
+    let _ = source.set_app_volume(&app, 1.0);
+    player.open(TONE_HZ);
+    let restored = at(1.0, 1);
+    println!("after a call that ended while ducked: {:?}", volumes("RT Closing Call"));
+    assert!(restored.is_some(), "the next call plays at full volume");
+}
+
+#[test]
+#[ignore = "needs PipeWire"]
 fn a_volume_changed_by_hand_during_a_duck_is_left_alone() {
     let _turn = take_turn();
     let source = PipeWireSource::new().expect("PipeWire runs");
     let _player = Player::start("RT Hand Tone");
     let app = find_app(&source, "RT Hand Tone");
+    let (handle, recording) = record(&source, &app);
     source.set_app_volume(&app, 0.25).unwrap();
     let node = nodes_where(&pw_dump(), "application.name", "RT Hand Tone")[0];
     wait_for(Duration::from_secs(2), || {
@@ -547,6 +590,15 @@ fn a_volume_changed_by_hand_during_a_duck_is_left_alone() {
         close(&volumes("RT Hand Tone"), &[vec![0.6; 2]], 1e-4).then_some(())
     })
     .expect("set by hand");
+    // The app plays at the user's volume now, and is captured that way: undoing the duck would boost it four times.
+    thread::sleep(Duration::from_millis(200));
+    let _ = recording.left();
+    thread::sleep(Duration::from_millis(500));
+    let (mono, rate) = recording.left();
+    handle.stop();
+    let captured = level_at_frequency(&mono, rate, TONE_HZ) / TONE_RMS;
+    println!("captured at {captured:.2}x the full level after the user set 0.6 during the duck");
+    assert!((captured - 0.6).abs() < 0.06, "captured at {captured:.2}x");
     source.set_app_volume(&app, 1.0).unwrap();
     thread::sleep(Duration::from_millis(300));
     assert_eq!(volumes("RT Hand Tone"), [vec![0.6; 2]], "the user's volume stays");
@@ -725,6 +777,68 @@ fn a_microphone_is_never_captured() {
     assert!(voice < 0.001, "the microphone is not captured");
 }
 
+/// The links into our capture nodes, as (link id, the channel of our input port).
+fn links_into_capture() -> Vec<(u64, String)> {
+    let dump = pw_dump();
+    let ours: BTreeSet<u64> = dump
+        .iter()
+        .filter(|o| is(o, ":Node"))
+        .filter(|o| {
+            props(o)["node.name"]
+                .as_str()
+                .is_some_and(|n| n.starts_with("repeat-that-capture-"))
+        })
+        .filter_map(|o| o["id"].as_u64())
+        .collect();
+    let channel_of = |port: u64| {
+        dump.iter()
+            .find(|o| is(o, ":Port") && o["id"].as_u64() == Some(port))
+            .and_then(|o| props(o)["audio.channel"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    dump.iter()
+        .filter(|o| is(o, ":Link"))
+        .filter(|o| o["info"]["input-node-id"].as_u64().is_some_and(|n| ours.contains(&n)))
+        .filter_map(|o| Some((o["id"].as_u64()?, channel_of(o["info"]["input-port-id"].as_u64()?))))
+        .collect()
+}
+
+#[test]
+#[ignore = "needs PipeWire"]
+fn a_link_that_goes_away_is_made_again() {
+    let _turn = take_turn();
+    let source = PipeWireSource::new().expect("PipeWire runs");
+    let _player = Player::start("RT Relink Tone");
+    let app = find_app(&source, "RT Relink Tone");
+    let (handle, recording) = record(&source, &app);
+    let left = wait_for(Duration::from_secs(3), || {
+        let links = links_into_capture();
+        (links.len() == 2).then(|| links.into_iter().find(|(_, channel)| channel == "FL"))?
+    })
+    .expect("the player is linked into our left and right input");
+    // Someone removes our left link, as a patchbay can, or the daemon refuses it.
+    let status = Command::new("pw-cli")
+        .args(["destroy", &left.0.to_string()])
+        .stdout(Stdio::null())
+        .status()
+        .expect("run pw-cli");
+    assert!(status.success(), "pw-cli destroy: {status}");
+    let relinked = wait_for(Duration::from_secs(3), || {
+        let links = links_into_capture();
+        (links.len() == 2 && !links.iter().any(|(id, _)| *id == left.0)).then_some(links)
+    });
+    assert!(relinked.is_some(), "linked again: {:?}", links_into_capture());
+    thread::sleep(Duration::from_millis(200));
+    let _ = recording.left();
+    thread::sleep(Duration::from_millis(500));
+    let (mono, rate) = recording.left();
+    handle.stop();
+    let level = level_at_frequency(&mono, rate, TONE_HZ);
+    println!("left channel after the link came back: {level:.3} RMS");
+    assert!(level > TONE_RMS * 0.9, "the left channel is captured again");
+}
+
 #[test]
 #[ignore = "needs PipeWire"]
 fn a_capture_ends_when_the_player_quits() {
@@ -811,6 +925,11 @@ impl PlayerProcess {
     fn open(&self, hz: f64) {
         writeln!(self.stdin.borrow_mut(), "{hz}").expect("the player runs");
     }
+
+    /// Closes the stream that plays `hz`: a call that ends, say.
+    fn close(&self, hz: f64) {
+        writeln!(self.stdin.borrow_mut(), "-{hz}").expect("the player runs");
+    }
 }
 
 impl Drop for PlayerProcess {
@@ -827,9 +946,10 @@ fn player_process() {
     println!("player pid {}", std::process::id());
     let player = InProcessPlayer::start(&name);
     for line in std::io::stdin().lines() {
-        match line.ok().and_then(|l| l.trim().parse().ok()) {
-            Some(hz) => player.open(hz),
-            None => break,
+        match line.ok().and_then(|l| l.trim().parse::<f64>().ok()) {
+            Some(hz) if hz > 0.0 => player.open(hz),
+            Some(hz) if hz < 0.0 => player.close(-hz),
+            _ => break,
         }
     }
 }
@@ -857,6 +977,11 @@ impl InProcessPlayer {
     fn open(&self, hz: f64) {
         let _ = self.commands.send(hz);
     }
+
+    /// Closes the stream that plays `hz`.
+    fn close(&self, hz: f64) {
+        let _ = self.commands.send(-hz);
+    }
 }
 
 impl Drop for InProcessPlayer {
@@ -868,7 +993,8 @@ impl Drop for InProcessPlayer {
     }
 }
 
-/// The PipeWire thread of an [`InProcessPlayer`]: opens a stream for every frequency it gets, and ends at 0.
+/// The PipeWire thread of an [`InProcessPlayer`]: opens a stream for every frequency it gets, closes the one of a
+/// negative frequency, and ends at 0.
 fn play(name: &str, commands: pw::channel::Receiver<f64>, ready: mpsc::Sender<()>) {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).unwrap();
@@ -938,14 +1064,22 @@ fn play(name: &str, commands: pw::channel::Receiver<f64>, ready: mpsc::Sender<()
                     &mut [pw::spa::pod::Pod::from_bytes(&format).unwrap()],
                 )
                 .unwrap();
-            streams.borrow_mut().push((listener, stream));
+            streams.borrow_mut().push((hz, listener, stream));
         }
     };
     let _commands = commands.attach(mainloop.loop_(), {
         let mainloop = mainloop.downgrade();
+        let streams = Rc::clone(&streams);
         move |hz| {
             if hz > 0.0 {
                 open(hz);
+            } else if hz < 0.0 {
+                let mut streams = streams.borrow_mut();
+                if let Some(i) = streams.iter().position(|(playing, ..)| *playing == -hz) {
+                    let (_, listener, stream) = streams.remove(i);
+                    let _ = stream.disconnect();
+                    drop(listener);
+                }
             } else if let Some(mainloop) = mainloop.upgrade() {
                 mainloop.quit();
             }
@@ -953,7 +1087,7 @@ fn play(name: &str, commands: pw::channel::Receiver<f64>, ready: mpsc::Sender<()
     });
     let _ = ready.send(());
     mainloop.run();
-    for (listener, stream) in streams.borrow_mut().drain(..) {
+    for (_, listener, stream) in streams.borrow_mut().drain(..) {
         let _ = stream.disconnect();
         drop(listener);
     }

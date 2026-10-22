@@ -18,13 +18,14 @@ use pw::link::Link;
 use pw::main_loop::MainLoopRc;
 use pw::node::{Node, NodeChangeMask, NodeListener};
 use pw::properties::PropertiesBox;
+use pw::proxy::{ProxyListener, ProxyT};
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::param::ParamType;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 
 use super::apps::{self, AppGroup, AppKey, Own, Placed, Placement, ProcFs, StreamInfo};
-use super::capture::{self, CaptureStream, PLAYBACK, PortInfo};
+use super::capture::{self, CaptureStream, Compensation, PLAYBACK, PortInfo};
 use super::volume::{self, NodeSession, NodeVolume};
 use super::{guard, icon};
 use crate::before_duck::{BeforeDuck, Session};
@@ -34,6 +35,9 @@ use crate::{AudioApp, CaptureError, DuckLevel, FrameSink, Result};
 
 /// How long a caller waits for the loop, and the loop for the daemon while it sets up.
 pub(super) const TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often a link the daemon refused, or removed, is made again before the capture goes without it.
+const LINK_TRIES: u32 = 3;
 
 /// How long a stream must have been around before a volume that doesn't match the duck journal counts as the user's.
 /// WirePlumber gives a new stream its remembered volume only once it sees it, a moment after we do.
@@ -69,6 +73,8 @@ pub(super) enum Command {
     },
     /// Gives every ducked stream its volume back at once.
     RestoreAll(Reply<()>),
+    /// Links the captures again, after the daemon refused or removed one of our links.
+    Relink,
     Quit,
 }
 
@@ -93,9 +99,10 @@ impl Connection {
         let (ready, setup) = mpsc::channel();
         let alive = Arc::new(AtomicBool::new(true));
         let flag = Arc::clone(&alive);
+        let later = commands.clone();
         let thread = thread::Builder::new()
             .name("rt-pipewire".into())
-            .spawn(move || run(remote, journal, quantum, receiver, ready, flag))
+            .spawn(move || run(remote, journal, quantum, (receiver, later), ready, flag))
             .map_err(|e| CaptureError::Backend(format!("can't start the PipeWire thread: {e}")))?;
         let client = Client { commands, alive };
         match setup.recv_timeout(TIMEOUT) {
@@ -163,12 +170,12 @@ impl Drop for Alive {
     }
 }
 
-/// The loop thread.
+/// The loop thread. It gets its `commands`, and a sender of them, for what it tells itself to do `later`.
 fn run(
     remote: PathBuf,
     journal: Option<PathBuf>,
     quantum: Arc<AtomicU64>,
-    commands: pw::channel::Receiver<Command>,
+    (commands, later): (pw::channel::Receiver<Command>, pw::channel::Sender<Command>),
     ready: mpsc::Sender<Result<()>>,
     alive: Arc<AtomicBool>,
 ) {
@@ -201,6 +208,7 @@ fn run(
         registry.clone(),
         journal,
         quantum,
+        later,
     )));
     let weak = Rc::downgrade(&state);
     let _registry_listener = registry
@@ -349,16 +357,42 @@ struct Stream {
 struct Capture {
     id: u64,
     key: AppKey,
-    /// The app's process, whose end ends the capture once its streams are gone. 0 if unknown.
+    /// The app's process, whose end ends the capture once its streams are gone. 0 if `/proc` doesn't show it: a PID an
+    /// app in a sandbox gives is one of the sandbox, which here is another process that may never end.
     pid: u32,
     node_name: String,
     /// Our capture node, once the registry announced it.
     node: Option<u32>,
-    links: BTreeMap<(u32, u32), Link>,
+    links: BTreeMap<(u32, u32), OwnLink>,
+    /// How often each link the capture wants was refused or removed.
+    failed: HashMap<(u32, u32), u32>,
     running: Arc<AtomicBool>,
-    /// Whether the app's streams are asynchronous, for the capture's compensation.
-    asynchronous: Arc<AtomicBool>,
+    /// How the capture undoes the app's duck, which the loop keeps up to date with the app's streams.
+    compensation: Compensation,
     stream: Option<CaptureStream>,
+}
+
+/// One of our links, and whether the daemon refused it or removed it since.
+struct OwnLink {
+    // Dropped before the proxy it listens to.
+    _listener: ProxyListener,
+    link: Link,
+    gone: Rc<Cell<bool>>,
+}
+
+impl OwnLink {
+    /// Asks the daemon to remove the link, unless it is gone already.
+    fn destroy(self, core: &CoreRc) {
+        let OwnLink {
+            _listener: listener,
+            link,
+            gone,
+        } = self;
+        drop(listener);
+        if !gone.get() {
+            let _ = core.destroy_object(link);
+        }
+    }
 }
 
 /// Ducked streams, and the journal that lets a later run restore them after a crash.
@@ -366,12 +400,15 @@ struct Capture {
 struct Ducking {
     before_duck: BeforeDuck,
     journal: Option<PathBuf>,
-    /// Entries from an earlier run's journal that no stream has matched yet.
+    /// Ducks no stream holds any more: entries from an earlier run's journal that no stream has matched yet, and those
+    /// of streams that closed while ducked. WirePlumber gives their volume to the next stream with their identifier.
     pending: Vec<JournalEntry>,
     /// What the journal holds, to skip writes that change nothing.
     written: Option<String>,
     /// The level new streams of a ducked app join at.
     join: HashMap<AppKey, f32>,
+    /// The apps being ducked, so a fade still finds an app whose streams all closed meanwhile.
+    apps: Vec<(AudioApp, AppKey)>,
 }
 
 impl Ducking {
@@ -397,6 +434,8 @@ struct State {
     next_capture: u64,
     ducking: Ducking,
     quantum: Arc<AtomicU64>,
+    /// The loop's own commands, for what it does later: what a proxy event finds can't wait for the state it is in.
+    later: pw::channel::Sender<Command>,
 }
 
 fn number(props: &DictRef, key: &str) -> Option<u32> {
@@ -408,7 +447,13 @@ fn text(props: &DictRef, key: &str) -> Option<String> {
 }
 
 impl State {
-    fn new(core: CoreRc, registry: RegistryRc, journal: Option<PathBuf>, quantum: Arc<AtomicU64>) -> Self {
+    fn new(
+        core: CoreRc,
+        registry: RegistryRc,
+        journal: Option<PathBuf>,
+        quantum: Arc<AtomicU64>,
+        later: pw::channel::Sender<Command>,
+    ) -> Self {
         let pending = journal.as_deref().map(duck_journal::read).unwrap_or_default();
         Self {
             core,
@@ -425,6 +470,7 @@ impl State {
                 ..Default::default()
             },
             quantum,
+            later,
         }
     }
 
@@ -561,7 +607,15 @@ impl State {
     fn removed(&mut self, id: u32) {
         self.clients.remove(&id);
         self.ports.remove(&id);
-        if self.nodes.remove(&id).is_some() {
+        if let Some(node) = self.nodes.remove(&id) {
+            // A stream that closes while ducked leaves its volume with WirePlumber, for the next stream of the app: that
+            // one joins the duck, or once the duck is over gets the volume back as after a crash.
+            if let Some(stream) = &node.stream
+                && let Some(entry) = self.ducking.before_duck.take(&stream.serial)
+            {
+                self.ducking.pending.push(entry);
+                self.ducking.save();
+            }
             // Captures whose own node went (it failed), or whose app is gone: no streams left, and no process either.
             let nodes = &self.nodes;
             let ended: Vec<u64> = self
@@ -581,13 +635,15 @@ impl State {
         self.relink();
     }
 
-    /// Links every capture to the output ports of its app's streams, and drops links whose ports are gone.
+    /// Links every capture to the output ports of its app's streams, and drops links whose ports are gone. A link the
+    /// daemon refused or removed is made again, [`LINK_TRIES`] times at most, so a channel doesn't go silent.
     fn relink(&mut self) {
         let State {
             core,
             nodes,
             ports,
             captures,
+            later,
             ..
         } = self;
         for capture in captures.iter_mut() {
@@ -603,8 +659,23 @@ impl State {
                     .and_then(|n| n.stream.as_ref())
                     .is_some_and(|s| s.asynchronous)
             });
-            capture.asynchronous.store(asynchronous, Ordering::Relaxed);
+            capture.compensation.asynchronous.store(asynchronous, Ordering::Relaxed);
             let wanted = capture::plan_links(ports, &app, |id| nodes.get(&id).map(|n| n.class.as_str()), node);
+            let mix = capture::mix_gain(ports, &wanted);
+            capture.compensation.mix.store(mix.to_bits(), Ordering::Relaxed);
+            let gone: Vec<(u32, u32)> = capture
+                .links
+                .iter()
+                .filter(|(_, l)| l.gone.get())
+                .map(|(&ends, _)| ends)
+                .collect();
+            for ends in gone {
+                capture.links.remove(&ends);
+                if wanted.contains(&ends) {
+                    *capture.failed.entry(ends).or_default() += 1;
+                }
+            }
+            capture.failed.retain(|ends, _| wanted.contains(ends));
             let stale: Vec<(u32, u32)> = capture.links.keys().filter(|l| !wanted.contains(l)).copied().collect();
             for ends in stale {
                 let Some(link) = capture.links.remove(&ends) else {
@@ -612,11 +683,12 @@ impl State {
                 };
                 // A link whose port went is gone already; only the proxy is left to drop.
                 if ports.contains_key(&ends.0) && ports.contains_key(&ends.1) {
-                    let _ = core.destroy_object(link);
+                    link.destroy(core);
                 }
             }
             for &(output, input) in &wanted {
-                if capture.links.contains_key(&(output, input)) {
+                let tries = capture.failed.get(&(output, input)).copied().unwrap_or(0);
+                if capture.links.contains_key(&(output, input)) || tries >= LINK_TRIES {
                     continue;
                 }
                 let Some(output_node) = ports.get(&output).map(|p| p.node) else {
@@ -630,9 +702,48 @@ impl State {
                 props.insert("link.passive", "true");
                 props.insert("object.linger", "false");
                 if let Ok(link) = core.create_object::<Link>("link-factory", &props) {
-                    capture.links.insert((output, input), link);
+                    let gone = Rc::new(Cell::new(false));
+                    // The core's error handler acts on EPIPE only; a link the daemon can't make (or someone removes
+                    // later) says so on its own proxy. The relink comes as a command of its own, after this event.
+                    let listener = {
+                        let on_gone = |gone: &Rc<Cell<bool>>| {
+                            let (gone, later) = (Rc::clone(gone), later.clone());
+                            move || {
+                                gone.set(true);
+                                let _ = later.send(Command::Relink);
+                            }
+                        };
+                        let (removed, error) = (on_gone(&gone), on_gone(&gone));
+                        link.upcast_ref()
+                            .add_listener_local()
+                            .removed(removed)
+                            .error(move |_, _, _| error())
+                            .register()
+                    };
+                    let own_link = OwnLink {
+                        _listener: listener,
+                        link,
+                        gone,
+                    };
+                    capture.links.insert((output, input), own_link);
                 }
             }
+        }
+        self.update_compensation();
+    }
+
+    /// Tells each capture whether to undo its app's duck, see [`Compensation`]: while the app is ducked, only if every
+    /// stream of the app is.
+    fn update_compensation(&self) {
+        for capture in &self.captures {
+            let ducked = capture.compensation.level.get() < 1.0;
+            let all = self
+                .nodes
+                .values()
+                .filter(|n| key_of(n) == Some(&capture.key))
+                .filter_map(|n| n.stream.as_ref())
+                .all(|s| self.ducking.before_duck.contains(&s.serial));
+            capture.compensation.undo.store(!ducked || all, Ordering::Relaxed);
         }
     }
 
@@ -669,12 +780,24 @@ impl State {
                 self.restore_all();
                 let _ = reply.send(Ok(()));
             }
+            Command::Relink => self.relink(),
             Command::Quit => {}
         }
     }
 
-    /// The apps there are now.
+    /// The apps there are now, named from the `.desktop` files, which are scanned again now and then. See
+    /// [`fade_groups`](Self::fade_groups) for a fade.
     fn groups(&self) -> Vec<AppGroup> {
+        self.groups_named(icon::desktop_name)
+    }
+
+    /// [`groups`](Self::groups) without scanning the `.desktop` files again: that reads every one of them, which would
+    /// hold up the loop, and the fade, for that long.
+    fn fade_groups(&self) -> Vec<AppGroup> {
+        self.groups_named(icon::known_desktop_name)
+    }
+
+    fn groups_named(&self, desktop_name: impl Fn(&str) -> Option<String>) -> Vec<AppGroup> {
         let placed: Vec<Placed> = self
             .nodes
             .iter()
@@ -687,7 +810,7 @@ impl State {
                 })
             })
             .collect();
-        apps::group(&placed, self.own, icon::desktop_name)
+        apps::group(&placed, self.own, desktop_name)
     }
 
     fn start(&mut self, app: &AudioApp, sink: FrameSink, level: DuckLevel, running: Arc<AtomicBool>) -> Result<u64> {
@@ -696,26 +819,26 @@ impl State {
         self.next_capture += 1;
         let id = self.next_capture;
         let node_name = format!("repeat-that-capture-{}-{id}", std::process::id());
-        let asynchronous = Arc::new(AtomicBool::new(false));
+        let compensation = Compensation::new(level);
         let stream = capture::open(
             &self.core,
             &node_name,
             sink,
-            level,
+            compensation.clone(),
             Arc::clone(&running),
             Arc::clone(&self.quantum),
-            Arc::clone(&asynchronous),
         )
         .map_err(|e| CaptureError::Backend(format!("can't open a capture stream: {e}")))?;
         self.captures.push(Capture {
             id,
             key: group.key.clone(),
-            pid: group.app.pid,
+            pid: group.key.process().unwrap_or(0),
             node_name,
             node: None,
             links: BTreeMap::new(),
+            failed: HashMap::new(),
             running,
-            asynchronous,
+            compensation,
             stream: Some(stream),
         });
         self.relink();
@@ -732,7 +855,7 @@ impl State {
         capture.stream.take();
         for (ends, link) in std::mem::take(&mut capture.links) {
             if self.ports.contains_key(&ends.0) && self.ports.contains_key(&ends.1) {
-                let _ = self.core.destroy_object(link);
+                link.destroy(&self.core);
             }
         }
     }
@@ -752,11 +875,19 @@ impl State {
         first: bool,
         duck_level: &DuckLevel,
     ) -> Result<()> {
-        let groups = self.groups();
-        let key = apps::find(&groups, app)
-            .ok_or(CaptureError::AppNotFound(app.pid))?
-            .key
-            .clone();
+        let groups = self.fade_groups();
+        let found = apps::find(&groups, app).map(|group| group.key.clone());
+        // An app whose streams all closed during the duck isn't listed, but its duck still ends.
+        let ducked = self
+            .ducking
+            .apps
+            .iter()
+            .find(|(a, _)| a == app)
+            .map(|(_, key)| key.clone());
+        let Some(key) = found.or(ducked) else {
+            duck_level.set(1.0, capture::now());
+            return Err(CaptureError::AppNotFound(app.pid));
+        };
         let State { nodes, ducking, .. } = self;
         let streams: Vec<&Stream> = nodes
             .values()
@@ -773,11 +904,15 @@ impl State {
                 }
             }
         }
-        adopt(&mut ducking.before_duck, &streams);
+        adopt(&mut ducking.before_duck, &ducking.pending, &streams);
         let sessions: Vec<NodeSession<'_>> = streams.iter().filter_map(|s| session(s)).collect();
         ramp::apply(&sessions, level, duck_new, &mut ducking.before_duck);
         // Captures switch their compensation for audio played from the next cycle on.
         duck_level.set(level, capture::now() + capture::VOLUME_DELAY);
+        ducking.apps.retain(|(a, _)| a != app);
+        if level < 1.0 {
+            ducking.apps.push((app.clone(), key.clone()));
+        }
         if duck_new && level < 1.0 {
             ducking.join.insert(key, level);
         } else {
@@ -785,6 +920,7 @@ impl State {
         }
         // Every step: recovery only restores streams still at the volume the journal holds.
         ducking.save();
+        self.update_compensation();
         Ok(())
     }
 
@@ -798,6 +934,7 @@ impl State {
             }
         }
         ducking.join.clear();
+        ducking.apps.clear();
         ducking.save();
     }
 
@@ -816,7 +953,15 @@ impl State {
         let Some(stream) = nodes.get(&id).and_then(|n| n.stream.as_ref()) else {
             return;
         };
-        if adopt(&mut ducking.before_duck, &[stream]) {
+        // A volume the user set during the duck is theirs from now on: the duck leaves that stream alone, also when it
+        // ends, and its capture takes it as it plays.
+        if let Some(entry) = ducking.before_duck.get(&stream.serial)
+            && volume::changed_by_user(entry, &stream.volume.borrow())
+        {
+            ducking.before_duck.restored(&stream.serial);
+            ducking.save();
+        }
+        if adopt(&mut ducking.before_duck, &ducking.pending, &[stream]) {
             ducking.save();
         }
         if first
@@ -827,6 +972,7 @@ impl State {
             ducking.before_duck.apply(&session, level);
             ducking.save();
         }
+        self.update_compensation();
     }
 
     /// Restores the streams that ducks from an earlier run's journal still hold down.
@@ -835,11 +981,12 @@ impl State {
             return;
         }
         let State { nodes, ducking, .. } = self;
-        // Streams this run ducked aren't the earlier run's.
+        // Streams this run ducked aren't the earlier run's, and those of an app being ducked join that duck instead.
         let streams: Vec<&Stream> = nodes
             .values()
             .filter_map(|n| n.stream.as_ref())
             .filter(|s| !ducking.before_duck.contains(&s.serial))
+            .filter(|s| !s.placement.as_ref().is_some_and(|p| ducking.join.contains_key(&p.key)))
             .collect();
         let known: Vec<(&Stream, String, f32, bool)> = streams
             .iter()
@@ -893,9 +1040,9 @@ impl Stream {
 
 /// Takes streams that aren't ducked by us but sit at the ducked volume of another of ours with the same identifier as
 /// ducked from that one's volume, and says whether there were any. WirePlumber gives a new stream the volume it
-/// remembers for its identifier, which is the ducked one while we duck a stream with that identifier; ducking it from
-/// there would duck it twice, and restoring would leave it ducked.
-fn adopt(before_duck: &mut BeforeDuck, streams: &[&Stream]) -> bool {
+/// remembers for its identifier, which is the ducked one while we duck a stream with that identifier, or did until it
+/// closed (`pending`); ducking it from there would duck it twice, and restoring would leave it ducked.
+fn adopt(before_duck: &mut BeforeDuck, pending: &[JournalEntry], streams: &[&Stream]) -> bool {
     let mut adopted = false;
     for stream in streams {
         let (Some(identifier), Some(level)) = (&stream.identifier, stream.volume.borrow().level()) else {
@@ -906,6 +1053,7 @@ fn adopt(before_duck: &mut BeforeDuck, streams: &[&Stream]) -> bool {
         }
         let sibling = before_duck
             .entries()
+            .chain(pending)
             .find(|e| e.identifier == *identifier && duck_journal::should_restore(e, level))
             .map(|e| e.original);
         if let Some(original) = sibling {

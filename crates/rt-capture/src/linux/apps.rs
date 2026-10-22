@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use super::file_name;
 use crate::AudioApp;
 use crate::process_tree::{Process, ProcessTable};
 
@@ -70,6 +71,17 @@ pub(super) enum AppKey {
     Binary(String),
     /// `application.name`, for a stream without a binary either.
     Name(String),
+}
+
+impl AppKey {
+    /// The app's process on this system, if `/proc` showed it. A PID a stream gives otherwise can be one of a sandbox,
+    /// which is someone else here, or no one.
+    pub fn process(&self) -> Option<u32> {
+        match self {
+            AppKey::Process(pid) => Some(*pid),
+            AppKey::Binary(_) | AppKey::Name(_) => None,
+        }
+    }
 }
 
 /// Where a stream belongs: its app, and the app's process and executable where they are known.
@@ -240,13 +252,10 @@ pub(super) fn find<'a>(groups: &'a [AppGroup], app: &AudioApp) -> Option<&'a App
         .or_else(|| groups.iter().find(|g| g.app.name == app.name))
 }
 
-fn file_name(path: &Path) -> &str {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
 
     use super::*;
 
@@ -385,6 +394,9 @@ mod tests {
         let placement = place(&pulse(2, "firefox", "Firefox"), &procs).unwrap();
         assert_eq!(placement.key, AppKey::Binary("firefox".into()));
         assert_eq!(placement.exe, None);
+        // Nor is it a process here that a capture could wait for.
+        assert_eq!(placement.key.process(), None);
+        assert_eq!(AppKey::Process(300).process(), Some(300));
     }
 
     #[test]

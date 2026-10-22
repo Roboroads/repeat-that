@@ -88,6 +88,12 @@ impl BeforeDuck {
         self.0.remove(id);
     }
 
+    /// Forgets session `id`, which is gone, and gives what it was ducked from, if it was ducked.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn take(&mut self, id: &str) -> Option<JournalEntry> {
+        self.0.remove(id)
+    }
+
     /// The ducked sessions, for the duck journal.
     pub fn entries(&self) -> impl Iterator<Item = &JournalEntry> {
         self.0.values()
@@ -155,6 +161,16 @@ mod tests {
         // Its volume isn't read again, and later ducks scale the original it was given.
         assert_eq!(before.target("b", 0.5, || unreachable!()), Some(0.4));
         assert_eq!(before.target("b", 1.0, || unreachable!()), Some(0.8));
+    }
+
+    #[test]
+    fn a_session_that_is_gone_gives_its_entry() {
+        let mut before = BeforeDuck::default();
+        before.target("a", 0.5, session(0.8));
+        let entry = before.take("a").unwrap();
+        assert_eq!((entry.original, entry.ducked), (0.8, 0.4));
+        assert!(!before.contains("a"));
+        assert_eq!(before.take("a"), None);
     }
 
     #[test]

@@ -29,6 +29,9 @@ pub(crate) const EXE_PATHS_IGNORE_CASE: bool = false;
 const NO_PIPEWIRE: &str =
     "Capture needs PipeWire, and it isn't running. Systems with only PulseAudio aren't supported.";
 
+/// What capture says while PipeWire isn't running yet, as when the app starts before it at login.
+const NO_PIPEWIRE_YET: &str = "PipeWire isn't running yet. Capture starts as soon as it is.";
+
 /// The PipeWire source. A duck journal in `options` also gives it the duck guard, which reads the journal to know what
 /// to restore, except in a Flatpak, where a guard can't outlive the app.
 pub(crate) fn source(options: PlatformOptions) -> Result<Box<dyn AppAudioSource>> {
@@ -78,13 +81,26 @@ fn socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     Some(Path::new(&dir).join(remote))
 }
 
-/// The socket to connect to, or [`CaptureError::Unsupported`] if there is none: then PipeWire isn't running, and
-/// won't be for this session. If the socket is there but connecting fails, PipeWire may still be starting, and that is
-/// a [`CaptureError::Backend`] error the engine tries again.
-fn remote(socket: Option<PathBuf>, exists: impl Fn(&Path) -> bool) -> Result<PathBuf> {
-    socket
-        .filter(|path| exists(path))
-        .ok_or_else(|| CaptureError::Unsupported(NO_PIPEWIRE.into()))
+/// Where a PulseAudio server's socket is: `native` in `$PULSE_RUNTIME_PATH`, else in `pulse` in `$XDG_RUNTIME_DIR`.
+/// pipewire-pulse serves the same socket, but only once PipeWire runs.
+fn pulse_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    let dir = set("PULSE_RUNTIME_PATH")
+        .map(PathBuf::from)
+        .or_else(|| set("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("pulse")))?;
+    Some(dir.join("native"))
+}
+
+/// The socket to connect to. Without it, [`CaptureError::Unsupported`] where PipeWire won't come for this session:
+/// there is no runtime folder, or PulseAudio serves its `pulse` socket instead. Otherwise PipeWire may start after us,
+/// as when a window manager's config starts both at login, and that is a [`CaptureError::Backend`] error the app tries
+/// again, as is a socket that is there but doesn't answer yet.
+fn remote(socket: Option<PathBuf>, pulse: Option<PathBuf>, exists: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    match socket {
+        Some(socket) if exists(&socket) => Ok(socket),
+        Some(_) if !pulse.is_some_and(|pulse| exists(&pulse)) => Err(CaptureError::Backend(NO_PIPEWIRE_YET.into())),
+        _ => Err(CaptureError::Unsupported(NO_PIPEWIRE.into())),
+    }
 }
 
 /// The time between the steps of a fade: one cycle of the graph (`quantum`, in nanoseconds; 1024 frames at 48 kHz if
@@ -135,10 +151,12 @@ enum Guard {
 }
 
 impl PipeWireSource {
-    /// The source for the PipeWire of this session. [`CaptureError::Unsupported`] if PipeWire isn't running. It
-    /// connects on first use.
+    /// The source for the PipeWire of this session. [`CaptureError::Unsupported`] if PipeWire won't run in it, as
+    /// where PulseAudio runs instead, and a [`CaptureError::Backend`] error to try again while PipeWire isn't running
+    /// yet. It connects on first use.
     pub fn new() -> Result<Self> {
-        let remote = remote(socket(|name| std::env::var_os(name)), Path::exists)?;
+        let var = |name: &str| std::env::var_os(name);
+        let remote = remote(socket(var), pulse_socket(var), Path::exists)?;
         Ok(Self {
             remote,
             journal: None,
@@ -177,18 +195,30 @@ impl PipeWireSource {
         if let Some(live) = connection.as_ref().filter(|c| c.is_alive()) {
             return Ok(live.client());
         }
-        // The old one, if any, ends first.
+        // The old one, if any, ends first, and with it every duck: its captures are gone, and the next connection
+        // ducks nothing but restores what the journal lists. The daemon may have restarted meanwhile, which gives
+        // every stream the volume it remembers. A capture of an app that was ducked must not boost it now.
         *connection = None;
+        let since = capture::now();
+        for level in lock(&self.levels).values() {
+            level.set(1.0, since);
+        }
         let fresh = Connection::open(self.remote.clone(), self.journal.clone(), Arc::clone(&self.quantum))?;
         let client = fresh.client();
         *connection = Some(fresh);
         Ok(client)
     }
 
+    /// The duck level of `app`, which its captures compensate for. One per app in the list: two instances of one
+    /// executable are two apps with a process of their own, and ducking one doesn't make a capture of the other boost
+    /// it. An app without a known process has one by its executable, or its name.
     fn level(&self, app: &AudioApp) -> DuckLevel {
-        let key = match &app.exe_path {
-            Some(exe) => format!("exe:{}", exe.display()),
-            None => format!("name:{}", app.name),
+        let key = if app.pid != 0 {
+            format!("pid:{}", app.pid)
+        } else if let Some(exe) = &app.exe_path {
+            format!("exe:{}", exe.display())
+        } else {
+            format!("name:{}", app.name)
         };
         lock(&self.levels).entry(key).or_insert_with(DuckLevel::new).clone()
     }
@@ -291,6 +321,12 @@ impl Drop for PipeWireCapture {
     }
 }
 
+/// The file name of `path`, an executable or the program of an `Exec` line, or "" if it has none or it isn't UTF-8.
+/// The app list and the `.desktop` lookup both name programs with it, so a program has the same name in both.
+fn file_name(path: &Path) -> &str {
+    path.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -339,14 +375,45 @@ mod tests {
     }
 
     #[test]
-    fn without_a_socket_capture_needs_pipewire_and_that_is_final() {
-        let missing = remote(Some("/run/user/1000/pipewire-0".into()), |_| false);
-        match missing {
+    fn pulseaudio_alone_means_no_pipewire_for_the_session() {
+        let socket = || Some(PathBuf::from("/run/user/1000/pipewire-0"));
+        let pulse = || Some(PathBuf::from("/run/user/1000/pulse/native"));
+        let only_pulse = remote(socket(), pulse(), |path| path.ends_with("native"));
+        match only_pulse {
             Err(CaptureError::Unsupported(why)) => assert_eq!(why, NO_PIPEWIRE),
             other => panic!("expected Unsupported, got {other:?}"),
         }
-        assert!(matches!(remote(None, |_| true), Err(CaptureError::Unsupported(_))));
-        assert_eq!(remote(Some("/s".into()), |_| true).unwrap(), Path::new("/s"));
+        // Without a runtime folder there is no session to run PipeWire in.
+        assert!(matches!(
+            remote(None, None, |_| true),
+            Err(CaptureError::Unsupported(_))
+        ));
+        assert_eq!(remote(Some("/s".into()), pulse(), |_| true).unwrap(), Path::new("/s"));
+    }
+
+    #[test]
+    fn without_any_socket_yet_pipewire_may_still_start() {
+        // A window manager's config that starts us before `exec pipewire`, say.
+        let socket = Some(PathBuf::from("/run/user/1000/pipewire-0"));
+        let pulse = Some(PathBuf::from("/run/user/1000/pulse/native"));
+        match remote(socket, pulse, |_| false) {
+            Err(CaptureError::Backend(why)) => assert_eq!(why, NO_PIPEWIRE_YET),
+            other => panic!("expected a Backend error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_pulse_socket_is_found_where_pulseaudio_puts_it() {
+        let pulse = |vars: &[(&str, &str)]| pulse_socket(env(vars));
+        assert_eq!(
+            pulse(&[("XDG_RUNTIME_DIR", "/run/user/1000")]),
+            Some("/run/user/1000/pulse/native".into())
+        );
+        assert_eq!(
+            pulse(&[("XDG_RUNTIME_DIR", "/run/user/1000"), ("PULSE_RUNTIME_PATH", "/run/pa")]),
+            Some("/run/pa/native".into())
+        );
+        assert_eq!(pulse(&[]), None);
     }
 
     #[test]
@@ -368,6 +435,66 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A source for the PipeWire at `remote`, which it hasn't connected to yet.
+    fn source_at(remote: PathBuf) -> PipeWireSource {
+        PipeWireSource {
+            remote,
+            journal: None,
+            guard: Mutex::default(),
+            connection: Mutex::default(),
+            quantum: Arc::default(),
+            levels: Mutex::default(),
+            fade: Mutex::default(),
+        }
+    }
+
+    #[test]
+    fn each_instance_of_an_app_has_a_duck_level_of_its_own() {
+        let source = source_at("/nonexistent/pipewire-0".into());
+        let firefox = |pid| AudioApp {
+            pid,
+            name: "Firefox".into(),
+            exe_path: Some("/usr/lib/firefox/firefox".into()),
+        };
+        source.level(&firefox(100)).set(0.25, 1);
+        assert_eq!(source.level(&firefox(100)).get(), 0.25);
+        assert_eq!(
+            source.level(&firefox(200)).get(),
+            1.0,
+            "the other instance isn't ducked"
+        );
+        // Without a process, the executable tells apps apart, else the name.
+        source.level(&firefox(0)).set(0.5, 1);
+        assert_eq!(source.level(&firefox(0)).get(), 0.5);
+        let named = |name: &str| AudioApp {
+            pid: 0,
+            name: name.into(),
+            exe_path: None,
+        };
+        source.level(&named("Spotify")).set(0.2, 1);
+        assert_eq!(source.level(&named("Spotify")).get(), 0.2);
+        assert_eq!(source.level(&named("Discord")).get(), 1.0);
+    }
+
+    #[test]
+    fn a_new_connection_starts_with_every_app_at_full_volume() {
+        // An app ducked through a connection that broke, a PipeWire restart say; the socket doesn't answer yet.
+        let dir = std::env::temp_dir().join(format!("rt-pw-reconnect-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        drop(UnixListener::bind(dir.join("pipewire-0")).unwrap());
+        let source = source_at(dir.join("pipewire-0"));
+        let app = AudioApp {
+            pid: 1234,
+            name: "Discord".into(),
+            exe_path: Some("/usr/share/discord/Discord".into()),
+        };
+        source.level(&app).set(0.25, capture::now());
+        assert!(matches!(source.client(), Err(CaptureError::Backend(_))));
+        assert_eq!(source.level(&app).get(), 1.0, "the next capture isn't boosted");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn fades_step_once_per_graph_cycle() {
         assert_eq!(step_interval(0), Duration::from_nanos(21_333_333));
@@ -380,5 +507,15 @@ mod tests {
     #[test]
     fn this_os_has_a_backend_and_a_guard_and_case_sensitive_paths() {
         const { assert!(HAS_BACKEND && HAS_DUCK_GUARD && !EXE_PATHS_IGNORE_CASE) };
+    }
+
+    #[test]
+    fn programs_are_named_by_their_file_name() {
+        assert_eq!(file_name(Path::new("/usr/lib/firefox/firefox")), "firefox");
+        assert_eq!(file_name(Path::new("firefox")), "firefox");
+        // A trailing slash, as an `Exec` line could have it, names the same program.
+        assert_eq!(file_name(Path::new("/opt/app/")), "app");
+        assert_eq!(file_name(Path::new("/")), "");
+        assert_eq!(file_name(Path::new("")), "");
     }
 }

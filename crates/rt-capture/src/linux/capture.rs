@@ -7,7 +7,12 @@
 //! Playback streams apply their volume before their output ports, so a ducked app is captured ducked. The capture
 //! undoes that: each cycle's audio is amplified by the inverse of the level the app played it at, from the
 //! [`DuckLevel`] history. A volume change takes effect at a cycle boundary of the graph, so one level per cycle is
-//! exact; see `ramp.rs` for how well the estimate of that boundary holds.
+//! exact; see `ramp.rs` for how well the estimate of that boundary holds. The capture gets the app's streams mixed, so
+//! it undoes the duck only while all of them play ducked (see [`Compensation`]).
+//!
+//! A surround stream folds into our two inputs, where the daemon sums what each input gets: a 5.1 stream's FL, FC and
+//! RL all reach the left. The capture scales that sum back by the number of channels a stream sums on one side (see
+//! [`mix_gain`]), so dialogue in the centre channel can't clip.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -111,6 +116,43 @@ pub(super) fn plan_links<'a>(
     links
 }
 
+/// What the capture scales its input by so that `links` (from [`plan_links`]) can't sum past full scale: one over
+/// the most output ports of one node that feed the same input. Different streams of the app are left to sum, as they
+/// do in the sink the app plays to.
+pub(super) fn mix_gain(ports: &HashMap<u32, PortInfo>, links: &BTreeSet<(u32, u32)>) -> f32 {
+    let mut feeds: HashMap<(u32, u32), u32> = HashMap::new();
+    for &(output, input) in links {
+        if let Some(port) = ports.get(&output) {
+            *feeds.entry((port.node, input)).or_default() += 1;
+        }
+    }
+    1.0 / feeds.into_values().max().unwrap_or(1) as f32
+}
+
+/// How a capture undoes its app's duck: the app's duck level, whether the app's streams are asynchronous (`node.async`),
+/// and whether to undo it at all. That is only right while every stream of the app plays ducked: one the duck left
+/// alone, because the user set its volume during the duck or its volume wasn't known yet, plays at its own volume, and
+/// undoing the duck on the mix would boost it by up to 20 times. Then the capture takes the app as it plays. `mix` is
+/// the [`mix_gain`] of the capture's links, as `f32` bits.
+#[derive(Clone)]
+pub(super) struct Compensation {
+    pub level: DuckLevel,
+    pub asynchronous: Arc<AtomicBool>,
+    pub undo: Arc<AtomicBool>,
+    pub mix: Arc<AtomicU32>,
+}
+
+impl Compensation {
+    pub fn new(level: DuckLevel) -> Self {
+        Self {
+            level,
+            asynchronous: Arc::default(),
+            undo: Arc::new(AtomicBool::new(true)),
+            mix: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+        }
+    }
+}
+
 /// The duck level audio played at `time` (100 ns units) was played at, from `history` (oldest first).
 pub(super) fn level_at(history: &[DuckChange], time: u64) -> f32 {
     history
@@ -121,10 +163,10 @@ pub(super) fn level_at(history: &[DuckChange], time: u64) -> f32 {
         .map_or(1.0, |c| c.level)
 }
 
-/// Undoes a duck to `level` on `samples`.
-fn amplify(samples: &mut [f32], level: f32) {
-    if level < 1.0 {
-        let gain = 1.0 / level;
+/// Scales `samples` by `mix` and undoes a duck to `level` on them.
+fn amplify(samples: &mut [f32], level: f32, mix: f32) {
+    let gain = if level < 1.0 { mix / level } else { mix };
+    if gain != 1.0 {
         samples.iter_mut().for_each(|s| *s *= gain);
     }
 }
@@ -151,18 +193,23 @@ impl Drop for CaptureStream {
     }
 }
 
-/// Opens a capture stream named `node_name` that hands what it captures to `sink`, compensated for `level`. `running`
-/// turns false when the stream fails. Each cycle stores its length in `quantum` (nanoseconds), which the fades use as
-/// their step. `asynchronous` says whether the app's streams are asynchronous (`node.async`).
+/// Opens a capture stream named `node_name` that hands what it captures to `sink`, with the app's duck undone as
+/// `compensation` says. `running` turns false when the stream fails. Each cycle stores its length in `quantum`
+/// (nanoseconds), which the fades use as their step.
 pub(super) fn open(
     core: &CoreRc,
     node_name: &str,
     mut sink: FrameSink,
-    level: DuckLevel,
+    compensation: Compensation,
     running: Arc<AtomicBool>,
     quantum: Arc<AtomicU64>,
-    asynchronous: Arc<AtomicBool>,
 ) -> Result<CaptureStream, pw::Error> {
+    let Compensation {
+        level,
+        asynchronous,
+        undo,
+        mix,
+    } = compensation;
     let mut props = PropertiesBox::new();
     props.insert("media.type", "Audio");
     props.insert("media.category", "Capture");
@@ -236,7 +283,12 @@ pub(super) fn open(
                 } else {
                     cycle
                 };
-                amplify(&mut samples, level_at(&history, played));
+                let level = if undo.load(Ordering::Relaxed) {
+                    level_at(&history, played)
+                } else {
+                    1.0
+                };
+                amplify(&mut samples, level, f32::from_bits(mix.load(Ordering::Relaxed)));
                 sink(
                     &samples,
                     CaptureFormat {
@@ -340,6 +392,21 @@ mod tests {
         // FL, FC, RL, AUX0 on the left; FR, FC, RR, AUX1 on the right; no LFE.
         assert_eq!(to(100), [0, 2, 4, 6]);
         assert_eq!(to(101), [1, 2, 5, 7]);
+        // Four channels sum on each side.
+        assert_eq!(mix_gain(&ports, &links), 0.25);
+    }
+
+    #[test]
+    fn stereo_and_mono_keep_full_scale() {
+        // One channel per side and stream; two streams sum, as in the sink.
+        let ports = with_capture(HashMap::from([
+            (200, port(20, true, "FL")),
+            (201, port(20, true, "FR")),
+            (210, port(21, true, "MONO")),
+        ]));
+        let links = plan_links(&ports, &BTreeSet::from([20, 21]), classes, 10);
+        assert_eq!(mix_gain(&ports, &links), 1.0);
+        assert_eq!(mix_gain(&ports, &BTreeSet::new()), 1.0);
     }
 
     #[test]
@@ -398,10 +465,12 @@ mod tests {
         assert_eq!(level_at(&[], 10), 1.0);
 
         let mut samples = vec![0.25f32; 4];
-        amplify(&mut samples, level_at(&history, 5_000));
+        amplify(&mut samples, level_at(&history, 5_000), 1.0);
         assert_eq!(samples, [1.0; 4]);
-        amplify(&mut samples, 1.0);
+        amplify(&mut samples, 1.0, 1.0);
         assert_eq!(samples, [1.0; 4]);
+        amplify(&mut samples, 0.5, 0.25);
+        assert_eq!(samples, [0.5; 4]);
     }
 
     #[test]

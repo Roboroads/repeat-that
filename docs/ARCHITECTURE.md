@@ -64,7 +64,7 @@ return `Unsupported` everywhere else, so they can be tested on Linux.
 | Backend | API | Notes |
 |---|---|---|
 | Windows | WASAPI `ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`windows` crate) | Win10 2004+. Uses `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — Discord/Teams/browsers play audio from child processes. Captures 48 kHz stereo `f32`; the audio engine converts. |
-| Linux | PipeWire 0.3.65+ (`pipewire` crate): a capture stream of our own, linked by hand to the output ports of the app's playback streams | Apps that play through the PulseAudio API (most) come through pipewire-pulse. Systems with only PulseAudio get "Capture needs PipeWire". Captures stereo `f32` at the graph rate. |
+| Linux | PipeWire 0.3.65+ (`pipewire` crate): a capture stream of our own, linked by hand to the output ports of the app's playback streams | Apps that play through the PulseAudio API (most) come through pipewire-pulse. Systems with only PulseAudio get "Capture needs PipeWire"; before PipeWire runs, as when the window manager starts it after us, capture keeps trying. Captures stereo `f32` at the graph rate. |
 | macOS | Core Audio process taps (`AudioHardwareCreateProcessTap`, macOS 14.2+) via `objc2`: a private stereo tap of the app's processes, inside a private aggregate device on the app's own output device | Needs the audio-capture TCC permission and an `NSAudioCaptureUsageDescription`. Apple Silicon only. Below macOS 14.2 every call returns `Unsupported`. There is no per-app volume, so ducking replays the app's audio ourselves, see [macOS](#macos). |
 | Mock | Plays a WAV file (or samples in memory) as if it were an app | Used for tests and development on any OS. |
 
@@ -106,10 +106,11 @@ engine retries; a capture whose connection drops ends, and the next call connect
   stream with the same `application.process.binary`, else `application.name`, and has no executable. Names come from
   the `.desktop` file of the executable or binary, else `application.name`. Our own process tree isn't listed.
 - *Capture.* Our capture stream never connects on its own; the source links the output ports of the app's streams to
-  it (mono to both sides, surround folded into stereo) and links new streams as they come. Only ports of
-  `Stream/Output/Audio` nodes are ever linked, so a microphone or any other source never ends up in a capture; a test
-  checks this with a virtual microphone playing a tone. The capture ends once the app's streams are gone and its
-  process too.
+  it (mono to both sides, surround folded into stereo and scaled by the channels it sums on a side, so it can't clip)
+  and links new streams as they come. A link the daemon refuses, or someone removes, is made again, three times at
+  most. Only ports of `Stream/Output/Audio` nodes are ever linked, so a microphone or any other source never ends up
+  in a capture; a test checks this with a virtual microphone playing a tone. The capture ends once the app's streams
+  are gone and its process too.
 - *Ducking.* A stream's volume is its node's `channelVolumes`, scaled alike so it keeps its balance; mute is never
   touched. Streams apply their volume before their output ports, so the capture is ducked too and compensated like on
   Windows, but PipeWire applies a volume from the next graph cycle on, so the fade steps once per cycle (its length,
@@ -123,9 +124,10 @@ engine retries; a capture whose connection drops ends, and the next call connect
   and restored once it has played for a moment (WirePlumber sets the remembered volume a moment after the stream
   appears).
 - *Crash safety.* The duck guard is the app's executable started again, or `$APPIMAGE` when it runs from an AppImage,
-  whose mount goes away with the app; it waits with `pidfd_open` and `poll`. In a Flatpak (`FLATPAK_ID`, or
-  `/.flatpak-info`) there is no guard, because it would die with the sandbox: the journal restores ducked apps at the
-  next start.
+  whose mount goes away with the app; it waits with `pidfd_open` and `poll`. Before it disconnects it does a last
+  roundtrip, so the daemon has read every restored volume before the connection goes. In a Flatpak (`FLATPAK_ID`,
+  or `/.flatpak-info`) there is no guard, because it would die with the sandbox: the journal restores ducked apps at
+  the next start.
 - *Icons.* `app_icon` maps the executable's file name to a `.desktop` file (its `Exec`, `TryExec`, `StartupWMClass` or
   file name) in `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`, and looks its `Icon=` up in the desktop's icon theme (from GTK's
   or KDE's settings) and `hicolor`: the smallest PNG at least the size asked for. SVG-only apps get the generic icon.
