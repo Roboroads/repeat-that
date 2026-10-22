@@ -1,0 +1,272 @@
+name: Build Flatpak
+
+# Builds the Flatpak of Repeat That (x86_64, app ID me.roboroads.RepeatThat) from packaging/flatpak, checks it, and uploads
+# it as the artifact `release-flatpak-Repeat-That_<version>_x86_64.flatpak`. Like build-windows.yml and build-linux.yml it
+# only builds: publish-release.yml calls it as its `flatpak` job, writes SHA256SUMS over every platform and attaches the
+# files. The Flatpak is a required platform there, so a failure in any step of this workflow holds the release back.
+#   * pull_request / workflow_dispatch: a dry run. The bundle is a workflow artifact, so a change can be tried on a real
+#     desktop before it merges (`flatpak install ./Repeat-That_<version>_x86_64.flatpak`).
+#   * with a tag (workflow_call from publish-release.yml): builds exactly that release, and fails when the app version
+#     doesn't match the tag. A draft release has no tag yet, so a run for a draft gets the commit to build in `sha`.
+#
+# It builds in Flathub's own build container for the GNOME 51 runtime, as Flathub itself will, without network once the
+# sources are downloaded: the Rust and npm packages come from the lock files (packaging/flatpak/generate-sources.sh) and
+# the one prebuilt file, the static ONNX Runtime, is pinned in the manifest and checked against Cargo.lock.
+#
+# Raising the runtime (a new GNOME release): change `runtime-version` in the manifest, the `gnome-NN` tag of the container
+# below, and the SDK extensions' branch in the manifest's comments if the freedesktop base changed.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0. Empty for a dry run.
+        type: string
+        required: false
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, for example v0.1.0. Empty for a dry run. Nothing is attached to a release.
+        type: string
+        required: false
+        default: ""
+      sha:
+        description: Commit to build. Needed while the release is a draft, because its tag doesn't exist yet.
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - app/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - CHANGELOG.md
+      - packaging/flatpak/**
+      - .github/scripts/check-flatpak.sh
+      - .github/scripts/linux-packages-lib.sh
+      - .github/workflows/build-flatpak.yml
+
+permissions:
+  contents: read
+
+# `github.workflow` is the calling workflow's name in a called workflow, so this run and the one publish-release.yml
+# starts for the same pull request don't cancel each other.
+concurrency:
+  group: build-flatpak-${{ github.workflow }}-${{ inputs.tag || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Flatpak (x64)
+    runs-on: ubuntu-latest
+    # Flathub's image: flatpak, flatpak-builder, the GNOME 51 runtime and SDK, and flatpak-builder-lint. It must be
+    # privileged for flatpak-builder to start its sandbox.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    timeout-minutes: 90
+    # bash with pipefail: a container's default shell has no pipefail, which would hide a failed check behind `tee`.
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check the tag and commit
+        if: ${{ inputs.tag }}
+        env:
+          TAG: ${{ inputs.tag }}
+          SHA: ${{ inputs.sha }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must look like v0.1.0, got '$TAG'"
+            exit 1
+          fi
+          if [[ -n "$SHA" && ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::sha must be a full 40-character commit hash, got '$SHA'"
+            exit 1
+          fi
+
+      # git for the generators' checkout of their pinned tools, xvfb, D-Bus and the desktop file tools for the checks of
+      # the built Flatpak. What the image has already is left alone.
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          cat /etc/os-release | sed -n 's/^PRETTY_NAME=//p'
+          missing=()
+          command -v git >/dev/null || missing+=(git)
+          command -v python3 >/dev/null || missing+=(python3)
+          command -v curl >/dev/null || missing+=(curl)
+          command -v xvfb-run >/dev/null || missing+=(xorg-x11-server-Xvfb xorg-x11-xauth)
+          command -v dbus-run-session >/dev/null || missing+=(dbus-daemon)
+          command -v desktop-file-validate >/dev/null || missing+=(desktop-file-utils)
+          command -v appstreamcli >/dev/null || missing+=(appstream)
+          command -v flatpak-builder-lint >/dev/null || echo "note: no flatpak-builder-lint in the image"
+          if (( ${#missing[@]} > 0 )); then
+            echo "Installing: ${missing[*]}"
+            dnf install -y --setopt=install_weak_deps=False "${missing[@]}"
+          fi
+          flatpak --version
+          flatpak-builder --version
+
+      - uses: actions/checkout@v7
+        with:
+          # A release run builds exactly what is being released: the given commit (a draft has no tag yet), else
+          # the tag. Empty on pull requests and dry runs: the event's own commit.
+          ref: ${{ inputs.sha || inputs.tag }}
+
+      # The version is the one in Cargo.toml, which release-please bumps; the build checks it against the binary's own
+      # (the self-check) and the tag.
+      - name: Read the version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::could not read the version from Cargo.toml, got '$version'"
+            exit 1
+          fi
+          if [[ -n "$TAG" && "$TAG" != "v$version" ]]; then
+            echo "::error::tag $TAG does not match the app version $version; is release-please-config.json bumping every version file?"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # The unit tests of the scripts the Flatpak build relies on: the metainfo's release notes, the ONNX Runtime pin
+      # check and the lint filter.
+      - name: Test the packaging scripts
+        run: python3 -I -m unittest discover -s packaging/flatpak -p 'test_*.py' -v
+
+      # Also the files for Flathub: the same manifest with the release's tag and commit in place of this folder, which the
+      # lint below checks as Flathub's reviewers will. (Nothing is fetched from that tag here.)
+      - name: Generate the sources
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ inputs.sha || github.sha }}
+        run: |
+          # The node generator's progress bar is one line per package, redrawn with carriage returns.
+          if ! packaging/flatpak/generate-sources.sh --flathub "v$VERSION" "$COMMIT" > generate.log 2>&1; then
+            tr '\r' '\n' < generate.log | grep -v 'Generating packages' | tail -n 60
+            exit 1
+          fi
+          tr '\r' '\n' < generate.log | grep -v 'Generating packages' | tail -n 20
+
+      # The manifest pins the ONNX Runtime that ort-sys would download, because the build has no network. An `ort` update
+      # that needs another one fails here, in seconds, and says what to pin.
+      - name: Check the ONNX Runtime pin
+        run: python3 -I packaging/flatpak/check_ort_pin.py
+
+      # No `--install-deps-from=flathub` for the runtime: the image has it. The SDK extensions (Rust, Node, LLVM) come
+      # from Flathub. --disable-rofiles-fuse because a container has no FUSE.
+      - name: Build the Flatpak
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak-builder --user --disable-rofiles-fuse --install-deps-from=flathub --force-clean \
+            --repo=repo --state-dir=state build-dir packaging/flatpak/me.roboroads.RepeatThat.yml
+
+      # `--runtime-repo` lets `flatpak install ./file.flatpak` offer to add Flathub, where the GNOME runtime is.
+      - name: Make the bundle
+        id: bundle
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir bundle
+          file="Repeat-That_${VERSION}_x86_64.flatpak"
+          flatpak build-bundle repo "bundle/$file" me.roboroads.RepeatThat \
+            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - name: Check the Flatpak
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          FILE: ${{ steps.bundle.outputs.file }}
+        run: .github/scripts/check-flatpak.sh --version "$VERSION" "bundle/$FILE" 2>&1 | tee flatpak-check.log
+
+      # Flathub's own linter, as a Flathub reviewer will run it: on the manifest, on the manifest that goes to Flathub
+      # (the release's tag in place of this folder), on the metainfo and on the built repository. Only these errors are
+      # let through, because they hold until the app is on Flathub:
+      #   appid-url-not-reachable                        the app ID is that of roboroads.me, which has to answer, and
+      #                                                  host the verification token Flathub makes, before the submission
+      #                                                  (docs/MAINTAINING.md, Flathub)
+      #   appstream-screenshots-not-mirrored-in-ostree   Flathub fetches the screenshot and keeps its own copy when it
+      #                                                  builds; here it stays a link
+      #   appstream-missing-screenshots                  only while the screenshot is not on the main branch, which the
+      #                                                  metainfo links to, so the build can't fetch it: a change that
+      #                                                  adds or moves it. It is an error again once it is there
+      # `finish-args-arbitrary-xdg-run-access` is not among them: the linter accepts xdg-run/pipewire-0.
+      - name: Lint for Flathub
+        run: |
+          set -euo pipefail
+          allow=(--allow appid-url-not-reachable --allow appstream-screenshots-not-mirrored-in-ostree)
+          screenshot=$(sed -n 's|.*<image[^>]*>\(https://[^<]*\)</image>.*|\1|p' packaging/flatpak/me.roboroads.RepeatThat.metainfo.xml | head -n 1)
+          if [[ -z "$screenshot" ]]; then
+            echo "::error::the metainfo has no screenshot"
+            exit 1
+          fi
+          if ! curl -fsSLI "$screenshot" > /dev/null 2>&1; then
+            echo "::warning::$screenshot is not there yet, so the build can't fetch the screenshot (expected on the change that adds it)"
+            allow+=(--allow appstream-missing-screenshots)
+          fi
+          lint() {
+            flatpak-builder-lint "$@" > lint.json 2> lint.err || true
+            cat lint.err >&2
+            python3 -I packaging/flatpak/filter_lint.py lint.json "${allow[@]}"
+          }
+          echo "== the manifest"
+          lint manifest packaging/flatpak/me.roboroads.RepeatThat.yml
+          echo "== the manifest for Flathub"
+          lint manifest packaging/flatpak/flathub/me.roboroads.RepeatThat.yml
+          echo "== the metainfo"
+          flatpak run --command=cat me.roboroads.RepeatThat /app/share/metainfo/me.roboroads.RepeatThat.metainfo.xml > metainfo.xml
+          lint appstream metainfo.xml
+          echo "== the repository"
+          lint repo repo
+
+      # publish-release.yml writes SHA256SUMS over every platform; this is only for whoever tries the build.
+      - name: Summary
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          FILE: ${{ steps.bundle.outputs.file }}
+        run: |
+          {
+            echo "### Flatpak $VERSION (x64)"
+            echo
+            echo '```'
+            (cd bundle && ls -l && echo && sha256sum --text -- "$FILE")
+            echo '```'
+            echo
+            echo "Install it with \`flatpak install ./$FILE\`, then \`flatpak run me.roboroads.RepeatThat\`."
+            echo
+            echo "#### Checks"
+            echo
+            echo '```'
+            cat flatpak-check.log 2>/dev/null || echo "(the checks did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The artifact name starts with release-flatpak- so publish-release.yml picks it up (release-*) and knows the
+      # platform. It is a zip holding the bundle, which is compressed already, so no compression. A re-run of the job
+      # replaces the file of the earlier attempt instead of failing on the name.
+      - name: Upload the Flatpak
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-flatpak-${{ steps.bundle.outputs.file }}
+          path: bundle/${{ steps.bundle.outputs.file }}
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
