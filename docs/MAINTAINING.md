@@ -179,8 +179,10 @@ Two jobs check them, and a failure in either fails the `linux` job of a release,
 - `Install on <system>` runs [`smoke-linux-package.sh`](../.github/scripts/smoke-linux-package.sh) as root in a fresh
   `debian:13`, `ubuntu:24.04`, `fedora:40` and `fedora:44` container: it installs the `.deb` or the `.rpm` without
   recommended packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays
-  nothing), validates the installed desktop entries, runs the AppImage's self-check, and uninstalls. In `debian:12` it
-  checks that apt refuses the `.deb` for its glibc or libstdc++ and nothing else.
+  nothing), validates the installed desktop entries, runs the AppImage's self-check, and uninstalls. It also takes
+  the environment the AppImage gives host programs (the hidden `--rt-host-env`), checks that nothing in it points into
+  the AppImage, and runs the system's `gio` and `dbus-uuidgen` with it. In `debian:12` it checks that apt refuses the
+  `.deb` for its glibc or libstdc++ and nothing else.
 
 On a pull request the packages are workflow artifacts (kept for 30 days), so they can be tried on a real desktop
 before the change merges. Artifacts lose the executable bit, so `chmod +x` the AppImage after unzipping it.

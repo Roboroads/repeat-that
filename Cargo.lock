@@ -3378,6 +3378,7 @@ dependencies = [
  "base64 0.23.1",
  "embed-resource",
  "futures-util",
+ "open",
  "png 0.18.1",
  "rt-capture",
  "rt-core",

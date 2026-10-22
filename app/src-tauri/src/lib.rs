@@ -6,6 +6,7 @@ mod commands;
 mod engine;
 #[cfg(all(test, target_os = "linux"))]
 mod fake_portal;
+pub mod host_env;
 mod hotkeys;
 mod icons;
 mod ipc;
@@ -176,35 +177,30 @@ mod tests {
 
     #[test]
     fn the_window_may_open_its_links_and_nothing_else() {
+        // Links go through the app's `open_link` command, which opens this project's pages only (and starts the
+        // browser with the host's environment from an AppImage). The window gets no opener permission of its own, so
+        // it can't go around that.
         let capability: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string("capabilities/default.json").unwrap()).unwrap();
-        let open_url = capability["permissions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|permission| permission["identifier"] == "opener:allow-open-url")
-            .expect("the window may open URLs");
-        let allowed: Vec<&str> = open_url["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["url"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            allowed,
-            ["https://github.com/Roboroads/repeat-that/*"],
-            "only this project's pages"
+        let permissions = capability["permissions"].as_array().unwrap();
+        assert!(
+            !permissions.iter().any(|permission| {
+                let id = permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str())
+                    .unwrap_or_default();
+                id.starts_with("opener:")
+            }),
+            "{permissions:?}"
         );
+        assert_eq!(commands::LINKS, "https://github.com/Roboroads/repeat-that/");
         let links = links_in_the_window();
         assert!(
             links.len() >= 2,
             "the privacy policy and the macOS issue form: {links:?}"
         );
         for link in links {
-            assert!(
-                link.starts_with("https://github.com/Roboroads/repeat-that/"),
-                "{link} is not allowed"
-            );
+            assert!(commands::is_project_link(&link), "{link} is not allowed");
         }
     }
 

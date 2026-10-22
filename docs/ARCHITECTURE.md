@@ -391,6 +391,13 @@ name the app's shortcuts and match its windows. The bundler always makes an entr
 would be, gets the real entry in its place. The AppImage leaves out `libpipewire-0.3` (linuxdeploy's exclude list has
 it), so the system's client library talks to the system's PipeWire and loads plugins of its own version.
 
+The AppImage's launcher puts its own folders in front of `LD_LIBRARY_PATH`, `PATH`, `XDG_DATA_DIRS` and sets the GTK
+variables to them, which the app needs. Host programs the app starts (the desktop's shortcut settings in
+`shortcut_page.rs`, the browser for a link through the `open_link` command) inherit nothing of that: `host_env.rs`
+takes every entry that points into the AppImage out of their environment, as otherwise a newer system's `gio` or D-Bus
+tools would load the AppImage's older libraries and fail. Links go through `open_link`, which opens this project's
+pages only, rather than through the opener plugin, which the window no longer has a permission for.
+
 `check-linux-packages.sh` unpacks all three and checks names, versions, dependencies, the files the `.deb` and the
 `.rpm` install (the same in both), both desktop entries with `desktop-file-validate`, the binary's glibc and libstdc++
 needs against what the packages ask for, and the AppImage's root entry, icon and libraries. `smoke-linux-package.sh` then installs the package with the distribution's

@@ -37,6 +37,9 @@ tauri-plugin-store = "2.5"
 ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
 futures-util = "0.3"
 zbus = "5"
+# The openers it tries for a link (xdg-open, gio open, ...), started from an AppImage with the host's environment
+# (host_env.rs). MIT, and in the tree already through the opener plugin.
+open = "5"
 
 [dev-dependencies]
 tauri = { version = "2.12", features = ["test"] }

@@ -16,6 +16,8 @@ use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::actions::{self, AppAction};
 use crate::engine::{self, SharedAppEngine};
+#[cfg(target_os = "linux")]
+use crate::host_env;
 use crate::icons::SharedIcons;
 use crate::ipc::{AppEntry, CommandError, ConfigureOutcome, OutputDevice, Settings, Status};
 use crate::permission;
@@ -38,6 +40,7 @@ pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'stat
         catch_up,
         configure_shortcuts,
         quit_app,
+        open_link,
         permission::capture_permission_help,
         permission::ask_for_capture_permission,
         permission::open_capture_permission_settings,
@@ -152,6 +155,32 @@ pub fn quit_app<R: Runtime>(app: AppHandle<R>) {
     actions::dispatch(AppAction::Quit, &app);
 }
 
+/// The pages the window may open in the browser: this project's on GitHub (the privacy policy, the issue forms).
+pub const LINKS: &str = "https://github.com/Roboroads/repeat-that/";
+
+/// Whether `url` is one of [`LINKS`], with nothing in it a shell or an opener could read as more than a URL.
+pub fn is_project_link(url: &str) -> bool {
+    url.starts_with(LINKS) && !url.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Opens a page of this project in the browser. The window can't open links itself, and the opener plugin isn't
+/// given to it: from an AppImage the browser must start with the host's environment (see `host_env`), which only this
+/// command does. Everywhere else it is the opener plugin's way.
+#[tauri::command]
+pub fn open_link<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), CommandError> {
+    if !is_project_link(&url) {
+        return Err(CommandError::invalid(format!("Only pages under {LINKS} can be opened")));
+    }
+    #[cfg(target_os = "linux")]
+    if host_env::in_appimage() {
+        return host_env::open_url(&url).map_err(CommandError::backend);
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| CommandError::backend(err.to_string()))
+}
+
 fn running_engine<R: Runtime>(app: &AppHandle<R>) -> Result<EngineHandle, CommandError> {
     app.try_state::<SharedAppEngine>()
         .and_then(|engine| engine.handle())
@@ -191,6 +220,35 @@ mod tests {
 
     fn harness() -> TestApp {
         TestApp::without_engine()
+    }
+
+    #[test]
+    fn only_this_projects_pages_are_links_the_window_may_open() {
+        for url in [
+            "https://github.com/Roboroads/repeat-that/blob/main/PRIVACY.md",
+            "https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml",
+        ] {
+            assert!(is_project_link(url), "{url}");
+        }
+        for url in [
+            "https://github.com/Roboroads/repeat-that",
+            "https://github.com/Roboroads/repeat-that-fork/",
+            "http://github.com/Roboroads/repeat-that/",
+            "https://example.com/?https://github.com/Roboroads/repeat-that/",
+            "file:///etc/passwd",
+            "https://github.com/Roboroads/repeat-that/ --help",
+            "https://github.com/Roboroads/repeat-that/\nx",
+            "",
+        ] {
+            assert!(!is_project_link(url), "{url:?}");
+        }
+    }
+
+    #[test]
+    fn a_link_elsewhere_is_refused_before_anything_starts() {
+        let h = harness();
+        let err = invoke(&h, "open_link", json!({ "url": "https://example.com/" })).unwrap_err();
+        assert_eq!(err["kind"], "invalid", "{err}");
     }
 
     fn invoke(h: &TestApp, cmd: &str, args: serde_json::Value) -> Result<serde_json::Value, serde_json::Value> {

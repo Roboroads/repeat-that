@@ -13,6 +13,10 @@ fn main() -> ExitCode {
     if let Some(code) = repeat_that_lib::self_check::run_if_requested() {
         return code;
     }
+    // `--rt-host-env` prints the environment host programs get from an AppImage, for CI; also before Tauri starts.
+    if let Some(code) = repeat_that_lib::host_env::run_if_requested() {
+        return code;
+    }
     repeat_that_lib::run();
     ExitCode::SUCCESS
 }

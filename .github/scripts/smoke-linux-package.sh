@@ -9,6 +9,8 @@
 #   * the installed desktop entries pass this distribution's desktop-file-validate, and the icons are there;
 #   * the AppImage's self-check passes too, with the libraries an AppImage takes from the system (the ones the
 #     package's dependencies brought in, PipeWire's and ALSA's among them);
+#   * the environment the AppImage gives the host programs it starts (`--rt-host-env`: a browser through xdg-open, a
+#     settings page) points nowhere into the AppImage, and this system's `gio` and `dbus-uuidgen` run with it;
 #   * the package uninstalls and takes its files with it.
 #
 # With --refused it checks the opposite, on a system that is too old (Debian 12): the package manager must refuse the
@@ -191,6 +193,48 @@ done
 # executable bit, and downloads from a release don't have it either.
 chmod +x "$appimage"
 check_self_check "the AppImage" env APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --rt-self-check
+
+# What a host program started from the AppImage gets. With the AppImage's own environment, a newer system's gio and
+# the D-Bus tools load the AppImage's GLib and D-Bus libraries and fail (Debian 13: an undefined symbol, a missing
+# symbol version).
+check_host_env() {
+  local out env_file leaks command
+  local -a tools host
+  case $kind in
+    deb) tools=(libglib2.0-bin dbus-bin) ;;
+    rpm) tools=(glib2 dbus-tools) ;;
+  esac
+  if ! out=$(install_packages "${tools[@]}" 2>&1); then
+    fail "${tools[*]} do not install, so the host environment can't be tried"
+    indent <<<"$out" | tail -n 15
+    return
+  fi
+  env_file=$(mktemp)
+  if ! env APPIMAGE_EXTRACT_AND_RUN=1 "$appimage" --rt-host-env >"$env_file" 2>/dev/null; then
+    fail "the AppImage does not print the environment of host programs (--rt-host-env)"
+    return
+  fi
+  mapfile -d '' -t host <"$env_file"
+  rm -f "$env_file"
+  # Where the AppImage is while it runs: extracted (as here) or mounted.
+  leaks=$(printf '%s\n' "${host[@]}" | grep -E '/appimage_extracted_|/\.mount_' || true)
+  if [[ ${#host[@]} -gt 0 && -z "$leaks" ]]; then
+    ok "the AppImage gives host programs ${#host[@]} variables, none pointing into it"
+  else
+    fail "the environment of host programs points into the AppImage"
+    indent <<<"$leaks"
+  fi
+  for command in "gio info /" dbus-uuidgen; do
+    # shellcheck disable=SC2086 # the command and its arguments
+    if out=$(env -i "${host[@]}" $command 2>&1); then
+      ok "$command runs with the environment the AppImage gives host programs"
+    else
+      fail "$command fails with the environment the AppImage gives host programs"
+      indent <<<"$out" | tail -n 5
+    fi
+  done
+}
+check_host_env
 
 echo
 if uninstall >/dev/null 2>&1 && [[ ! -e /usr/bin/repeat-that && ! -e /usr/share/applications/$app_id.desktop ]]; then
