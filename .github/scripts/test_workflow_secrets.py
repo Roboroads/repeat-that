@@ -37,6 +37,13 @@ def cut_comment(line):
     return line
 
 
+def unquote(value):
+    """A scalar without its quotes: 'a', "a" and a are the same value."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
 def lines(text):
     """The lines that hold YAML, as (indent, text, in a block scalar). Comments are cut and empty lines left out, except
     in a block scalar, whose lines are kept whole: a # there is part of the text (a shell comment in `run:`)."""
@@ -72,7 +79,7 @@ def calls(text):
         if not in_jobs:
             continue
         key, _, value = line.partition(":")
-        key, value = key.strip(), value.strip()
+        key, value = unquote(key.strip()), unquote(value.strip())
         if job_indent is None:
             job_indent = indent
         if indent == job_indent:
@@ -233,6 +240,15 @@ jobs: # the jobs
   macos: # optional
     uses: ./.github/workflows/build.yml # the build
     secrets: inherit # all of them
+"""
+        self.assertEqual(calls(text), [("macos", "build.yml", True)])
+
+    def test_quoted_values(self):
+        text = """\
+jobs:
+  "macos":
+    'uses': './.github/workflows/build.yml'
+    secrets: "inherit"
 """
         self.assertEqual(calls(text), [("macos", "build.yml", True)])
 
