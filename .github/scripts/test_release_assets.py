@@ -4,11 +4,13 @@ File names and hashes are made up in memory; only the CLI tests at the bottom to
 bytes of text, nothing that looks like audio).
 """
 
+import base64
 import contextlib
 import dataclasses
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import unittest.mock
@@ -23,9 +25,20 @@ RPM = "Repeat-That-0.2.0-1.x86_64.rpm"
 APPIMAGE = "Repeat-That_0.2.0_amd64.AppImage"
 FLATPAK = "Repeat-That_0.2.0_x86_64.flatpak"
 DMG = "Repeat-That_0.2.0_aarch64.dmg"
+APP = "Repeat-That_0.2.0_aarch64.app.tar.gz"  # the macOS update bundle
 LINUX = [DEB, RPM, APPIMAGE]
 # Everything a release run with today's table produces: Windows, Linux and the Flatpak are required.
 REQUIRED_FILES = [EXE, *LINUX, FLATPAK]
+# The update files, which only exist once an update key does: a signature for each payload, a manifest for each
+# platform, and for macOS the bundle itself.
+EXE_SIG, APPIMAGE_SIG, APP_SIG = f"{EXE}.sig", f"{APPIMAGE}.sig", f"{APP}.sig"
+WINDOWS_MANIFEST, LINUX_MANIFEST, MACOS_MANIFEST = (
+    "latest-windows-x86_64.json",
+    "latest-linux-x86_64.json",
+    "latest-darwin-aarch64.json",
+)
+REQUIRED_UPDATE_FILES = [EXE_SIG, WINDOWS_MANIFEST, APPIMAGE_SIG, LINUX_MANIFEST]
+MACOS_UPDATE_FILES = [APP, APP_SIG, MACOS_MANIFEST]
 
 H1, H2, H3, H4, HA = ("1" * 64, "2" * 64, "3" * 64, "4" * 64, "a" * 64)
 
@@ -63,9 +76,28 @@ class PlatformTableTests(unittest.TestCase):
         self.assertEqual(flatpak.workflow, "build-flatpak.yml")
 
     def test_no_two_platforms_claim_the_same_file(self):
-        for name in (EXE, DEB, RPM, APPIMAGE, FLATPAK, DMG):
-            matches = [p.name for p in ra.PLATFORMS if any(ra.matches(pattern, name) for pattern in p.patterns)]
+        every_file = (EXE, DEB, RPM, APPIMAGE, FLATPAK, DMG, *REQUIRED_UPDATE_FILES, *MACOS_UPDATE_FILES)
+        for name in every_file:
+            matches = [p.name for p in ra.PLATFORMS if any(ra.matches(pattern, name) for pattern in p.all_patterns)]
             self.assertEqual(len(matches), 1, f"{name} matched {matches}")
+
+    def test_the_update_files_of_each_platform(self):
+        update = {platform.name: platform.update_patterns for platform in ra.PLATFORMS}
+        self.assertEqual(
+            update,
+            {
+                "windows": ("*-setup.exe.sig", "latest-windows-x86_64.json"),
+                "linux": ("*.AppImage.sig", "latest-linux-x86_64.json"),
+                "flatpak": (),  # Flathub updates it, so it never has update files
+                "macos": ("*.app.tar.gz", "*.app.tar.gz.sig", "latest-darwin-aarch64.json"),
+            },
+        )
+
+    def test_the_update_patterns_are_not_release_patterns(self):
+        # check_assets_full requires every pattern of a required platform to be produced, which would break a
+        # release made without an update key.
+        for platform in ra.PLATFORMS:
+            self.assertFalse(set(platform.patterns) & set(platform.update_patterns), platform.name)
 
 
 class ClassifyTests(unittest.TestCase):
@@ -80,6 +112,28 @@ class ClassifyTests(unittest.TestCase):
         }
         for name, platform in expected.items():
             self.assertEqual(ra.classify(name), platform, name)
+
+    def test_every_update_file_maps_to_its_platform(self):
+        expected = {
+            EXE_SIG: "windows",
+            WINDOWS_MANIFEST: "windows",
+            APPIMAGE_SIG: "linux",
+            LINUX_MANIFEST: "linux",
+            APP: "macos",
+            APP_SIG: "macos",
+            MACOS_MANIFEST: "macos",
+        }
+        for name, platform in expected.items():
+            self.assertEqual(ra.classify(name), platform, name)
+
+    def test_the_update_files_of_a_package_or_the_flatpak_belong_to_nobody(self):
+        # Only the AppImage updates itself on Linux, and the Flatpak never does.
+        for name in (f"{DEB}.sig", f"{RPM}.sig", f"{FLATPAK}.sig", "latest-flatpak-x86_64.json", "latest.json"):
+            self.assertIsNone(ra.classify(name), name)
+
+    def test_a_manifest_of_a_system_without_updates_belongs_to_nobody(self):
+        for name in ("latest-windows-aarch64.json", "latest-darwin-x86_64.json", "latest-linux-aarch64.json"):
+            self.assertIsNone(ra.classify(name), name)
 
     def test_uses_the_file_name_not_the_folder(self):
         self.assertEqual(ra.classify(f"assets/sub/{DEB}"), "linux")
@@ -257,6 +311,15 @@ class VersionTests(unittest.TestCase):
     def test_a_file_without_a_version_fails(self):
         with self.assertRaises(ReleaseError):
             ra.check_versions(["Repeat-That_aarch64.dmg"], "v0.2.0")
+
+    def test_the_update_files_carry_the_version_but_the_manifests_do_not_have_to(self):
+        # latest-<target>-<arch>.json is the name the app asks for, so it can't say which release it is of.
+        ra.check_versions([EXE_SIG, APPIMAGE_SIG, APP, APP_SIG], "v0.2.0")
+        ra.check_versions([WINDOWS_MANIFEST, LINUX_MANIFEST, MACOS_MANIFEST], "v0.2.0")
+        with self.assertRaises(ReleaseError) as caught:
+            ra.check_versions([f"{APP}.sig".replace("0.2.0", "0.1.9"), MACOS_MANIFEST], "v0.2.0")
+        self.assertEqual(len(caught.exception.errors), 1)
+        self.assertIn("0.1.9", str(caught.exception))
 
 
 RUN = {
@@ -479,6 +542,112 @@ class CheckAssetsFullTests(unittest.TestCase):
         self.assertEqual(len(caught.exception.errors), 2)
 
 
+class CheckAssetsFullUpdaterTests(unittest.TestCase):
+    """Full mode with an update key: the update files go with their platform's files."""
+
+    produced = REQUIRED_FILES
+    signed = [*REQUIRED_FILES, *REQUIRED_UPDATE_FILES]
+
+    def check(self, produced, release=(), updater=True, platforms=None):
+        return ra.check_assets_full(list(release), list(produced), platforms=platforms or all_built(), updater=updater)
+
+    def test_a_release_without_update_files_passes_without_the_updater_flag(self):
+        # No update key yet: the files of today's releases are all there is.
+        self.assertEqual(self.check(self.produced, updater=False), [])
+
+    def test_a_release_with_every_update_file_passes_with_the_flag_and_without(self):
+        self.assertEqual(self.check(self.signed), [])
+        self.assertEqual(self.check(self.signed, updater=False), [])
+
+    def test_the_flag_requires_every_update_file_of_every_built_platform_and_names_the_missing_one(self):
+        patterns = {
+            EXE_SIG: "*-setup.exe.sig",
+            WINDOWS_MANIFEST: WINDOWS_MANIFEST,
+            APPIMAGE_SIG: "*.AppImage.sig",
+            LINUX_MANIFEST: LINUX_MANIFEST,
+        }
+        for missing, pattern in patterns.items():
+            produced = [name for name in self.signed if name != missing]
+            with self.assertRaises(ReleaseError, msg=missing) as caught:
+                self.check(produced)
+            self.assertIn(f"produced no {pattern} file", str(caught.exception))
+
+    def test_a_missing_signature_is_named_by_its_pattern_and_its_payload(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check([name for name in self.signed if name != EXE_SIG])
+        self.assertEqual(
+            caught.exception.errors,
+            ["Windows produced no *-setup.exe.sig file", f"{EXE} has no signature: {EXE_SIG} is missing"],
+        )
+
+    def test_a_missing_manifest_is_named(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check([name for name in self.signed if name != LINUX_MANIFEST])
+        self.assertEqual(caught.exception.errors, [f"Linux produced no {LINUX_MANIFEST} file"])
+
+    def test_no_update_files_at_all_fails_with_the_flag_for_each_platform(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(self.produced)
+        self.assertEqual(
+            caught.exception.errors,
+            [
+                "Windows produced no *-setup.exe.sig file",
+                f"Windows produced no {WINDOWS_MANIFEST} file",
+                "Linux produced no *.AppImage.sig file",
+                f"Linux produced no {LINUX_MANIFEST} file",
+                f"{EXE} has no signature: {EXE_SIG} is missing",
+                f"{APPIMAGE} has no signature: {APPIMAGE_SIG} is missing",
+            ],
+        )
+
+    def test_the_flatpak_has_no_update_files_and_is_never_asked_for_any(self):
+        self.assertEqual(self.check(self.signed), [])  # FLATPAK is in REQUIRED_FILES and has none
+
+    def test_macos_that_was_not_built_needs_no_update_files(self):
+        self.assertEqual(self.check(self.signed), [])
+
+    def test_macos_that_was_built_needs_the_bundle_its_signature_and_its_manifest(self):
+        self.assertEqual(self.check([*self.signed, DMG, *MACOS_UPDATE_FILES]), [])
+        for missing in MACOS_UPDATE_FILES:
+            produced = [*self.signed, DMG, *[name for name in MACOS_UPDATE_FILES if name != missing]]
+            with self.assertRaises(ReleaseError, msg=missing) as caught:
+                self.check(produced)
+            self.assertIn(missing.replace(APP, "*.app.tar.gz"), str(caught.exception))
+
+    def test_update_files_that_are_only_partly_there_fail_even_without_the_flag(self):
+        # An update bundle without its signature must not be attached just because the key is off: it would sit on
+        # the release without anything that uses it.
+        with self.assertRaises(ReleaseError) as caught:
+            self.check([*self.produced, DMG, APP], updater=False, platforms=all_built())
+        self.assertIn("*.app.tar.gz.sig", str(caught.exception))
+        self.assertIn(MACOS_MANIFEST, str(caught.exception))
+
+    def test_a_signature_without_its_payload_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check([*self.signed, DMG, *MACOS_UPDATE_FILES[1:]])
+        self.assertIn(f"{APP_SIG} is the signature of {APP}, which is missing", str(caught.exception))
+
+    def test_a_dmg_and_its_update_files_from_an_earlier_late_attach_are_kept_when_macos_was_not_built(self):
+        release = [*self.signed, DMG, *MACOS_UPDATE_FILES, "SHA256SUMS"]
+        self.assertEqual(self.check(self.signed, release=release), [DMG, *MACOS_UPDATE_FILES])
+
+    def test_every_macos_file_is_replaced_not_kept_when_macos_was_built(self):
+        release = [*self.signed, DMG, *MACOS_UPDATE_FILES, "SHA256SUMS"]
+        self.assertEqual(self.check([*self.signed, DMG, *MACOS_UPDATE_FILES], release=release), [])
+
+    def test_an_update_file_of_a_required_platform_that_was_not_produced_fails(self):
+        # A draft that an earlier attempt gave signatures, and this run has no key: nothing lists them.
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(self.produced, release=[EXE, EXE_SIG], updater=False)
+        self.assertIn(EXE_SIG, str(caught.exception))
+
+    def test_the_table_decides_which_platforms_have_update_files(self):
+        # Without a build job for a platform nothing is asked of it.
+        platforms = without_job("linux")
+        produced = [EXE, FLATPAK, EXE_SIG, WINDOWS_MANIFEST]
+        self.assertEqual(self.check(produced, platforms=platforms), [])
+
+
 class CheckAssetsLateTests(unittest.TestCase):
     """Late mode: add one optional platform's files to a release that has its own SHA256SUMS."""
 
@@ -504,6 +673,64 @@ class CheckAssetsLateTests(unittest.TestCase):
             self.check(produced=["Repeat-That_0.1.9_aarch64.dmg"], tag="v0.2.0")
         self.assertIn("0.1.9", str(caught.exception))
         self.check(tag="v0.2.0")  # DMG is 0.2.0
+
+    def test_the_update_files_are_added_with_the_dmg_as_new_lines_only(self):
+        # The release was published with Windows and Linux files (and their update files); macOS comes later.
+        release = [EXE, EXE_SIG, WINDOWS_MANIFEST, "SHA256SUMS"]
+        sums = sums_text((EXE, H1), (EXE_SIG, H2), (WINDOWS_MANIFEST, H3))
+        produced = [DMG, *MACOS_UPDATE_FILES]
+        plan = self.check(produced=produced, release=release, sums=sums, tag="v0.2.0")
+        self.assertEqual((plan.pending, plan.overwrite, plan.remove), ([], [], []))
+        text = ra.build_sums({name: H4 for name in produced}, existing=sums)
+        for old_line in sums.splitlines():
+            self.assertIn(old_line + "\n", text)
+        self.assertEqual(len(text.splitlines()), len(sums.splitlines()) + len(produced))
+
+    def test_the_manifest_is_exempt_from_the_version_check_but_the_bundle_and_signature_are_not(self):
+        self.check(produced=[DMG, *MACOS_UPDATE_FILES], tag="v0.2.0")
+        old = [name.replace("0.2.0", "0.1.9") for name in (DMG, APP, APP_SIG)]
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(produced=[*old, MACOS_MANIFEST], tag="v0.2.0")
+        self.assertEqual(len(caught.exception.errors), 3)
+        self.assertNotIn(MACOS_MANIFEST, str(caught.exception))
+
+    def test_with_the_updater_flag_a_missing_signature_or_manifest_fails_and_is_named(self):
+        self.assertEqual(self.check_updater([DMG, *MACOS_UPDATE_FILES]), ([], [], []))
+        for missing in MACOS_UPDATE_FILES:
+            produced = [DMG, *[name for name in MACOS_UPDATE_FILES if name != missing]]
+            with self.assertRaises(ReleaseError, msg=missing) as caught:
+                self.check_updater(produced)
+            self.assertIn(missing.replace(APP, "*.app.tar.gz"), str(caught.exception))
+
+    def check_updater(self, produced):
+        plan = ra.check_assets_late(
+            self.release, produced, "macos", self.sums, updater=True, platforms=all_built()
+        )
+        return plan.pending, plan.overwrite, plan.remove
+
+    def test_without_the_updater_flag_a_dmg_alone_still_passes(self):
+        self.assertEqual(self.check(produced=[DMG]).pending, [])
+
+    def test_the_update_files_that_are_on_the_release_are_replaced_with_replace(self):
+        release = [EXE, DMG, *MACOS_UPDATE_FILES, "SHA256SUMS"]
+        sums = sums_text((EXE, H1), (DMG, H2), (APP, H3), (APP_SIG, H4), (MACOS_MANIFEST, HA))
+        plan = self.check(produced=[DMG, *MACOS_UPDATE_FILES], release=release, sums=sums, replace=True)
+        self.assertEqual(plan.overwrite, [DMG, *MACOS_UPDATE_FILES])
+        with self.assertRaises(ReleaseError) as caught:  # without replace they are not touched
+            self.check(produced=[DMG, *MACOS_UPDATE_FILES], release=release, sums=sums)
+        for name in (DMG, *MACOS_UPDATE_FILES):
+            self.assertIn(name, str(caught.exception))
+
+    def test_an_update_file_of_an_interrupted_attach_is_pending(self):
+        # The bundle, its signature and the manifest were uploaded; SHA256SUMS was not.
+        release = [EXE, DMG, *MACOS_UPDATE_FILES, "SHA256SUMS"]
+        plan = self.check(produced=[DMG, *MACOS_UPDATE_FILES], release=release, sums=sums_text((EXE, H1)))
+        self.assertEqual(plan.pending, [DMG, *MACOS_UPDATE_FILES])
+
+    def test_a_second_platforms_update_file_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(produced=[DMG, EXE_SIG])
+        self.assertIn(EXE_SIG, str(caught.exception))
 
     def test_a_second_platforms_file_fails(self):
         with self.assertRaises(ReleaseError) as caught:
@@ -610,6 +837,25 @@ class CheckReleaseTests(unittest.TestCase):
     def test_a_published_release_with_only_a_late_dmg_passes(self):
         self.assertEqual(ra.check_release("v0.2.0", [DMG], draft=False, mode="full"), [])
 
+    def test_a_published_release_with_only_late_update_files_passes(self):
+        self.assertEqual(ra.check_release("v0.2.0", MACOS_UPDATE_FILES, draft=False, mode="full"), [])
+
+    def test_the_update_files_of_a_required_platform_are_protected_like_its_installer(self):
+        # Replacing a signature or a manifest changes what installed apps fetch, so a published release keeps them.
+        for name in (EXE_SIG, WINDOWS_MANIFEST, APPIMAGE_SIG, LINUX_MANIFEST):
+            with self.assertRaises(ReleaseError, msg=name) as caught:
+                ra.check_release("v0.2.0", [name, "SHA256SUMS"], draft=False, mode="full")
+            self.assertIn(name, str(caught.exception))
+            replaced = ra.check_release("v0.2.0", [name, "SHA256SUMS"], draft=False, mode="full", replace=True)
+            self.assertEqual(replaced, [name, "SHA256SUMS"])
+        self.assertEqual(ra.check_release("v0.2.0", [EXE_SIG], draft=True, mode="full"), [])
+
+    def test_an_update_file_nobody_produces_fails_early(self):
+        with self.assertRaises(ReleaseError) as caught:
+            ra.check_release("v0.2.0", [f"{DEB}.sig", "latest.json"], draft=True, mode="full")
+        self.assertIn(f"{DEB}.sig", str(caught.exception))
+        self.assertIn("latest.json", str(caught.exception))
+
     def test_an_asset_of_a_platform_without_a_build_job_fails_early(self):
         with self.assertRaises(ReleaseError) as caught:
             ra.check_release("v0.2.0", [EXE, FLATPAK], draft=True, mode="full", platforms=without_job("flatpak"))
@@ -658,6 +904,13 @@ class CheckReleaseTests(unittest.TestCase):
             "v0.2.0", [EXE, DMG, "SHA256SUMS"], draft=False, mode="late", platform="macos", replace=True
         )
         self.assertEqual(replaced, [DMG])
+
+    def test_late_mode_with_replace_lists_the_update_files_too(self):
+        replaced = ra.check_release(
+            "v0.2.0", [EXE, DMG, *MACOS_UPDATE_FILES, "SHA256SUMS"], draft=False, mode="late", platform="macos",
+            replace=True,
+        )  # fmt: skip
+        self.assertEqual(replaced, [DMG, *MACOS_UPDATE_FILES])
 
     def test_late_mode_works_on_a_published_release(self):
         replaced = ra.check_release("v0.2.0", [EXE, "SHA256SUMS"], draft=False, mode="late", platform="macos")
@@ -786,6 +1039,189 @@ class GateTests(unittest.TestCase):
             result = ra.gate(self.todays(flatpak=state), release=True)
             self.assertFalse(result.ok, state)
             self.assertEqual(result.errors, [f"Flatpak build did not succeed ({state}); nothing is published"])
+
+
+REPO = "Roboroads/repeat-that"
+SIGNATURE = "c2lnbmF0dXJlIGZyb20gdGF1cmkgc2VjcmV0IGtleQ=="  # what a .sig holds; its content is only compared
+
+
+def manifest_text(payload, tag="v0.2.0", signature=SIGNATURE, repo=REPO, keys=("windows-x86_64",), **changes):
+    """The text of a manifest for `payload`, valid unless `changes` replace a top-level field."""
+    entry = {"signature": signature, "url": f"https://github.com/{repo}/releases/download/{tag}/{payload}"}
+    data = {"version": tag[1:], "notes": "", "pub_date": "2026-10-22T10:00:00Z"}
+    data["platforms"] = {key: dict(entry) for key in keys}
+    data.update(changes)
+    return json.dumps(data)
+
+
+class CheckManifestsTests(unittest.TestCase):
+    """What publish-release.yml writes with updater_manifest.py is checked again against the release's own files."""
+
+    def files(self, **texts):
+        """Windows' files, with the text of any of them replaced by `texts` (keys: sig, manifest)."""
+        return {
+            EXE: None,
+            EXE_SIG: texts.get("sig", SIGNATURE + "\n"),
+            WINDOWS_MANIFEST: texts.get("manifest", manifest_text(EXE)),
+        }
+
+    def check(self, files=None, tag="v0.2.0", repo=REPO):
+        return ra.check_manifests(self.files() if files is None else files, tag, repo)
+
+    def test_a_manifest_of_this_release_passes(self):
+        self.check()
+
+    def test_all_three_platforms_are_checked(self):
+        files = {
+            **self.files(),
+            APPIMAGE: None,
+            APPIMAGE_SIG: SIGNATURE,
+            LINUX_MANIFEST: manifest_text(APPIMAGE, keys=("linux-x86_64", "linux-x86_64-appimage")),
+            APP: None,
+            APP_SIG: SIGNATURE,
+            MACOS_MANIFEST: manifest_text(APP, keys=("darwin-aarch64", "darwin-aarch64-app")),
+        }
+        self.check(files)
+        files[MACOS_MANIFEST] = manifest_text(APP, version="0.2.1")
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(files)
+        self.assertTrue(all(MACOS_MANIFEST in error for error in caught.exception.errors))
+
+    def test_a_version_that_is_not_the_tags_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(self.files(manifest=manifest_text(EXE, version="0.1.9")))
+        self.assertEqual(
+            caught.exception.errors, [f"{WINDOWS_MANIFEST} has version 0.1.9, but the release is v0.2.0 (0.2.0)"]
+        )
+
+    def test_a_url_of_another_release_or_repository_fails(self):
+        for changes in ({"tag": "v0.1.9"}, {"repo": "someone/repeat-that"}):
+            with self.assertRaises(ReleaseError, msg=str(changes)) as caught:
+                self.check(self.files(manifest=manifest_text(EXE, **{"version": "0.2.0", **changes})))
+            self.assertIn("is not a file of v0.2.0 on Roboroads/repeat-that", str(caught.exception))
+
+    def test_a_url_that_is_not_https_fails(self):
+        text = manifest_text(EXE).replace("https://", "http://")
+        with self.assertRaises(ReleaseError):
+            self.check(self.files(manifest=text))
+
+    def test_a_url_to_a_file_the_release_does_not_have_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(self.files(manifest=manifest_text("Repeat-That_0.2.0_x86-setup.exe")))
+        self.assertIn("Repeat-That_0.2.0_x86-setup.exe", str(caught.exception))
+
+    def test_a_url_with_something_after_the_file_name_fails(self):
+        for suffix in ("?x=1", "/../x", "#a"):
+            with self.assertRaises(ReleaseError, msg=suffix):
+                self.check(self.files(manifest=manifest_text(EXE + suffix)))
+
+    def test_a_signature_that_is_not_the_one_of_the_sig_file_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(self.files(manifest=manifest_text(EXE, signature="b3RoZXI=")))
+        self.assertIn(f"is not the content of {EXE_SIG}", str(caught.exception))
+
+    def test_the_line_end_of_the_sig_file_does_not_count(self):
+        self.check(self.files(sig=f"{SIGNATURE}\r\n"))
+
+    def test_a_manifest_that_is_not_json_or_has_no_platforms_fails(self):
+        for text in ("", "{", "[]", "null", manifest_text(EXE, platforms={}), manifest_text(EXE, platforms=[])):
+            with self.assertRaises(ReleaseError, msg=text):
+                self.check(self.files(manifest=text))
+
+    def test_an_entry_without_a_url_or_signature_fails(self):
+        for entry in ({"signature": SIGNATURE}, {"url": "https://github.com"}, {}, "x", None):
+            with self.assertRaises(ReleaseError, msg=str(entry)):
+                self.check(self.files(manifest=manifest_text(EXE, platforms={"windows-x86_64": entry})))
+
+    def test_a_signature_file_that_could_not_be_read_fails(self):
+        files = self.files()
+        files[EXE_SIG] = None
+        with self.assertRaises(ReleaseError) as caught:
+            self.check(files)
+        self.assertIn(EXE_SIG, str(caught.exception))
+
+    def test_no_manifest_at_all_fails(self):
+        with self.assertRaises(ReleaseError) as caught:
+            self.check({EXE: None, EXE_SIG: SIGNATURE})
+        self.assertIn("no update manifest", str(caught.exception))
+
+    def test_a_tag_of_the_wrong_form_fails(self):
+        for tag in ("0.2.0", "v0.2", ""):
+            with self.assertRaises(ReleaseError, msg=tag):
+                self.check(tag=tag)
+
+
+PUBLIC_KEY = base64.b64encode(b"untrusted comment: minisign public key: 3F9E6B1A2C4D5E70\nRWRwXkQsGhtunk\n").decode()
+PRIVATE_KEY = base64.b64encode(b"untrusted comment: rsign encrypted secret key\nRWRTY0IyAAAAAAAAAAAA\n").decode()
+
+
+class CheckUpdaterKeysTests(unittest.TestCase):
+    """check-release looks at the key, the secrets and the variable before anything is built."""
+
+    def check(self, pubkey=PUBLIC_KEY, private_key=PRIVATE_KEY, password="a password"):
+        return ra.check_updater_keys(pubkey, private_key, password)
+
+    def test_the_variable_and_both_secrets_pass(self):
+        result = self.check()
+        self.assertTrue(result.ok)
+        self.assertEqual((result.errors, result.warnings, result.notices), ([], [], []))
+
+    def test_the_variable_without_a_secret_fails_and_names_what_to_do(self):
+        for name, changes in (
+            ("TAURI_SIGNING_PRIVATE_KEY", {"private_key": ""}),
+            ("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", {"password": ""}),
+        ):
+            result = self.check(**changes)
+            self.assertFalse(result.ok, name)
+            self.assertEqual(len(result.errors), 1)
+            self.assertIn(name, result.errors[0])
+            self.assertIn("updater-signing", result.errors[0])
+            self.assertIn("docs/MAINTAINING.md", result.errors[0])
+
+    def test_the_variable_without_either_secret_fails_for_each(self):
+        result = self.check(private_key="", password="")
+        self.assertEqual(len(result.errors), 2)
+
+    def test_a_value_of_blanks_counts_as_not_set(self):
+        self.assertFalse(self.check(private_key=" \n").ok)
+        self.assertFalse(self.check(password="\n").ok)
+
+    def test_a_variable_that_is_not_a_public_key_fails(self):
+        raw = "untrusted comment: minisign public key: 3F9E6B1A2C4D5E70\nRWRwXkQsGhtunk"  # the file, not its base64
+        for text in ("~/.tauri/repeat-that-updater.key.pub", raw, "not base64!", base64.b64encode(b"hello").decode()):
+            result = self.check(pubkey=text)
+            self.assertFalse(result.ok, text)
+            self.assertIn("TAURI_UPDATER_PUBKEY", result.errors[0])
+            self.assertIn(".pub", result.errors[0])
+
+    def test_a_private_key_that_is_not_a_key_file_fails(self):
+        for text in ("~/.tauri/repeat-that-updater.key", "hello", base64.b64encode(b"hello").decode()):
+            result = self.check(private_key=text)
+            self.assertFalse(result.ok, text)
+            self.assertIn("TAURI_SIGNING_PRIVATE_KEY", result.errors[0])
+
+    def test_the_public_key_with_a_line_end_passes(self):
+        self.assertTrue(self.check(pubkey=PUBLIC_KEY + "\n").ok)
+
+    def test_secrets_without_the_variable_only_warn(self):
+        result = self.check(pubkey="")
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.warnings), 1)
+        self.assertIn("TAURI_UPDATER_PUBKEY", result.warnings[0])
+        self.assertIn("no update files", result.warnings[0])
+
+    def test_one_secret_without_the_variable_also_warns(self):
+        for changes in ({"private_key": ""}, {"password": ""}):
+            result = self.check(pubkey="", **changes)
+            self.assertTrue(result.ok)
+            self.assertEqual(len(result.warnings), 1)
+
+    def test_nothing_at_all_is_a_notice(self):
+        result = self.check(pubkey="", private_key="", password="")
+        self.assertTrue(result.ok)
+        self.assertEqual((result.errors, result.warnings), ([], []))
+        self.assertEqual(len(result.notices), 1)
+        self.assertIn("no update files", result.notices[0])
 
 
 class CommandLineTests(unittest.TestCase):
@@ -946,6 +1382,62 @@ class CommandLineTests(unittest.TestCase):
         self.assertIn("::warning::", out)  # the ignored artifact is named
         self.assertIn(EXE, out)
         self.assertIn("::error::", err)
+
+    def test_check_assets_full_with_the_updater_flag_names_the_missing_update_file(self):
+        produced = [*REQUIRED_FILES, *REQUIRED_UPDATE_FILES]
+        args = ("check-assets", "--mode", "full", "--produced")
+        self.assertEqual(self.run_main(*args, *produced, "--updater")[0], 0)
+        code, _, err = self.run_main(*args, *[name for name in produced if name != EXE_SIG], "--updater")
+        self.assertEqual(code, 1)
+        self.assertIn("::error::Windows produced no *-setup.exe.sig file", err)
+        # Without the flag the same files are a release made before there was a key, and pass.
+        self.assertEqual(self.run_main(*args, *REQUIRED_FILES)[0], 0)
+
+    def test_check_assets_late_with_the_updater_flag(self):
+        with tempfile.TemporaryDirectory() as folder:
+            args = self.late_args(folder, [EXE, "SHA256SUMS"], sums_text((EXE, H1)), "--updater")
+            code, _, err = self.run_main(*args)
+        self.assertEqual(code, 1)
+        self.assertIn("macOS produced no *.app.tar.gz file", err)
+
+    def test_check_manifests_reads_the_manifests_and_signatures_next_to_the_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / EXE).write_bytes(b"installer")
+            (folder / EXE_SIG).write_text(SIGNATURE + "\n")
+            (folder / WINDOWS_MANIFEST).write_text(manifest_text(EXE))
+            paths = [str(folder / name) for name in (EXE, EXE_SIG, WINDOWS_MANIFEST)]
+            args = ("check-manifests", "--tag", "v0.2.0", "--repo", REPO)
+            self.assertEqual(self.run_main(*args, *paths)[0], 0)
+            (folder / WINDOWS_MANIFEST).write_text(manifest_text(EXE, version="0.1.9"))
+            code, _, err = self.run_main(*args, *paths)
+        self.assertEqual(code, 1)
+        self.assertIn(f"::error::{WINDOWS_MANIFEST} has version 0.1.9", err)
+
+    def test_check_updater_keys_reads_the_environment_and_sets_the_exit_code(self):
+        keys = {
+            "TAURI_UPDATER_PUBKEY": PUBLIC_KEY,
+            "TAURI_SIGNING_PRIVATE_KEY": PRIVATE_KEY,
+            "TAURI_SIGNING_PRIVATE_KEY_PASSWORD": "a password",
+        }
+        with unittest.mock.patch.dict(os.environ, keys):
+            self.assertEqual(self.run_main("check-updater-keys")[0], 0)
+        with unittest.mock.patch.dict(os.environ, {**keys, "TAURI_SIGNING_PRIVATE_KEY": ""}):
+            code, _, err = self.run_main("check-updater-keys")
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", err)
+        self.assertIn("TAURI_SIGNING_PRIVATE_KEY", err)
+        self.assertNotIn(PRIVATE_KEY, err)
+
+    def test_check_updater_keys_says_what_it_found_in_the_summary(self):
+        none = {"TAURI_UPDATER_PUBKEY": "", "TAURI_SIGNING_PRIVATE_KEY": "", "TAURI_SIGNING_PRIVATE_KEY_PASSWORD": ""}
+        with tempfile.TemporaryDirectory() as folder, unittest.mock.patch.dict(os.environ, none):
+            summary = Path(folder) / "summary.md"
+            code, out, _ = self.run_main("check-updater-keys", "--summary", str(summary))
+            text = summary.read_text()
+        self.assertEqual(code, 0)
+        self.assertIn("::notice::", out)
+        self.assertIn("no update files", text)
 
 
 if __name__ == "__main__":

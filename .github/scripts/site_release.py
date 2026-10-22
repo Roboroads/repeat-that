@@ -22,7 +22,9 @@ It fails (exit 1, `::error::` annotations, no output written) when the release i
 SHA256SUMS, has an asset without a line in it (any asset, also one that belongs to no platform: publish-release.yml
 lists every file it attaches, so a file without a line was not put there by a release), or SHA256SUMS lists a file the
 release doesn't have or has a malformed line. The build then fails and the previous site stays live. An asset that
-belongs to no platform but is listed in SHA256SUMS is left out with a `::warning::`.
+belongs to no platform but is listed in SHA256SUMS is left out with a `::warning::`. The update files of a release
+made with an update key (the .sig files, latest-*.json and the macOS .app.tar.gz, see release_assets.py) are left out
+without one: they are for the app's updater, not for people.
 """
 
 import argparse
@@ -33,7 +35,17 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
-from release_assets import PLATFORMS, SUMS_NAME, TAG, ReleaseError, owner, parse_sums, read_json, read_text
+from release_assets import (
+    PLATFORMS,
+    SUMS_NAME,
+    TAG,
+    ReleaseError,
+    is_update_file,
+    owner,
+    parse_sums,
+    read_json,
+    read_text,
+)
 
 SCHEMA = 1
 NO_RELEASE = {"schema": SCHEMA, "release": None}
@@ -119,8 +131,8 @@ def build_release_data(info, sums, repo, platforms=PLATFORMS):
 
     grouped = {}
     for name, asset in assets.items():
-        if name == SUMS_NAME:
-            continue
+        if name == SUMS_NAME or is_update_file(name, platforms):
+            continue  # the update files (signatures, manifests, the macOS bundle) are for the app, not for people
         platform = owner(name, platforms)
         if platform is None:
             warnings.append(f"{name} belongs to no platform, so the website leaves it out")

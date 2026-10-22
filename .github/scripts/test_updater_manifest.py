@@ -179,6 +179,17 @@ class ManifestFormatTests(unittest.TestCase):
             self.assertIn(um.TARGETS_BY_PLATFORM[platform].pattern, ra.find_platform(platform).patterns)
             self.assertEqual(ra.classify(PAYLOADS[platform]), platform)
 
+    def test_the_platform_table_claims_every_file_the_script_works_with(self):
+        # The payload, its .sig and the manifest of each platform belong to the platform of release_assets.py, so
+        # late attach, the kept files and the checks of publish-release.yml know them.
+        for target in um.TARGETS:
+            platform = ra.find_platform(target.platform)
+            self.assertIn(target.pattern, platform.all_patterns)
+            self.assertIn(f"{target.pattern}.sig", platform.all_patterns)
+            self.assertIn(target.manifest, platform.update_patterns)
+            for name in (PAYLOADS[target.platform], f"{PAYLOADS[target.platform]}.sig", target.manifest):
+                self.assertEqual(ra.classify(name), target.platform, name)
+
 
 class ErrorTests(unittest.TestCase):
     def test_a_tag_of_the_wrong_form_fails(self):

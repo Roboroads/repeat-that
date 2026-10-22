@@ -11,15 +11,25 @@ Usage: release_assets.py <command> ...
                                existing lines. With --keep only those existing lines are carried over. Existing lines
                                never change (unless --replace lets an added file change its own line) or vanish
                                (unless --drop names a file that leaves the release).
-  check-assets --mode full --produced FILE... [--release-json FILE]
+  check-assets --mode full --produced FILE... [--release-json FILE] [--updater]
                                every required platform with a build job produced each kind of file it has, and every
                                asset on the release must be produced by this run, except an optional platform's asset
-                               this run did not produce; print the names to keep
+                               this run did not produce; print the names to keep. A platform's update files (see
+                               below) go together: with --updater every platform that produced files has all of them
   check-assets --mode late --platform P --produced FILE... --release-json FILE --sums FILE [--replace] [--tag TAG]
+                               [--updater]
                                the files may be added to the release: only platform P's, P optional, built for TAG,
                                all existing assets listed in the release's SHA256SUMS. Prints what the job must do:
                                `pending NAME` (on the release already, from an attach that stopped half way),
                                `overwrite NAME` and `remove NAME` (with --replace: every file of P is replaced)
+  check-manifests --tag TAG --repo OWNER/NAME FILE...
+                               every latest-*.json among the files is of TAG, and its urls and signatures are those
+                               of files among them: the payloads and the .sig files next to the manifests
+  check-updater-keys [--summary FILE]
+                               check-release's look at the update key: the variable TAURI_UPDATER_PUBKEY and the
+                               secrets TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, read from
+                               the environment (never printed). The variable without the secrets is an error, the
+                               secrets without the variable a warning, neither a notice
   check-source-run --run-json FILE [--compare-json FILE] --platform P --repo OWNER/NAME --branch B
                                the earlier run whose files are attached: a successful dispatched build workflow of
                                P on branch B of this repository, its commit part of the release
@@ -33,12 +43,20 @@ Usage: release_assets.py <command> ...
                                read `toJSON(needs)` of the publish job: required platforms must have succeeded,
                                optional ones only warn
 
+The update files are what the app's updater needs once an update key exists (publish-release.yml signs the payload of
+each platform and writes its manifest): for each platform that updates itself, the `.sig` of its payload and a manifest
+`latest-<target>-<arch>.json` (macOS: the `.app.tar.gz` update bundle too, which is no download of its own). They belong
+to their platform like its other files (late attach, the files kept from an earlier attach) but are not in the rule
+that a required platform produces each of its patterns: a release made before there was a key has none of them.
+
 --release-json is the output of `gh release view TAG --json isDraft,assets`, --run-json that of
 `gh api repos/OWNER/NAME/actions/runs/ID` and --compare-json that of `gh api repos/OWNER/NAME/compare/SHA...REF`.
 Problems are printed as `::error::` annotations and exit 1.
 """
 
 import argparse
+import base64
+import binascii
 import dataclasses
 import fnmatch
 import hashlib
@@ -46,6 +64,7 @@ import json
 import os
 import re
 import sys
+from urllib.parse import unquote
 
 SUMS_NAME = "SHA256SUMS"
 TAG = re.compile(r"^v\d+\.\d+\.\d+$")
@@ -62,16 +81,36 @@ class Platform:
     patterns: tuple  # file name patterns (fnmatch, case-sensitive) of the release assets
     build: bool = False  # True once publish-release.yml has a job named `name` that builds it
     workflow: str = ""  # the build workflow file whose runs may be attached late
+    # The update files, which only a release with an update key has: they belong to the platform but are not among
+    # `patterns`, which a required platform must all produce. The payload of Windows and Linux (the installer, the
+    # AppImage) is in `patterns` already, so these are what is new: the .sig and manifest names and, for macOS, the
+    # update bundle.
+    update_patterns: tuple = ()
+
+    @property
+    def all_patterns(self):
+        return self.patterns + self.update_patterns
 
 
 # A step that adds a platform flips `build` and adds a job of the same name to publish-release.yml (and to the
 # `needs` of its publish job); `gate` fails when the two are out of step.
 PLATFORMS = (
-    Platform("windows", "Windows", True, ("*-setup.exe",), build=True, workflow="build-windows.yml"),
-    Platform("linux", "Linux", True, ("*.deb", "*.rpm", "*.AppImage"), build=True, workflow="build-linux.yml"),
+    Platform(
+        "windows", "Windows", True, ("*-setup.exe",), build=True, workflow="build-windows.yml",
+        update_patterns=("*-setup.exe.sig", "latest-windows-x86_64.json"),
+    ),
+    Platform(
+        "linux", "Linux", True, ("*.deb", "*.rpm", "*.AppImage"), build=True, workflow="build-linux.yml",
+        # Only the AppImage updates itself; the .deb and .rpm only announce a new version.
+        update_patterns=("*.AppImage.sig", "latest-linux-x86_64.json"),
+    ),
+    # Flathub updates the Flatpak, so it never has update files.
     Platform("flatpak", "Flatpak", True, ("*.flatpak",), build=True, workflow="build-flatpak.yml"),
-    Platform("macos", "macOS", False, ("*.dmg",), build=True, workflow="build-macos.yml"),
-)
+    Platform(
+        "macos", "macOS", False, ("*.dmg",), build=True, workflow="build-macos.yml",
+        update_patterns=("*.app.tar.gz", "*.app.tar.gz.sig", "latest-darwin-aarch64.json"),
+    ),
+)  # fmt: skip
 
 
 class ReleaseError(Exception):
@@ -110,9 +149,21 @@ def owner(path, platforms=PLATFORMS):
     """The Platform a file belongs to (by file name), or None."""
     name = os.path.basename(path)
     for platform in platforms:
-        if any(matches(pattern, name) for pattern in platform.patterns):
+        if any(matches(pattern, name) for pattern in platform.all_patterns):
             return platform
     return None
+
+
+def is_update_file(path, platforms=PLATFORMS):
+    """True for a file that only exists for the updater of its platform (a .sig, a manifest, the macOS bundle): it is
+    no download for people."""
+    name = os.path.basename(path)
+    return any(matches(pattern, name) for platform in platforms for pattern in platform.update_patterns)
+
+
+def is_manifest(path):
+    """True for the name of an update manifest, latest-<target>-<arch>.json."""
+    return matches("latest-*.json", os.path.basename(path))
 
 
 def is_required(path, platforms=PLATFORMS):
@@ -221,23 +272,58 @@ def _names(paths):
 
 def check_versions(files, tag):
     """Fails for a file whose name does not carry the version of `tag` (v0.2.0 -> 0.2.0, between _ or - on both
-    sides: Repeat-That_0.2.0_aarch64.dmg, Repeat-That-0.2.0-1.x86_64.rpm)."""
+    sides: Repeat-That_0.2.0_aarch64.dmg, Repeat-That-0.2.0-1.x86_64.rpm). The update manifests are exempt: the app
+    asks for `latest-<target>-<arch>.json`, so the name can't say which release it is of (check_manifests reads it)."""
     if not TAG.match(tag):
         raise ReleaseError(f"tag must look like v0.1.0, got {tag!r}")
     version = re.escape(tag[1:])
     carries = re.compile(rf"(?<=[_-]){version}(?=[_-])")
-    bad = [name for name in _names(files) if not carries.search(name)]
+    bad = [name for name in _names(files) if not is_manifest(name) and not carries.search(name)]
     if bad:
         raise ReleaseError(f"{name} does not carry version {tag[1:]}, so it was not built for {tag}" for name in bad)
 
 
-def check_assets_full(release_assets, produced, platforms=PLATFORMS):
+def check_updater_files(produced, platforms=PLATFORMS, required=False):
+    """The update files of a platform go together: a .sig for its payload and its manifest (macOS: the update bundle
+    too), and a payload for each .sig. A platform that produced any of them must have all of them; with `required`
+    (the release has an update key) every platform that produced files must. Returns the errors."""
+    names = _names(produced)
+    errors, wanted = [], []
+    for platform in platforms:
+        if not platform.update_patterns:
+            continue
+        ours = [name for name in names if owner(name, platforms) is platform]
+        has_update = any(matches(pattern, name) for name in ours for pattern in platform.update_patterns)
+        if ours and (required or has_update):
+            wanted.append(platform)
+            errors += [
+                f"{platform.label} produced no {pattern} file"
+                for pattern in platform.update_patterns
+                if not any(matches(pattern, name) for name in names)
+            ]
+    for platform in wanted:
+        for sig_pattern in platform.update_patterns:
+            payload_pattern = sig_pattern.removesuffix(".sig")
+            if payload_pattern == sig_pattern or payload_pattern not in platform.all_patterns:
+                continue
+            for name in names:
+                if matches(payload_pattern, name) and f"{name}.sig" not in names:
+                    errors.append(f"{name} has no signature: {name}.sig is missing")
+                elif matches(sig_pattern, name) and name.removesuffix(".sig") not in names:
+                    errors.append(f"{name} is the signature of {name.removesuffix('.sig')}, which is missing")
+    return errors
+
+
+def check_assets_full(release_assets, produced, platforms=PLATFORMS, updater=False):
     """Full mode: the assets already on the release against the files this run produced.
 
     Every required platform with a build job must have produced a file for each of its patterns. Every asset must be
     one of the produced files (it gets replaced), except an optional platform's asset when this run produced nothing
-    for that platform (a .dmg attached late earlier): that one is kept. Returns the kept names. Anything else would
-    sit on the release without a line in the new SHA256SUMS."""
+    for that platform (a .dmg attached late earlier, and its update files): that one is kept. Returns the kept names.
+    Anything else would sit on the release without a line in the new SHA256SUMS. With `updater` (the release has an
+    update key) every platform that produced files must have produced its update files too; without it they must
+    still be all there or none (check_updater_files).
+    """
     produced = _names(produced)
     errors = []
     try:
@@ -257,6 +343,7 @@ def check_assets_full(release_assets, produced, platforms=PLATFORMS):
                 for pattern in platform.patterns
                 if not any(matches(pattern, name) for name in produced)
             ]
+    errors += check_updater_files(produced, platforms, required=updater)
     kept = []
     for name in release_assets:
         if name == SUMS_NAME or name in produced:
@@ -274,9 +361,12 @@ def check_assets_full(release_assets, produced, platforms=PLATFORMS):
     return kept
 
 
-def check_assets_late(release_assets, produced, platform, sums_text, replace=False, tag=None, platforms=PLATFORMS):
+def check_assets_late(
+    release_assets, produced, platform, sums_text, replace=False, tag=None, platforms=PLATFORMS, updater=False
+):
     """Late mode: may these files be added to the release? Only an optional platform's own files, built for `tag`,
-    onto a release whose assets are all listed in its current SHA256SUMS (which the new one will extend).
+    onto a release whose assets are all listed in its current SHA256SUMS (which the new one will extend). With
+    `updater` the platform's update files must be among them.
 
     Returns a LatePlan. A file of the platform that is on the release but not in SHA256SUMS, with the name of a new
     file, is an attach that stopped between the upload of the file and that of SHA256SUMS: it is `pending`, and the
@@ -297,6 +387,9 @@ def check_assets_late(release_assets, produced, platform, sums_text, replace=Fal
             check_versions(produced, tag)
         except ReleaseError as error:
             errors += error.errors
+    errors += check_updater_files(
+        [name for name in produced if classify(name, platforms) == target.name], platforms, required=updater
+    )
     if SUMS_NAME not in release_assets:
         errors.append(f"the release has no {SUMS_NAME}; publish it with a full run first")
     else:
@@ -456,6 +549,118 @@ def gate(needs, release, platforms=PLATFORMS):
     return GateResult(errors, warnings, missing)
 
 
+def check_manifests(files, tag, repo):
+    """The update manifests among `files` ({file name: text, or None for a file that is not read or could not be})
+    must be of the release `tag` of `repo`: `version` is the tag's, every url is a file of that release that is among
+    the files, and every signature is the content of that file's .sig. publish-release.yml writes them with
+    updater_manifest.py right after signing; this is the second look, at what is about to be attached."""
+    if not TAG.match(tag):
+        raise ReleaseError(f"tag must look like v0.1.0, got {tag!r}")
+    prefix = f"https://github.com/{repo}/releases/download/{tag}/"
+    manifests = sorted(name for name in files if is_manifest(name))
+    if not manifests:
+        raise ReleaseError("there is no update manifest (latest-<target>-<arch>.json) among the files")
+    errors = []
+    for name in manifests:
+        try:
+            data = json.loads(files[name])
+        except (TypeError, ValueError):
+            errors.append(f"{name} is not JSON")
+            continue
+        if not isinstance(data, dict):
+            errors.append(f"{name} is not a JSON object")
+            continue
+        if data.get("version") != tag[1:]:
+            errors.append(f"{name} has version {data.get('version')}, but the release is {tag} ({tag[1:]})")
+        platforms = data.get("platforms")
+        if not isinstance(platforms, dict) or not platforms:
+            errors.append(f"{name} has no platforms")
+            continue
+        for key, entry in platforms.items():
+            url = entry.get("url") if isinstance(entry, dict) else None
+            signature = entry.get("signature") if isinstance(entry, dict) else None
+            if not isinstance(url, str) or not isinstance(signature, str):
+                errors.append(f"{name}: {key} has no url and signature")
+                continue
+            payload = unquote(url[len(prefix) :]) if url.startswith(prefix) else None
+            if payload not in files:
+                errors.append(f"{name}: the url of {key} ({url}) is not a file of {tag} on {repo} among the files")
+                continue
+            sig_name = f"{payload}.sig"
+            if sig_name not in files:
+                errors.append(f"{name}: {payload} has no {sig_name} among the files")
+            elif files[sig_name] is None:
+                errors.append(f"{sig_name} could not be read")
+            elif signature != files[sig_name].strip():
+                errors.append(f"{name}: the signature of {key} is not the content of {sig_name}")
+    if errors:
+        raise ReleaseError(errors)
+
+
+@dataclasses.dataclass
+class KeyCheck:
+    errors: list
+    warnings: list
+    notices: list
+
+    @property
+    def ok(self):
+        return not self.errors
+
+
+def is_key_file(text, kind):
+    """True when `text` is the base64 of a minisign key file as `tauri signer generate` writes it: the content of the
+    .pub file or of the private key file, whose first line is `untrusted comment: ...` and names the kind of key."""
+    try:
+        decoded = base64.b64decode(text.strip(), validate=True).decode("utf-8")
+    except (binascii.Error, ValueError):
+        return False
+    first = decoded.partition("\n")[0]
+    return first.startswith("untrusted comment:") and kind in first
+
+
+def check_updater_keys(pubkey, private_key, password):
+    """check-release's look at the update key. `pubkey` is the repository variable TAURI_UPDATER_PUBKEY, `private_key`
+    and `password` the secrets of the updater-signing Environment; each is the empty string when it is not set.
+    The variable without the secrets is an error (the apps of the release would have an updater that its own
+    release can't feed), the secrets without the variable a warning, and neither a notice."""
+    pubkey, private_key, password = pubkey.strip(), private_key.strip(), password.strip()
+    guide = "See Update signing key in docs/MAINTAINING.md."
+    secrets = (("TAURI_SIGNING_PRIVATE_KEY", private_key), ("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", password))
+    errors, warnings, notices = [], [], []
+    if pubkey:
+        for name, value in secrets:
+            if not value:
+                errors.append(
+                    "The repository variable TAURI_UPDATER_PUBKEY is set, so the builds have an updater, but the "
+                    f"updater-signing Environment has no secret {name} to sign its updates with. {guide}"
+                )
+        if not is_key_file(pubkey, "public key"):
+            errors.append(
+                "TAURI_UPDATER_PUBKEY is not the content of the .pub file that `tauri signer generate` wrote "
+                f"(one line of base64, not the path of the file). {guide}"
+            )
+        if private_key and not is_key_file(private_key, "secret key"):
+            errors.append(
+                "TAURI_SIGNING_PRIVATE_KEY is not the content of the private key file that `tauri signer generate` "
+                f"wrote (one line of base64, not the path of the file). {guide}"
+            )
+    else:
+        present = [name for name, value in secrets if value]
+        if present:
+            warnings.append(
+                f"The updater-signing Environment has {' and '.join(present)}, but the repository variable "
+                "TAURI_UPDATER_PUBKEY is not set, so the builds have no updater and this release has no update "
+                f"files. Set the variable last, once the secrets are in. {guide}"
+            )
+        else:
+            notices.append(
+                "No update key is set up (the repository variable TAURI_UPDATER_PUBKEY and the secrets of the "
+                f"updater-signing Environment), so this release has no update files. {guide}"
+            )
+    return KeyCheck(errors, warnings, notices)
+
+
 def hash_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as stream:
@@ -508,17 +713,50 @@ def command_sums(args):
 def command_check_assets(args):
     _, assets = load_release(args.release_json)
     if args.mode == "full":
-        for name in check_assets_full(assets, args.produced):
+        for name in check_assets_full(assets, args.produced, updater=args.updater):
             print(name)
         return
     if not (args.platform and args.sums):
         raise ReleaseError("late mode needs --platform and --sums")
     plan = check_assets_late(
-        assets, args.produced, args.platform, read_text(args.sums), replace=args.replace, tag=args.tag
-    )
+        assets, args.produced, args.platform, read_text(args.sums), replace=args.replace, tag=args.tag,
+        updater=args.updater,
+    )  # fmt: skip
     for kind in ("pending", "overwrite", "remove"):
         for name in getattr(plan, kind):
             print(kind, name)
+
+
+def command_check_manifests(args):
+    files = {}
+    for path in args.files:
+        name = os.path.basename(path)
+        files[name] = None
+        if is_manifest(name) or name.endswith(".sig"):  # the payloads are big and not read
+            try:
+                files[name] = read_text(path)
+            except (OSError, ValueError):
+                pass
+    check_manifests(files, args.tag, args.repo)
+
+
+def command_check_updater_keys(args):
+    result = check_updater_keys(
+        os.environ.get("TAURI_UPDATER_PUBKEY", ""),
+        os.environ.get("TAURI_SIGNING_PRIVATE_KEY", ""),
+        os.environ.get("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", ""),
+    )
+    for notice in result.notices:
+        print(f"::notice::{notice}")
+    for warning in result.warnings:
+        print(f"::warning::{warning}")
+    if args.summary and (result.notices or result.warnings or result.errors):
+        with open(args.summary, "a", encoding="utf-8") as stream:
+            for label, messages in (("Notice", result.notices), ("Warning", result.warnings), ("Error", result.errors)):
+                for message in messages:
+                    stream.write(f"> **{label}:** {message}\n\n")
+    if not result.ok:
+        raise ReleaseError(result.errors)  # main prints them as ::error::
 
 
 def command_check_release(args):
@@ -594,7 +832,18 @@ def build_parser():
     sub.add_argument("--sums")
     sub.add_argument("--tag")
     sub.add_argument("--replace", action="store_true")
+    sub.add_argument("--updater", action="store_true")
     sub.set_defaults(run=command_check_assets)
+
+    sub = commands.add_parser("check-manifests")
+    sub.add_argument("--tag", required=True)
+    sub.add_argument("--repo", required=True)
+    sub.add_argument("files", nargs="+")
+    sub.set_defaults(run=command_check_manifests)
+
+    sub = commands.add_parser("check-updater-keys")
+    sub.add_argument("--summary")
+    sub.set_defaults(run=command_check_updater_keys)
 
     sub = commands.add_parser("check-release")
     sub.add_argument("--tag", required=True)
