@@ -8,9 +8,10 @@
 //! `me.roboroads.repeat-that`. Plasma 6.4 reads the name from the desktop file in both places (xdg-desktop-portal-kde
 //! commit 2fd2d093, "Improve the global shortcuts workflow").
 //!
-//! So after the first bind of each session the app gives the component its name back through kglobalaccel's own `doRegister`, which updates
-//! the display name of an action that exists. It only touches a component that has actions, so it never adds one, and
-//! does nothing where kglobalaccel isn't running (GNOME and the rest) or the name is right already (Plasma 6.4 on).
+//! So after the first bind of each session the app gives the component its name back through kglobalaccel's own
+//! `doRegister`, which updates the display name of an action that exists. It only touches a component that has actions,
+//! so it never adds one, and does nothing where kglobalaccel isn't running (GNOME and the rest) or the name is anything
+//! but the app ID (Plasma 6.4 on, which also keeps a translated name from the desktop file).
 
 use zbus::Connection;
 use zbus::fdo::DBusProxy;
@@ -23,9 +24,9 @@ const INTERFACE: &str = "org.kde.KGlobalAccel";
 /// The name the Shortcuts page should show, the `Name` of the desktop file.
 pub const APP_NAME: &str = "Repeat That";
 
-/// Gives `component` the display name `name` in kglobalaccel. `Ok(true)` when it had another name and now has this one,
-/// `Ok(false)` when there was nothing to do: no kglobalaccel on the bus, no shortcuts in the component yet, or the right
-/// name already.
+/// Gives `component` the display name `name` in kglobalaccel when its display name is its own unique name. `Ok(true)`
+/// when it was and now has `name`, `Ok(false)` when there was nothing to do: no kglobalaccel on the bus, no shortcuts in
+/// the component yet, or a real name already (`name`, or one the desktop chose, such as a translation).
 pub async fn name_component(connection: &Connection, component: &str, name: &str) -> Result<bool, String> {
     // Asked first, so that a call can't start kglobalaccel through D-Bus activation on a desktop that doesn't run it.
     let bus = DBusProxy::new(connection).await.map_err(|err| err.to_string())?;
@@ -50,7 +51,8 @@ pub async fn name_component(connection: &Connection, component: &str, name: &str
     let Some(action) = actions.into_iter().find(|id| id.len() == 4) else {
         return Ok(false);
     };
-    if action[2] == name {
+    // Only the name the 6.3 portal leaves is replaced. Any other is the desktop's own, a translated one among them.
+    if action[2] != component {
         return Ok(false);
     }
 
@@ -222,6 +224,16 @@ mod tests {
             return;
         };
         assert_eq!(rig.name(), Ok(false));
+        assert!(rig.daemon.registered.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_name_the_desktop_chose_is_kept() {
+        let Some(rig) = Rig::new(true, &[(ID, "Herhaal dat", ACTIONS)]) else {
+            return;
+        };
+        assert_eq!(rig.name(), Ok(false));
+        assert_eq!(rig.display_name(), "Herhaal dat");
         assert!(rig.daemon.registered.lock().unwrap().is_empty());
     }
 
