@@ -95,10 +95,12 @@ didn't work, with your macOS version.
    press steps back, and catch-up and stop work.
 7. Listen to the app's volume around a replay at 20% and at 0%: it drops when the replay starts, comes back about 300 ms
    after it ends, and doesn't click.
-8. Turn the permission off in System Settings → Privacy & Security → Screen & System Audio Recording while capturing.
-   Within a few seconds the window says Repeat That isn't allowed to capture audio. A replay of what was buffered
-   still works. **Open System Settings** opens Privacy & Security, and **Ask again** brings the question back. (On
-   macOS 14 only **Ask again** is there.)
+8. See the "not allowed" state. On macOS 15 and later, turn the permission off in System Settings → Privacy & Security
+   → Screen & System Audio Recording while capturing. Within a few seconds the window says Repeat That isn't allowed
+   to capture audio. On macOS 14 there is no switch, so run `tccutil reset AudioCapture me.roboroads.repeat-that`,
+   quit and reopen Repeat That, start capturing and click **Don't Allow**. Either way, a replay of what was buffered
+   still works, and **Ask again** brings the question back. On macOS 15 and later **Open System Settings** opens
+   Privacy & Security too; on 14 only **Ask again** is there.
 9. Start a replay and end Repeat That with `pkill -9 -x repeat-that`. The app's own sound is back at full volume within
    a second.
 10. Turn on **Start at login**, log out and in. Repeat That starts in the menu bar without its window.
