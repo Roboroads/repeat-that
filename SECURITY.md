@@ -20,7 +20,7 @@ proof of concept helps but isn't required.
 In scope:
 
 - the app
-- the capture backends (WASAPI on Windows today, PipeWire and Core Audio once they exist)
+- the capture backends (WASAPI on Windows, PipeWire on Linux and Core Audio on macOS)
 - the duck guard process and the duck journal
 - the auto-updater, once it exists
 - release artifacts and their checksums (from v0.1)
@@ -31,8 +31,8 @@ Dependabot alerts are on for known advisories in our dependencies. Recording law
 
 ## Supported versions
 
-Repeat That is pre-1.0 and v0.1 is not released yet. Only the latest release gets security fixes. If a problem affects
-an older release, the answer is to update.
+Repeat That is pre-1.0, and the first release is v0.1.0. Only the latest release gets security fixes. If a problem
+affects an older release, the answer is to update.
 
 ## What to expect
 

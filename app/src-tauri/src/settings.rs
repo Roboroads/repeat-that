@@ -101,6 +101,7 @@ impl Default for Settings {
             hotkeys: HotkeyBindings::default(),
             autostart: false,
             first_run_done: false,
+            check_for_updates: None,
         }
     }
 }
@@ -239,6 +240,8 @@ pub fn sanitize(stored: &Value) -> Settings {
         hotkeys: read_hotkeys(object.get("hotkeys")),
         autostart: read_bool(object.get("autostart"), defaults.autostart),
         first_run_done: read_bool(object.get("firstRunDone"), defaults.first_run_done),
+        // Anything but true or false is "not asked yet".
+        check_for_updates: object.get("checkForUpdates").and_then(Value::as_bool),
     }
 }
 
@@ -330,6 +333,9 @@ pub fn apply_patch(current: &Settings, patch: SettingsPatch) -> Result<Settings,
     if let Some(done) = patch.first_run_done {
         next.first_run_done = done;
     }
+    if let Some(check) = patch.check_for_updates {
+        next.check_for_updates = Some(check);
+    }
     Ok(next)
 }
 
@@ -391,7 +397,8 @@ mod tests {
                 "duck": { "enabled": true, "level": 0.2 },
                 "hotkeys": { "replay": "Ctrl+Alt+Space", "stop": "Ctrl+Alt+Backspace", "catchUp": "Ctrl+Alt+Enter" },
                 "autostart": false,
-                "firstRunDone": false
+                "firstRunDone": false,
+                "checkForUpdates": null
             })
         );
     }
@@ -526,7 +533,8 @@ mod tests {
             "duck": { "enabled": false, "level": 0.5 },
             "hotkeys": { "replay": "Ctrl+Shift+R", "stop": null, "catchUp": "Ctrl+Shift+C" },
             "autostart": true,
-            "firstRunDone": true
+            "firstRunDone": true,
+            "checkForUpdates": true
         });
         let settings = sanitize(&stored);
         assert_eq!(
@@ -549,6 +557,7 @@ mod tests {
                 hotkeys: hotkeys(Some("Ctrl+Shift+R"), None, Some("Ctrl+Shift+C")),
                 autostart: true,
                 first_run_done: true,
+                check_for_updates: Some(true),
             }
         );
         // And it survives a round trip through JSON.
@@ -1006,9 +1015,84 @@ mod tests {
             buffer_seconds: 90,
             sensitivity: Sensitivity::Low,
             first_run_done: true,
+            check_for_updates: Some(true),
             ..Settings::default()
         };
         let applied = apply(serde_json::to_value(&wanted).unwrap()).unwrap();
         assert_eq!(applied, wanted);
+    }
+
+    // Checking for updates
+
+    #[test]
+    fn the_update_question_is_not_asked_yet_by_default() {
+        assert_eq!(Settings::default().check_for_updates, None);
+        assert_eq!(sanitize(&json!({})).check_for_updates, None);
+    }
+
+    #[test]
+    fn a_stored_answer_to_the_update_question_is_read() {
+        assert_eq!(
+            sanitize(&json!({ "checkForUpdates": true })).check_for_updates,
+            Some(true)
+        );
+        assert_eq!(
+            sanitize(&json!({ "checkForUpdates": false })).check_for_updates,
+            Some(false)
+        );
+        assert_eq!(sanitize(&json!({ "checkForUpdates": null })).check_for_updates, None);
+    }
+
+    #[test]
+    fn a_broken_answer_to_the_update_question_is_not_asked_yet() {
+        for broken in [json!("yes"), json!(1), json!(0), json!({}), json!([true])] {
+            assert_eq!(
+                sanitize(&json!({ "checkForUpdates": broken })).check_for_updates,
+                None,
+                "{broken}"
+            );
+        }
+        // And the rest of the file is read as usual.
+        assert_eq!(
+            sanitize(&json!({ "checkForUpdates": "yes", "bufferSeconds": 60 })).buffer_seconds,
+            60
+        );
+    }
+
+    #[test]
+    fn the_answer_to_the_update_question_comes_from_a_patch() {
+        assert_eq!(
+            apply(json!({ "checkForUpdates": true })).unwrap().check_for_updates,
+            Some(true)
+        );
+        assert_eq!(
+            apply(json!({ "checkForUpdates": false })).unwrap().check_for_updates,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn the_answer_can_be_changed_but_not_taken_back_to_not_asked() {
+        let answered = Settings {
+            check_for_updates: Some(true),
+            ..Settings::default()
+        };
+        let changed = apply_patch(&answered, patch(json!({ "checkForUpdates": false }))).unwrap();
+        assert_eq!(changed.check_for_updates, Some(false));
+        // `null` is the same as leaving it out.
+        let kept = apply_patch(
+            &answered,
+            patch(json!({ "checkForUpdates": null, "bufferSeconds": 40 })),
+        )
+        .unwrap();
+        assert_eq!(kept.check_for_updates, Some(true));
+        assert_eq!(kept.buffer_seconds, 40);
+    }
+
+    #[test]
+    fn an_answer_of_the_wrong_type_does_not_parse() {
+        for bad in [json!({ "checkForUpdates": "yes" }), json!({ "checkForUpdates": 1 })] {
+            assert!(serde_json::from_value::<SettingsPatch>(bad.clone()).is_err(), "{bad}");
+        }
     }
 }

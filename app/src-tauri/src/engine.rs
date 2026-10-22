@@ -20,7 +20,7 @@ use crate::locking::lock;
 use crate::service::SettingsService;
 use crate::session::{self, Env, ProcessEnv};
 use crate::source::{self, SharedMockPermission, SourceKind};
-use crate::tray::{self, HotkeyLabels, SharedStatus, TrayState, TrayStatus};
+use crate::tray::{self, HotkeyLabels, SharedStatus, TrayStatus};
 
 /// The event that carries the [`Status`] after every change, and every 500 ms during a replay.
 pub const STATUS_EVENT: &str = "status";
@@ -384,10 +384,10 @@ fn send_status<R: Runtime>(app: &AppHandle<R>) {
         .map(|settings| HotkeyLabels::for_status(&settings.get().hotkeys, &status))
         .unwrap_or_default();
     if let Some(shared) = app.try_state::<SharedStatus>() {
-        *tray::lock_status(&shared) = TrayState {
-            status: TrayStatus::from_status(&status),
-            hotkeys,
-        };
+        // The updates are the updater's to set: it is the only thing that knows them.
+        let mut tray_state = tray::lock_status(&shared);
+        tray_state.status = TrayStatus::from_status(&status);
+        tray_state.hotkeys = hotkeys;
     }
     tray::refresh(app);
 }

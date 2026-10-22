@@ -32,6 +32,7 @@ mod store;
 #[cfg(test)]
 mod test_app;
 mod tray;
+mod updater;
 #[cfg(target_os = "linux")]
 mod webkit;
 mod window;
@@ -76,6 +77,15 @@ pub fn run() {
     if session::wants_shortcut_plugin(&session::ProcessEnv) {
         builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
     }
+    // Only a build that has the update key compiled in has the updater; without one nothing is registered, the window
+    // gets no way to update, and the app never asks the network about updates.
+    if let Some(updater) = updater::plugin() {
+        builder = builder.plugin(updater);
+    }
+    // The plugin reads its key and where to look from the app's config, which is made here instead of in
+    // `tauri.conf.json` so that a build without a key has none of it.
+    let mut context = tauri::generate_context!();
+    updater::configure(&mut context);
     let app = builder
         .plugin(tauri_plugin_store::Builder::new().build())
         // Starting with the OS is off until the user turns it on; the entry starts the app hidden in the tray.
@@ -102,6 +112,8 @@ pub fn run() {
             session::install(handle);
             // The settings decide whether this is the first run and which hotkeys to register, so they come first.
             service::install(handle);
+            // Before the tray, which starts with an update item where the app looks for updates.
+            updater::install(handle);
             tray::setup(handle)?;
             // Captures the stored target from the start; pausing isn't stored.
             engine::install(handle);
@@ -112,7 +124,7 @@ pub fn run() {
             actions::run_launch_action(&args, handle);
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("failed to build the Repeat That app");
 
     app.run(|app, event| match event {
@@ -127,7 +139,10 @@ pub fn run() {
         RunEvent::Reopen { .. } => window::show_settings(app),
         // The process ends right after this without dropping the managed state, so the engine is stopped here: that
         // stops a replay, wipes the buffer and gives the captured app its volume back.
-        RunEvent::Exit => engine::shutdown(app),
+        RunEvent::Exit => {
+            updater::shutdown(app);
+            engine::shutdown(app);
+        }
         _ => {}
     });
 }
@@ -190,6 +205,18 @@ mod tests {
                     .or_else(|| permission["identifier"].as_str())
                     .unwrap_or_default();
                 id.starts_with("opener:")
+            }),
+            "{permissions:?}"
+        );
+        // Nor may it use the updater plugin itself: it could point a download anywhere the key allows. It only calls the
+        // app's own update commands, which fetch from one fixed place.
+        assert!(
+            !permissions.iter().any(|permission| {
+                let id = permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str())
+                    .unwrap_or_default();
+                id.starts_with("updater:")
             }),
             "{permissions:?}"
         );

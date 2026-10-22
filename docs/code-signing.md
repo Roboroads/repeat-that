@@ -38,8 +38,8 @@ Two files, both for Windows: the installer, `Repeat-That_<version>_x64-setup.exe
   or none. The installer downloads Microsoft's WebView2 runtime when a PC doesn't have it, and that file is Microsoft's.
 - The Linux packages and the macOS disk image aren't signed with this certificate.
 
-The release's `SHA256SUMS` file stays the way to check that you have the file the build produced, whether it is signed
-or not, see [verify-downloads.md](verify-downloads.md).
+The release's `SHA256SUMS` file is still the way to check that you have the file the build produced, whether it is
+signed or not (see [verify-downloads.md](verify-downloads.md)).
 
 ## Privacy
 

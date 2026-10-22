@@ -24,6 +24,8 @@ use crate::service::fake::MemoryPersistence;
 use crate::service::{SETTINGS_CHANGED_EVENT, install_with};
 use crate::shortcut_page::PageOpener;
 use crate::tray::SharedStatus;
+use crate::updater::fake::{EventHost, FakeSource, Log};
+use crate::updater::{self, Parts, ShutdownTiming, SystemClock, UpdateService};
 
 /// The speech fixture, which plays as the fake app "speech_8s".
 pub const FIXTURE: &str = concat!(
@@ -41,6 +43,11 @@ pub struct TestApp {
     /// How often the desktop's own shortcut page was asked for, and whether that works (it doesn't, to begin with).
     pub page_opens: Arc<AtomicUsize>,
     pub page_works: Arc<AtomicBool>,
+    /// Where updates come from: nothing new until a test says so.
+    pub update_source: Arc<FakeSource>,
+    /// What the update source and the app did about updates, in order (`check`, `download`, `install`, `shutdown`,
+    /// `restart`).
+    pub update_log: Log,
     events: Arc<Mutex<Vec<(String, Value)>>>,
 }
 
@@ -80,7 +87,7 @@ impl TestApp {
         app.manage::<SharedAppEngine>(engine);
 
         let events = Arc::new(Mutex::new(Vec::new()));
-        for name in [SETTINGS_CHANGED_EVENT, STATUS_EVENT] {
+        for name in [SETTINGS_CHANGED_EVENT, STATUS_EVENT, updater::STATUS_EVENT] {
             let sink = Arc::clone(&events);
             app.listen(name, move |event| {
                 let payload = serde_json::from_str(event.payload()).expect("the event carries JSON");
@@ -97,6 +104,22 @@ impl TestApp {
             Box::new(Arc::clone(&backend)),
         );
         engine::start_publishing(app.handle());
+        // Updates run on a fake source and don't restart the app; nothing is checked by itself within a test.
+        let update_log = Log::default();
+        let update_source = Arc::new(FakeSource::new(&update_log));
+        app.manage(UpdateService::start(Parts {
+            detection: updater::fake::install_mode(),
+            current_version: "0.1.0".into(),
+            consent: app.state::<crate::service::SettingsService>().get().check_for_updates,
+            source: Arc::clone(&update_source) as Arc<dyn updater::UpdateSource>,
+            host: Arc::new(EventHost::new(
+                updater::AppHost::new(app.handle().clone(), false),
+                &update_log,
+            )),
+            clock: Arc::new(SystemClock::new()),
+            timings: updater::fake::NEVER,
+            shutdown: ShutdownTiming::CURRENT,
+        }));
         let output = TestOutput::new(48_000);
         if with_engine {
             let source = MockSource::from_wav(FIXTURE).expect("the fixture plays");
@@ -113,6 +136,8 @@ impl TestApp {
             output,
             page_opens,
             page_works,
+            update_source,
+            update_log,
             events,
         }
     }
@@ -200,5 +225,6 @@ impl Drop for TestApp {
     /// The status threads keep the app alive, so the engine and the publisher are stopped here, as when the app ends.
     fn drop(&mut self) {
         engine::shutdown(self.app.handle());
+        updater::shutdown(self.app.handle());
     }
 }
