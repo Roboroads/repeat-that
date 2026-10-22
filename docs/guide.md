@@ -173,8 +173,10 @@ the tray without opening the window. If you move or rename an AppImage, turn the
 - Audio only ever lives in memory. It is never written to disk and never sent anywhere.
 - The buffer is wiped when you pause, pick another app or quit.
 - Only the app you pick is captured, and never the microphone.
-- Two small files are saved: your settings (including the name and location of the app you picked) and, on Windows and
-  Linux, a journal of the volumes that were lowered, so they can be restored after a crash.
+- A few small things are saved, none with audio: your settings (including the name and location of the app you picked),
+  on Windows and Linux a journal of the volumes that were lowered, so they can be restored after a crash, and, while
+  Start at login is on, the entry that starts the app (a Run key on Windows, a launch agent on macOS, a `.desktop` file
+  on Linux).
 - There is no account and no telemetry.
 
 The details are in [PRIVACY.md](../PRIVACY.md), which also has
