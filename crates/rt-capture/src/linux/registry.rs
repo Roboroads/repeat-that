@@ -72,7 +72,7 @@ pub(super) enum Command {
     Quit,
 }
 
-/// The loop thread, ended when this is dropped.
+/// The loop thread, ended when this is dropped, once the daemon has read everything it was sent.
 pub(super) struct Connection {
     client: Client,
     thread: Option<JoinHandle<()>>,
@@ -299,6 +299,12 @@ fn run(
         mainloop.run();
     }
     state.borrow_mut().end_captures();
+    // The daemon ends a client that hung up before it reads what is still in the client's socket, so what we sent last,
+    // like the volumes a restore set, is lost if we hang up before the daemon got to it. The duck guard hangs up right
+    // after it restores. A last roundtrip waits until the daemon has read everything.
+    if !broken.get() {
+        roundtrip();
+    }
 }
 
 /// What a client says about the app behind it.
