@@ -673,8 +673,19 @@ impl State {
         }
     }
 
-    /// The apps there are now.
+    /// The apps there are now, named from the `.desktop` files, which are scanned again now and then. See
+    /// [`fade_groups`](Self::fade_groups) for a fade.
     fn groups(&self) -> Vec<AppGroup> {
+        self.groups_named(icon::desktop_name)
+    }
+
+    /// [`groups`](Self::groups) without scanning the `.desktop` files again: that reads every one of them, which would
+    /// hold up the loop, and the fade, for that long.
+    fn fade_groups(&self) -> Vec<AppGroup> {
+        self.groups_named(icon::known_desktop_name)
+    }
+
+    fn groups_named(&self, desktop_name: impl Fn(&str) -> Option<String>) -> Vec<AppGroup> {
         let placed: Vec<Placed> = self
             .nodes
             .iter()
@@ -687,7 +698,7 @@ impl State {
                 })
             })
             .collect();
-        apps::group(&placed, self.own, icon::desktop_name)
+        apps::group(&placed, self.own, desktop_name)
     }
 
     fn start(&mut self, app: &AudioApp, sink: FrameSink, level: DuckLevel, running: Arc<AtomicBool>) -> Result<u64> {
@@ -752,7 +763,7 @@ impl State {
         first: bool,
         duck_level: &DuckLevel,
     ) -> Result<()> {
-        let groups = self.groups();
+        let groups = self.fade_groups();
         let key = apps::find(&groups, app)
             .ok_or(CaptureError::AppNotFound(app.pid))?
             .key

@@ -204,12 +204,16 @@ fn data_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
-/// The index of this system's `.desktop` files, scanned again when it is older than [`RESCAN_AFTER`].
-fn index() -> Arc<DesktopIndex> {
-    static INDEX: Mutex<Option<(Instant, Arc<DesktopIndex>)>> = Mutex::new(None);
+/// The latest scan of this system's `.desktop` files, and when it was made.
+static INDEX: Mutex<Option<(Instant, Arc<DesktopIndex>)>> = Mutex::new(None);
+
+/// The index of this system's `.desktop` files, scanned again when it is older than [`RESCAN_AFTER`], or always when
+/// `rescan` is false and there is one: a lookup that can't wait for a scan, which reads every `.desktop` file, takes the
+/// one there is.
+fn index(rescan: bool) -> Arc<DesktopIndex> {
     let mut index = INDEX.lock().unwrap_or_else(|e| e.into_inner());
     match &*index {
-        Some((scanned, index)) if scanned.elapsed() < RESCAN_AFTER => Arc::clone(index),
+        Some((scanned, index)) if !needs_scan(Some(scanned.elapsed()), rescan) => Arc::clone(index),
         _ => {
             let fresh = Arc::new(DesktopIndex::scan(&data_dirs()));
             *index = Some((Instant::now(), Arc::clone(&fresh)));
@@ -218,14 +222,25 @@ fn index() -> Arc<DesktopIndex> {
     }
 }
 
+/// Whether a lookup scans the `.desktop` files, given the age of the latest scan (`None` without one).
+fn needs_scan(age: Option<Duration>, rescan: bool) -> bool {
+    age.is_none_or(|age| rescan && age >= RESCAN_AFTER)
+}
+
 /// The `Name=` of the app whose executable or binary is called `program`.
 pub(super) fn desktop_name(program: &str) -> Option<String> {
-    index().find(program)?.name.clone()
+    index(true).find(program)?.name.clone()
+}
+
+/// [`desktop_name`] from the `.desktop` files as the latest lookup found them, without scanning them again: for the
+/// steps of a fade, which run on the PipeWire thread, a graph cycle apart.
+pub(super) fn known_desktop_name(program: &str) -> Option<String> {
+    index(false).find(program)?.name.clone()
 }
 
 /// The icon of the app whose executable is `exe`, at `size`×`size` pixels.
 pub(super) fn icon(exe: &Path, size: u32) -> Option<IconImage> {
-    let entry_icon = index().find(file_name(exe))?.icon.clone()?;
+    let entry_icon = index(true).find(file_name(exe))?.icon.clone()?;
     let dirs = data_dirs();
     let theme = current_theme();
     load(&find_icon(&entry_icon, &dirs, theme.as_deref(), size)?, size)
@@ -411,6 +426,19 @@ mod tests {
 
     const APP: &str = "[Desktop Entry]\nType=Application\nName=Test App\nExec=/opt/test/bin/rt-test-app %U\n\
         Icon=rt-test-app\n[Desktop Action new]\nName=Not this one\nExec=other\n";
+
+    #[test]
+    fn only_a_lookup_that_may_wait_scans_again() {
+        let old = Some(RESCAN_AFTER + Duration::from_secs(1));
+        let recent = Some(Duration::from_secs(1));
+        assert!(
+            needs_scan(None, true) && needs_scan(None, false),
+            "the first lookup scans"
+        );
+        assert!(needs_scan(old, true));
+        assert!(!needs_scan(old, false), "a fade step takes the index there is");
+        assert!(!needs_scan(recent, true) && !needs_scan(recent, false));
+    }
 
     #[test]
     fn programs_come_from_exec_lines() {
