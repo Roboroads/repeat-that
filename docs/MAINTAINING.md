@@ -257,9 +257,10 @@ installation and checks, in the same container:
 
 Then `flatpak-builder-lint`, Flathub's own linter, runs on the manifest, on the manifest that goes to Flathub and on the
 built repository, through `filter_lint.py`, and on the metainfo once its screenshot is on `main` (the linter looks it up
-on the network). Two errors are let through until the app is on Flathub: `appid-url-not-reachable`
-(`https://roboroads.me` has to answer, see [Flathub](#flathub)) and `appstream-screenshots-not-mirrored-in-ostree`
-(Flathub fetches the screenshot, which is a link to the main branch, and keeps its own copy). A third,
+on the network). Three errors are let through until the app is on Flathub: `appid-url-not-reachable`
+(`https://roboroads.me` has to answer, see [Flathub](#flathub)), `appstream-screenshots-not-mirrored-in-ostree` and
+`appstream-external-screenshot-url` (Flathub fetches the screenshot, which is a link to the main branch, and keeps its
+own copy on dl.flathub.org). A fourth,
 `appstream-missing-screenshots`, is let through only while the screenshot isn't on `main` yet, on the change that adds it.
 Anything else the linter reports fails the build, except in a release run (one with a tag): the linter comes with a
 floating container image and looks things up on the network, so a new rule or a network failure must not hold back

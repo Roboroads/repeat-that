@@ -10,8 +10,8 @@
 #     other bus names);
 #   * everything the desktop needs is exported: the desktop entry, the metainfo and the icons, under the Flatpak's ID;
 #   * the binary has every library it links (ldd) and so has the tray library the app opens at run time;
-#   * the self-check (`--rt-self-check`) reports Silero with the version of the bundle, which also proves that the
-#     ONNX Runtime linked in works inside the sandbox;
+#   * the self-check (`--rt-self-check`) reports Silero with the version of the bundle and no updater, which also proves
+#     that the ONNX Runtime linked in works inside the sandbox;
 #   * the exported desktop entry and metainfo pass desktop-file-validate and appstreamcli;
 #   * the app starts in the sandbox under a virtual display, stays up, and writes its tray icon to the folder that the
 #     sandbox shares with the desktop ($XDG_RUNTIME_DIR/app/<id>), which is where the desktop's tray reads it.
@@ -156,7 +156,9 @@ for binary in /app/bin/repeat-that /app/lib/libayatana-appindicator3.so.1; do
   fi
 done
 
-expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\"}"
+# The Flatpak is built without an update key, as Flathub builds it too, since Flathub does the updating. The
+# self-check's updater field is about the key, so it says there is no updater.
+expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\",\"updater\":false}"
 err=$(mktemp)
 code=0
 out=$(in_sandbox repeat-that --rt-self-check 2>"$err") || code=$?

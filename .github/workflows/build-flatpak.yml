@@ -207,6 +207,8 @@ jobs:
       #                                                  (docs/MAINTAINING.md, Flathub)
       #   appstream-screenshots-not-mirrored-in-ostree   Flathub fetches the screenshot and keeps its own copy when it
       #                                                  builds; here it stays a link
+      #   appstream-external-screenshot-url              the screenshot is not on dl.flathub.org: Flathub's own build
+      #                                                  mirrors it there, which a build here can't
       #   appstream-missing-screenshots                  only while the screenshot is not on the main branch, which the
       #                                                  metainfo links to, so the build can't fetch it: a change that
       #                                                  adds or moves it. It is an error again once it is there
@@ -220,7 +222,11 @@ jobs:
         continue-on-error: ${{ inputs.tag != '' }}
         run: |
           set -euo pipefail
-          allow=(--allow appid-url-not-reachable --allow appstream-screenshots-not-mirrored-in-ostree)
+          allow=(
+            --allow appid-url-not-reachable
+            --allow appstream-screenshots-not-mirrored-in-ostree
+            --allow appstream-external-screenshot-url
+          )
           screenshot=$(sed -n 's|.*<image[^>]*>\(https://[^<]*\)</image>.*|\1|p' packaging/flatpak/me.roboroads.RepeatThat.metainfo.xml | head -n 1)
           if [[ -z "$screenshot" ]]; then
             echo "::error::the metainfo has no screenshot"
