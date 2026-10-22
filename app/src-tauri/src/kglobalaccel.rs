@@ -188,16 +188,6 @@ mod tests {
     const ACTIONS: &[(&str, &str)] = &[("replay", "Replay"), ("stop", "Stop"), ("catch-up", "Catch up")];
 
     #[test]
-    fn the_name_is_the_one_in_the_desktop_file() {
-        let path = format!("linux/{ID}.desktop");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{path}: {err}"));
-        assert!(
-            text.lines().any(|line| line == format!("Name={APP_NAME}")),
-            "{path} has no Name={APP_NAME}"
-        );
-    }
-
-    #[test]
     fn a_component_named_after_the_app_id_gets_the_apps_name() {
         let Some(rig) = Rig::new(true, &[(ID, ID, ACTIONS)]) else {
             return;

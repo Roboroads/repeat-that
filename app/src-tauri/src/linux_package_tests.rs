@@ -94,6 +94,9 @@ fn its_entry_names_the_icon_after_the_app_id_and_starts_the_binary() {
     let keys = entry(&desktop_file());
     assert_eq!(keys["Type"], "Application");
     assert_eq!(keys["Name"], "Repeat That");
+    // The name the app gives its shortcuts in KDE.
+    #[cfg(target_os = "linux")]
+    assert_eq!(keys["Name"], crate::kglobalaccel::APP_NAME);
     assert_eq!(keys["Icon"], APP_ID);
     assert_eq!(keys["Exec"], "repeat-that");
     assert_eq!(keys["Terminal"], "false");
