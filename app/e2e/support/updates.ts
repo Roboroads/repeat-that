@@ -2,6 +2,7 @@
 // update source from `REPEAT_THAT_MOCK_UPDATE` (see src-tauri/src/updater/source.rs): `available` offers 99.0.0, and
 // the app has one source for its whole run, so each answer of it has a spec file of its own (SPEC_ENV in wdio.conf.ts).
 import { $, browser } from '@wdio/globals';
+import { invoke } from './app.js';
 
 /** The version every mock but `none` and `fail-check` announces. */
 export const MOCK_VERSION = '99.0.0';
@@ -14,28 +15,15 @@ export interface BackendUpdateStatus {
   state: 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'error';
   available: { version: string; date: string | null; notes: string; releaseUrl: string } | null;
   progress: number | null;
-  /** The status' `error`, under another name: see `backendUpdateStatus`. */
-  errorMessage: string | null;
+  /** In state `error`. */
+  error: string | null;
   errorKind: 'check' | 'install' | null;
   lastCheckedAt: number | null;
   manual: boolean;
 }
 
-/**
- * The backend's own view of the updater, for what the page does not show. The status' `error` field comes back as
- * `errorMessage`: WebdriverIO takes any script result with a truthy `error` for a failed command, and would throw the
- * message of a failed check or download instead of returning the status.
- */
-export async function backendUpdateStatus(): Promise<BackendUpdateStatus> {
-  return browser.execute(() => {
-    const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } })
-      .__TAURI_INTERNALS__;
-    return internals.invoke('get_update_status').then((status) => {
-      const { error, ...rest } = status as { error: string | null };
-      return { ...rest, errorMessage: error };
-    });
-  }) as Promise<BackendUpdateStatus>;
-}
+/** The backend's own view of the updater, for what the page does not show. */
+export const backendUpdateStatus = () => invoke<BackendUpdateStatus>('get_update_status');
 
 /**
  * Fails with a clear message when the app wasn't started the way the spec needs. Without it every test would fail

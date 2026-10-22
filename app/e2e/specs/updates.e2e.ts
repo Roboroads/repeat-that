@@ -123,7 +123,7 @@ describe('updates, with a version on offer', () => {
 
     // The mock has nothing to restart into: the app, and the session driving it, are still there.
     await browser.pause(1_500);
-    expect(await backendUpdateStatus()).toMatchObject({ state: 'installing', errorMessage: null });
+    expect(await backendUpdateStatus()).toMatchObject({ state: 'installing', error: null });
     await expect(offerBanner()).toHaveText(expect.stringContaining(`Installing version ${MOCK_VERSION}`));
   });
 });

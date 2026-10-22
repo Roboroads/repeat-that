@@ -25,7 +25,7 @@ describe('updates, when the check fails', () => {
     expect(await backendUpdateStatus()).toMatchObject({
       state: 'error',
       errorKind: 'check',
-      errorMessage: "Couldn't check for updates: the update server can't be reached.",
+      error: "Couldn't check for updates: the update server can't be reached.",
       manual: true,
       available: null,
     });

@@ -41,7 +41,7 @@ describe('updates, when the download fails', () => {
     expect(await backendUpdateStatus()).toMatchObject({
       state: 'error',
       errorKind: 'install',
-      errorMessage: "Couldn't install the update: the download failed.",
+      error: "Couldn't install the update: the download failed.",
       available: { version: MOCK_VERSION },
     });
   });
