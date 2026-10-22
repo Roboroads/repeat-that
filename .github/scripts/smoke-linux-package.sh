@@ -131,15 +131,19 @@ fi
 check_self_check "the package" repeat-that --rt-self-check
 
 # The validator comes from the distribution, so it is installed only now: it must not bring in what the package lacks.
-install_packages desktop-file-utils >/dev/null 2>&1
-for entry in "$app_id.desktop" "Repeat That.desktop"; do
-  if out=$(desktop-file-validate "/usr/share/applications/$entry" 2>&1); then
-    ok "/usr/share/applications/$entry passes desktop-file-validate"
-  else
-    fail "/usr/share/applications/$entry fails desktop-file-validate"
-  fi
-  if [[ -n "$out" ]]; then indent <<<"$out"; fi
-done
+if out=$(install_packages desktop-file-utils 2>&1); then
+  for entry in "$app_id.desktop" "Repeat That.desktop"; do
+    if out=$(desktop-file-validate "/usr/share/applications/$entry" 2>&1); then
+      ok "/usr/share/applications/$entry passes desktop-file-validate"
+    else
+      fail "/usr/share/applications/$entry fails desktop-file-validate"
+    fi
+    if [[ -n "$out" ]]; then indent <<<"$out"; fi
+  done
+else
+  fail "desktop-file-utils does not install, so the desktop entries can't be validated"
+  indent <<<"$out" | tail -n 15
+fi
 for icon in /usr/share/icons/hicolor/scalable/apps/$app_id.svg /usr/share/icons/hicolor/{32x32,128x128,256x256,512x512}/apps/$app_id.png; do
   if [[ -s "$icon" ]]; then ok "$icon"; else fail "no $icon"; fi
 done
