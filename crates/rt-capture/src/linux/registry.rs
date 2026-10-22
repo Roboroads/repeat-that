@@ -18,6 +18,7 @@ use pw::link::Link;
 use pw::main_loop::MainLoopRc;
 use pw::node::{Node, NodeChangeMask, NodeListener};
 use pw::properties::PropertiesBox;
+use pw::proxy::{ProxyListener, ProxyT};
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::param::ParamType;
 use pw::spa::utils::dict::DictRef;
@@ -34,6 +35,9 @@ use crate::{AudioApp, CaptureError, DuckLevel, FrameSink, Result};
 
 /// How long a caller waits for the loop, and the loop for the daemon while it sets up.
 pub(super) const TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How often a link the daemon refused, or removed, is made again before the capture goes without it.
+const LINK_TRIES: u32 = 3;
 
 /// How long a stream must have been around before a volume that doesn't match the duck journal counts as the user's.
 /// WirePlumber gives a new stream its remembered volume only once it sees it, a moment after we do.
@@ -69,6 +73,8 @@ pub(super) enum Command {
     },
     /// Gives every ducked stream its volume back at once.
     RestoreAll(Reply<()>),
+    /// Links the captures again, after the daemon refused or removed one of our links.
+    Relink,
     Quit,
 }
 
@@ -93,9 +99,10 @@ impl Connection {
         let (ready, setup) = mpsc::channel();
         let alive = Arc::new(AtomicBool::new(true));
         let flag = Arc::clone(&alive);
+        let later = commands.clone();
         let thread = thread::Builder::new()
             .name("rt-pipewire".into())
-            .spawn(move || run(remote, journal, quantum, receiver, ready, flag))
+            .spawn(move || run(remote, journal, quantum, (receiver, later), ready, flag))
             .map_err(|e| CaptureError::Backend(format!("can't start the PipeWire thread: {e}")))?;
         let client = Client { commands, alive };
         match setup.recv_timeout(TIMEOUT) {
@@ -163,12 +170,12 @@ impl Drop for Alive {
     }
 }
 
-/// The loop thread.
+/// The loop thread. It gets its `commands`, and a sender of them, for what it tells itself to do `later`.
 fn run(
     remote: PathBuf,
     journal: Option<PathBuf>,
     quantum: Arc<AtomicU64>,
-    commands: pw::channel::Receiver<Command>,
+    (commands, later): (pw::channel::Receiver<Command>, pw::channel::Sender<Command>),
     ready: mpsc::Sender<Result<()>>,
     alive: Arc<AtomicBool>,
 ) {
@@ -201,6 +208,7 @@ fn run(
         registry.clone(),
         journal,
         quantum,
+        later,
     )));
     let weak = Rc::downgrade(&state);
     let _registry_listener = registry
@@ -355,11 +363,36 @@ struct Capture {
     node_name: String,
     /// Our capture node, once the registry announced it.
     node: Option<u32>,
-    links: BTreeMap<(u32, u32), Link>,
+    links: BTreeMap<(u32, u32), OwnLink>,
+    /// How often each link the capture wants was refused or removed.
+    failed: HashMap<(u32, u32), u32>,
     running: Arc<AtomicBool>,
     /// How the capture undoes the app's duck, which the loop keeps up to date with the app's streams.
     compensation: Compensation,
     stream: Option<CaptureStream>,
+}
+
+/// One of our links, and whether the daemon refused it or removed it since.
+struct OwnLink {
+    // Dropped before the proxy it listens to.
+    _listener: ProxyListener,
+    link: Link,
+    gone: Rc<Cell<bool>>,
+}
+
+impl OwnLink {
+    /// Asks the daemon to remove the link, unless it is gone already.
+    fn destroy(self, core: &CoreRc) {
+        let OwnLink {
+            _listener: listener,
+            link,
+            gone,
+        } = self;
+        drop(listener);
+        if !gone.get() {
+            let _ = core.destroy_object(link);
+        }
+    }
 }
 
 /// Ducked streams, and the journal that lets a later run restore them after a crash.
@@ -401,6 +434,8 @@ struct State {
     next_capture: u64,
     ducking: Ducking,
     quantum: Arc<AtomicU64>,
+    /// The loop's own commands, for what it does later: what a proxy event finds can't wait for the state it is in.
+    later: pw::channel::Sender<Command>,
 }
 
 fn number(props: &DictRef, key: &str) -> Option<u32> {
@@ -412,7 +447,13 @@ fn text(props: &DictRef, key: &str) -> Option<String> {
 }
 
 impl State {
-    fn new(core: CoreRc, registry: RegistryRc, journal: Option<PathBuf>, quantum: Arc<AtomicU64>) -> Self {
+    fn new(
+        core: CoreRc,
+        registry: RegistryRc,
+        journal: Option<PathBuf>,
+        quantum: Arc<AtomicU64>,
+        later: pw::channel::Sender<Command>,
+    ) -> Self {
         let pending = journal.as_deref().map(duck_journal::read).unwrap_or_default();
         Self {
             core,
@@ -429,6 +470,7 @@ impl State {
                 ..Default::default()
             },
             quantum,
+            later,
         }
     }
 
@@ -593,13 +635,15 @@ impl State {
         self.relink();
     }
 
-    /// Links every capture to the output ports of its app's streams, and drops links whose ports are gone.
+    /// Links every capture to the output ports of its app's streams, and drops links whose ports are gone. A link the
+    /// daemon refused or removed is made again, [`LINK_TRIES`] times at most, so a channel doesn't go silent.
     fn relink(&mut self) {
         let State {
             core,
             nodes,
             ports,
             captures,
+            later,
             ..
         } = self;
         for capture in captures.iter_mut() {
@@ -617,6 +661,19 @@ impl State {
             });
             capture.compensation.asynchronous.store(asynchronous, Ordering::Relaxed);
             let wanted = capture::plan_links(ports, &app, |id| nodes.get(&id).map(|n| n.class.as_str()), node);
+            let gone: Vec<(u32, u32)> = capture
+                .links
+                .iter()
+                .filter(|(_, l)| l.gone.get())
+                .map(|(&ends, _)| ends)
+                .collect();
+            for ends in gone {
+                capture.links.remove(&ends);
+                if wanted.contains(&ends) {
+                    *capture.failed.entry(ends).or_default() += 1;
+                }
+            }
+            capture.failed.retain(|ends, _| wanted.contains(ends));
             let stale: Vec<(u32, u32)> = capture.links.keys().filter(|l| !wanted.contains(l)).copied().collect();
             for ends in stale {
                 let Some(link) = capture.links.remove(&ends) else {
@@ -624,11 +681,12 @@ impl State {
                 };
                 // A link whose port went is gone already; only the proxy is left to drop.
                 if ports.contains_key(&ends.0) && ports.contains_key(&ends.1) {
-                    let _ = core.destroy_object(link);
+                    link.destroy(core);
                 }
             }
             for &(output, input) in &wanted {
-                if capture.links.contains_key(&(output, input)) {
+                let tries = capture.failed.get(&(output, input)).copied().unwrap_or(0);
+                if capture.links.contains_key(&(output, input)) || tries >= LINK_TRIES {
                     continue;
                 }
                 let Some(output_node) = ports.get(&output).map(|p| p.node) else {
@@ -642,7 +700,30 @@ impl State {
                 props.insert("link.passive", "true");
                 props.insert("object.linger", "false");
                 if let Ok(link) = core.create_object::<Link>("link-factory", &props) {
-                    capture.links.insert((output, input), link);
+                    let gone = Rc::new(Cell::new(false));
+                    // The core's error handler acts on EPIPE only; a link the daemon can't make (or someone removes
+                    // later) says so on its own proxy. The relink comes as a command of its own, after this event.
+                    let listener = {
+                        let on_gone = |gone: &Rc<Cell<bool>>| {
+                            let (gone, later) = (Rc::clone(gone), later.clone());
+                            move || {
+                                gone.set(true);
+                                let _ = later.send(Command::Relink);
+                            }
+                        };
+                        let (removed, error) = (on_gone(&gone), on_gone(&gone));
+                        link.upcast_ref()
+                            .add_listener_local()
+                            .removed(removed)
+                            .error(move |_, _, _| error())
+                            .register()
+                    };
+                    let own_link = OwnLink {
+                        _listener: listener,
+                        link,
+                        gone,
+                    };
+                    capture.links.insert((output, input), own_link);
                 }
             }
         }
@@ -697,6 +778,7 @@ impl State {
                 self.restore_all();
                 let _ = reply.send(Ok(()));
             }
+            Command::Relink => self.relink(),
             Command::Quit => {}
         }
     }
@@ -752,6 +834,7 @@ impl State {
             node_name,
             node: None,
             links: BTreeMap::new(),
+            failed: HashMap::new(),
             running,
             compensation,
             stream: Some(stream),
@@ -770,7 +853,7 @@ impl State {
         capture.stream.take();
         for (ends, link) in std::mem::take(&mut capture.links) {
             if self.ports.contains_key(&ends.0) && self.ports.contains_key(&ends.1) {
-                let _ = self.core.destroy_object(link);
+                link.destroy(&self.core);
             }
         }
     }

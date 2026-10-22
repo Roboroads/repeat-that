@@ -777,6 +777,68 @@ fn a_microphone_is_never_captured() {
     assert!(voice < 0.001, "the microphone is not captured");
 }
 
+/// The links into our capture nodes, as (link id, the channel of our input port).
+fn links_into_capture() -> Vec<(u64, String)> {
+    let dump = pw_dump();
+    let ours: BTreeSet<u64> = dump
+        .iter()
+        .filter(|o| is(o, ":Node"))
+        .filter(|o| {
+            props(o)["node.name"]
+                .as_str()
+                .is_some_and(|n| n.starts_with("repeat-that-capture-"))
+        })
+        .filter_map(|o| o["id"].as_u64())
+        .collect();
+    let channel_of = |port: u64| {
+        dump.iter()
+            .find(|o| is(o, ":Port") && o["id"].as_u64() == Some(port))
+            .and_then(|o| props(o)["audio.channel"].as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    dump.iter()
+        .filter(|o| is(o, ":Link"))
+        .filter(|o| o["info"]["input-node-id"].as_u64().is_some_and(|n| ours.contains(&n)))
+        .filter_map(|o| Some((o["id"].as_u64()?, channel_of(o["info"]["input-port-id"].as_u64()?))))
+        .collect()
+}
+
+#[test]
+#[ignore = "needs PipeWire"]
+fn a_link_that_goes_away_is_made_again() {
+    let _turn = take_turn();
+    let source = PipeWireSource::new().expect("PipeWire runs");
+    let _player = Player::start("RT Relink Tone");
+    let app = find_app(&source, "RT Relink Tone");
+    let (handle, recording) = record(&source, &app);
+    let left = wait_for(Duration::from_secs(3), || {
+        let links = links_into_capture();
+        (links.len() == 2).then(|| links.into_iter().find(|(_, channel)| channel == "FL"))?
+    })
+    .expect("the player is linked into our left and right input");
+    // Someone removes our left link, as a patchbay can, or the daemon refuses it.
+    let status = Command::new("pw-cli")
+        .args(["destroy", &left.0.to_string()])
+        .stdout(Stdio::null())
+        .status()
+        .expect("run pw-cli");
+    assert!(status.success(), "pw-cli destroy: {status}");
+    let relinked = wait_for(Duration::from_secs(3), || {
+        let links = links_into_capture();
+        (links.len() == 2 && !links.iter().any(|(id, _)| *id == left.0)).then_some(links)
+    });
+    assert!(relinked.is_some(), "linked again: {:?}", links_into_capture());
+    thread::sleep(Duration::from_millis(200));
+    let _ = recording.left();
+    thread::sleep(Duration::from_millis(500));
+    let (mono, rate) = recording.left();
+    handle.stop();
+    let level = level_at_frequency(&mono, rate, TONE_HZ);
+    println!("left channel after the link came back: {level:.3} RMS");
+    assert!(level > TONE_RMS * 0.9, "the left channel is captured again");
+}
+
 #[test]
 #[ignore = "needs PipeWire"]
 fn a_capture_ends_when_the_player_quits() {
