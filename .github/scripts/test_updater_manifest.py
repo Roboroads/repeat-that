@@ -250,13 +250,34 @@ class CleanNotesTests(unittest.TestCase):
         text = "## 0.2.0\n\n<!-- macos-untested -->\n\n- fixed it\n"
         self.assertEqual(self.clean(text), "## 0.2.0\n\n- fixed it")
 
-    def test_a_comment_that_is_not_closed_hides_the_rest(self):
-        self.assertEqual(self.clean("visible\n<!-- never closed\nhidden"), "visible")
+    def test_a_comment_that_is_not_closed_stays_as_text(self):
+        text = "visible\n<!-- never closed\nstill visible"
+        self.assertEqual(self.clean(text), text)
 
-    def test_a_comment_cannot_be_rebuilt_from_the_text_around_a_stripped_one(self):
-        self.assertEqual(self.clean("<!<!-- x -->-- y -->after"), "after")
-        self.assertEqual(self.clean("<<!-- x -->!-- y -->after"), "after")
-        self.assertNotIn("<!--", self.clean("<!<!<!-- a -->-- b -->-- c -->after"))
+    def test_only_the_comments_that_are_there_are_taken_out(self):
+        # What is left over is shown as text, so a leftover that looks like a comment hides nothing and drops nothing.
+        self.assertEqual(self.clean("<!<!-- x -->-- y -->after"), "<!-- y -->after")
+        self.assertEqual(self.clean("<<!-- x -->!-- y -->after"), "<!-- y -->after")
+
+    def test_code_is_left_as_it_is(self):
+        for text in (
+            "strips `<!-- like this -->` from the notes",
+            "```html\n<!-- a block -->\n```",
+            "```\n<!-- a block that is never closed\n-->",
+            "two `<!-- spans -->` and `<!-- more -->`",
+            "empty `` span <!--",
+        ):
+            self.assertEqual(self.clean(text), text, text)
+
+    def test_a_comment_next_to_code_is_still_taken_out(self):
+        self.assertEqual(self.clean("x <!-- a --> `<!-- b -->`"), "x  `<!-- b -->`")
+        self.assertEqual(self.clean("`code` <!-- a --> `more`"), "`code`  `more`")
+        self.assertEqual(self.clean("```\ncode\n```\n<!-- a -->\nafter"), "```\ncode\n```\n\nafter")
+
+    def test_a_comment_that_holds_a_backtick_is_taken_out_whole(self):
+        self.assertEqual(self.clean("<!-- it`s -->after`"), "after`")
+        self.assertEqual(self.clean("<!-- `x` -->after"), "after")
+        self.assertEqual(self.clean("it`s <!-- c --> done"), "it`s  done")
 
     def test_a_comment_cannot_be_hidden_from_the_stripping_by_a_control_character(self):
         self.assertEqual(self.clean("<!\x00-- x -->after"), "after")

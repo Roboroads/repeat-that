@@ -25,8 +25,9 @@ and darwin-aarch64-app, linux-x86_64 and linux-x86_64-appimage). `url` is the do
 of the tag and `signature` the content of the .sig file without its line end.
 
 `notes` is plain text for the app to show as text: line ends become \\n, control characters (not tab and newline) and
-HTML comments (`<!-- macos-untested -->`, also one that is never closed) are removed, runs of blank lines shrink to one,
-and the result is cut to 4000 characters, the last of which is an ellipsis when something was cut.
+HTML comments (`<!-- macos-untested -->`) are removed, except in code (a fenced block or `inline code`) and when never
+closed, runs of blank lines shrink to one, and the result is cut to 4000 characters, the last of which is an ellipsis
+when something was cut.
 
 It fails (exit 1, `::error::` annotations, nothing written) when a file is missing, the tag isn't v0.1.0-shaped, the
 payload doesn't carry the version of the tag or doesn't look like an update file of the platform, the .sig isn't named
@@ -50,8 +51,9 @@ from site_release import REPO, read, write_output
 # The most characters of the notes the app shows. The app caps what it gets at the same number; staying within it here
 # keeps the ellipsis that marks a cut.
 NOTES_LIMIT = 4000
-# `<!--` up to the next `-->`, or up to the end of the text when it is never closed (markdown hides the rest as well).
-HTML_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+# A whole HTML comment (`<!--` up to the next `-->`) or, to keep it, a piece of code: a fenced block (also one that is
+# never closed, as in markdown) or an inline span. A comment that is never closed is not one and stays as text.
+COMMENT_OR_CODE = re.compile(r"(?P<code>```.*?(?:```|\Z)|`[^`\n]*`)|<!--.*?-->", re.DOTALL)
 # Every control character (category Cc) except tab and newline.
 CONTROL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 BLANK_LINES = re.compile(r"\n{3,}")
@@ -94,8 +96,7 @@ def clean_notes(text):
     """The release body as the plain text the app shows (see the module docstring for what is done)."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = CONTROL.sub("", text)  # before the comments: a control character can't hide a `<!--`
-    while "<!--" in text:  # again: taking a comment out can join the text around it into a new one
-        text = HTML_COMMENT.sub("", text)
+    text = COMMENT_OR_CODE.sub(lambda found: found["code"] or "", text)
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     text = BLANK_LINES.sub("\n\n", text).strip("\n")
     if len(text) > NOTES_LIMIT:
