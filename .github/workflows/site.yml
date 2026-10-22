@@ -50,10 +50,12 @@ on:
 permissions:
   contents: read
 
-# One deploy at a time, and a deploy in progress is never cancelled. Of the runs that wait, only the newest is kept. A
-# pull request gets a group of its own, so a deploy never replaces its check and its check never holds up a deploy.
+# One deploy at a time, and a deploy in progress is never cancelled. Of the runs that wait, only the newest is kept, so
+# only a run that can deploy joins the `pages` group: on the default branch, and not a workflow_run of a fork (its jobs
+# are all skipped). Every other run (a pull request, a manual run on another branch) gets a group of its own, so it can't
+# replace a waiting deploy, and a deploy never holds up its check. A pull request also cancels its own older run.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('site-pr-{0}', github.ref) || 'pages' }}
+  group: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository) && 'pages' || format('site-{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
