@@ -902,21 +902,28 @@ with `!= ''`), so it fails there as "not a key". The password secret is never re
 `Check release` doesn't use the Environment and can't see its secrets, so it only prints the notice. Set the variable
 last, once the secrets are in.
 
-With the key, `Publish` (and the late attach, for macOS) does this after it downloads the builds:
+With the key, `Publish` (and the late attach, for macOS) does this after it downloads the builds. Steps 2 to 5 are
+[`sign-updates.sh`](../.github/scripts/sign-updates.sh):
 
-1. It installs the Tauri CLI at the version locked in `app/package-lock.json`, with its integrity checked.
+1. It installs the Tauri CLI at the version locked in `app/package-lock.json` with `npm ci --ignore-scripts` (this job
+   may hold the private key, so no install script runs), and `minisign`.
 2. It signs each update file with `tauri signer sign`: the `*-setup.exe`, the `*.AppImage` and the `*.app.tar.gz`.
 3. It checks every `.sig` with `minisign -V` against the public key. A private key that doesn't match the variable
-   stops the job here, before anything is uploaded.
+   stops the job here, before anything is uploaded. A `.sig` that isn't base64 stops it too, and the error names the
+   file.
 4. It writes one `latest-<target>-<arch>.json` per platform with
    [`updater_manifest.py`](../.github/scripts/updater_manifest.py), taking the notes from the release body.
-5. It runs `release_assets.py check-assets --updater`, which fails when a platform that was built lacks one of its
-   update files, when a manifest's `version` isn't the tag, or when a `url` in it points at a file that isn't on this
-   release.
+5. It runs `release_assets.py check-manifests` over the folder, which fails when a manifest's `version` isn't the tag,
+   when a `url` in it isn't a file of this release among the files, or when its `signature` isn't the content of that
+   file's `.sig`.
+6. When it writes `SHA256SUMS`, `release_assets.py check-assets --updater` fails if a platform that was built lacks
+   one of its update files.
 
 A dry run, which is a run without a tag (and so every pull request that touches the publishing), makes a throwaway key
-with `tauri signer generate --ci` and goes through the same steps, so this path runs before a release does. Its files
-are in the workflow artifact and nowhere else.
+with `tauri signer generate --ci` and goes through the same steps, so this path runs before a release does. Its
+signatures are checked against the public key of the throwaway key, not against the variable. Nothing is attached, and
+the only file the run keeps is `SHA256SUMS`, as a workflow artifact. The job summary shows the manifests and lists the
+files.
 
 The app reads `https://github.com/Roboroads/repeat-that/releases/latest/download/latest-<target>-<arch>.json`, which
 follows whichever release GitHub calls the latest. There is one manifest per platform (`latest-windows-x86_64.json`,
