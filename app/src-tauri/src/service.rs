@@ -121,6 +121,7 @@ impl SettingsService {
     /// user answers its question, which is after [`update`](Self::update) has returned. The setting goes back off and the
     /// window hears of it. The OS entry isn't touched, because it is what refused (turning it off again would be another
     /// question for the user). Does nothing when the setting is off already.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub fn autostart_refused(&self, reason: &str) {
         eprintln!("Start at login is off again: {reason}");
         let _writing = lock(&self.writer);
