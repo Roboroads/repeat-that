@@ -91,7 +91,7 @@ with `python3 -m unittest discover -s .github/scripts`. The `Workflow scripts` j
 folder on every pull request and every push to `main`, `test_workflow_secrets.py` among them.
 
 Workflow steps that install packages with apt run [`apt-install.sh`](../.github/scripts/apt-install.sh) instead of
-calling `apt-get`. It gives `apt-get update` 90 seconds and `apt-get install` 4 minutes, and makes up to three attempts
+calling `apt-get`. It gives `apt-get update` 1 minute and `apt-get install` 3 minutes, and makes up to three attempts
 (`test_apt_install.py` tests this against a fake `apt-get`). Before it existed, three CI runs sat in an apt step for 30
 minutes or more until they were cancelled, and a rerun finished in under a minute. A failed attempt that is tried again
 shows up as a warning on the run, and when all three fail the error names the step. Each of these steps also has

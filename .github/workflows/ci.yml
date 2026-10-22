@@ -67,7 +67,8 @@ jobs:
     # queueing for its own OS, and finishes without running any steps.
     if: ${{ !cancelled() }}
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
-    timeout-minutes: 30
+    # Room for a cold build plus the apt step's retries, see .github/scripts/apt-install.sh.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -212,7 +213,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Room for a cold build plus the apt step's retries, see .github/scripts/apt-install.sh.
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: app

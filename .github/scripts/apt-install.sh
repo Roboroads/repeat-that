@@ -11,11 +11,11 @@
 #
 # Installs with -y and --no-install-recommends, and runs apt-get through sudo unless it already is root (a container job
 # is). Exits 0 on success, 1 when every attempt failed, 2 on a usage error. Set by environment (the defaults suit a
-# hosted runner, the tests shrink them): APT_UPDATE_TIMEOUT (90 seconds for one `apt-get update`),
-# APT_INSTALL_TIMEOUT (240 seconds for one `apt-get install`), APT_ATTEMPTS (3) and APT_RETRY_PAUSE (10 seconds).
+# hosted runner, the tests shrink them): APT_UPDATE_TIMEOUT (60 seconds for one `apt-get update`),
+# APT_INSTALL_TIMEOUT (180 seconds for one `apt-get install`), APT_ATTEMPTS (3) and APT_RETRY_PAUSE (10 seconds).
 #
-# The worst case is about 20 minutes (three attempts of both timeouts, the pauses and the kill grace). Give the step
-# `timeout-minutes: 25`, the last stop for anything this script can't see.
+# One hang that a second attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case is
+# about 15 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
 set -euo pipefail
 
 usage() {
@@ -41,8 +41,8 @@ while (($# > 0)); do
 done
 (($# > 0)) || usage
 
-update_timeout=${APT_UPDATE_TIMEOUT:-90}
-install_timeout=${APT_INSTALL_TIMEOUT:-240}
+update_timeout=${APT_UPDATE_TIMEOUT:-60}
+install_timeout=${APT_INSTALL_TIMEOUT:-180}
 attempts=${APT_ATTEMPTS:-3}
 pause=${APT_RETRY_PAUSE:-10}
 
