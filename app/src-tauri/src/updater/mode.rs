@@ -97,7 +97,7 @@ const FLATPAK_INFO: &str = "/.flatpak-info";
 
 /// How this install handles updates.
 pub fn detect(build: BuildFacts, env: &dyn Env, facts: &dyn InstallFacts) -> Detection {
-    // A store that updates the app comes first: it is what the user should be told, key or no key.
+    // A Flatpak comes first: it never looks for updates, so that is what the user should be told, key or no key.
     if build.os == Os::Linux && (env.var("FLATPAK_ID").is_some() || facts.exists(Path::new(FLATPAK_INFO))) {
         return Detection::with(UpdateMode::External, FLATPAK_REASON);
     }
