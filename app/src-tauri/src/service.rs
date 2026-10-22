@@ -15,8 +15,6 @@ use crate::engine;
 use crate::hotkeys::{HotkeyManager, HotkeyReport, NoBackend, PluginBackend, ShortcutBackend};
 use crate::ipc::{CommandError, ConfigureOutcome, HotkeyBackendKind, HotkeyStates, Settings, SettingsPatch};
 use crate::locking::lock;
-#[cfg(target_os = "linux")]
-use crate::sandbox::{self, AutostartKind};
 use crate::session::{SharedSession, choose_backend};
 use crate::settings::{apply_patch, sanitize};
 use crate::store::{InMemoryPersistence, StorePersistence, settings_file};
@@ -193,7 +191,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
 /// the entry on the host (the plugin's would land inside the sandbox).
 fn os_autostart<R: Runtime>(app: &AppHandle<R>) -> Arc<dyn Autostart> {
     #[cfg(target_os = "linux")]
-    if sandbox::autostart_kind() == AutostartKind::Portal {
+    if rt_capture::in_flatpak() {
         return Arc::new(PortalAutostart);
     }
     Arc::new(OsAutostart(app.clone()))
