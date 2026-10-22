@@ -100,10 +100,11 @@ engine retries; a capture whose connection drops ends, and the next call connect
   stream with the same `application.process.binary`, else `application.name`, and has no executable. Names come from
   the `.desktop` file of the executable or binary, else `application.name`. Our own process tree isn't listed.
 - *Capture.* Our capture stream never connects on its own; the source links the output ports of the app's streams to
-  it (mono to both sides, surround folded into stereo) and links new streams as they come. Only ports of
-  `Stream/Output/Audio` nodes are ever linked, so a microphone or any other source never ends up in a capture; a test
-  checks this with a virtual microphone playing a tone. The capture ends once the app's streams are gone and its
-  process too.
+  it (mono to both sides, surround folded into stereo and scaled by the channels it sums on a side, so it can't clip)
+  and links new streams as they come. A link the daemon refuses, or someone removes, is made again, three times at
+  most. Only ports of `Stream/Output/Audio` nodes are ever linked, so a microphone or any other source never ends up
+  in a capture; a test checks this with a virtual microphone playing a tone. The capture ends once the app's streams
+  are gone and its process too.
 - *Ducking.* A stream's volume is its node's `channelVolumes`, scaled alike so it keeps its balance; mute is never
   touched. Streams apply their volume before their output ports, so the capture is ducked too and compensated like on
   Windows, but PipeWire applies a volume from the next graph cycle on, so the fade steps once per cycle (its length,
