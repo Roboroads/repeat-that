@@ -87,20 +87,22 @@ sine, or any app) and use the probe: `cargo run -p rt-capture --example probe --
 ## Testing capture on macOS
 
 The Core Audio backend has end-to-end tests in `crates/rt-capture/tests/macos_audio.rs`. They are `#[ignore]`d, because
-they play real sound and need a virtual output device and the audio-capture permission. CI runs them in
+they play real sound and need a virtual output device, the audio-capture permission and the microphone permission (the
+ducking tests record what the device plays from its input, which macOS counts as microphone use). CI runs them in
 `.github/workflows/macos-capture.yml`: `.github/scripts/macos-ci-audio.sh` installs BlackHole 2ch as the output and the
 input, so what `afplay` plays can be recorded back, and writes the permission into the runner's privacy database. That
 script changes your system's audio devices and permissions, so it refuses to run anywhere but on a GitHub macOS runner.
 
-On your own Mac, install BlackHole 2ch, make it the default output and input device, and grant the permission to your
-terminal when macOS asks:
+On your own Mac, install BlackHole 2ch, make it the default output and input device, and allow both permissions for
+your terminal when macOS asks:
 
 ```sh
 cargo build -p rt-capture --example probe
 cargo test -p rt-capture --test macos_audio -- --ignored --nocapture --test-threads=1
 ```
 
-`RT_REQUIRE_TCC=1` says the permission was given, and makes a missing one fail the tests instead of skipping them. The
+`RT_REQUIRE_TCC=1` says the audio-capture permission was given, and makes a missing one fail the tests instead of
+skipping them. Without the microphone permission the recording is silent and the ducking tests fail. The
 tones and noise are synthetic (`crates/rt-capture/tests/fixtures/`), `afplay` only reads them, and everything captured
 or recorded stays in memory. The pure parts (grouping processes, the ducking state machine) have ordinary unit tests
 that run on every OS.
