@@ -61,6 +61,44 @@ describe('SettingsStore updates', () => {
     expect(store.updates).toEqual(offUpdateStatus());
   });
 
+  it('says nothing about a backend that has no update commands', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const backend = installBackend();
+    backend.overrides.get_update_status = () => {
+      throw 'Command get_update_status not found';
+    };
+    const store = new SettingsStore();
+    stores.push(store);
+
+    await store.start();
+
+    expect(store.updates.mode).toBe('off');
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('logs why the update status could not be read when the backend does have the command', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const backend = installBackend();
+    backend.overrides.get_update_status = () => {
+      throw { kind: 'backend', message: 'The updater crashed' };
+    };
+    const store = new SettingsStore();
+    stores.push(store);
+
+    await store.start();
+
+    // The page still loads, without an updater.
+    expect(store.loadError).toBeNull();
+    expect(store.settings).not.toBeNull();
+    expect(store.updates.mode).toBe('off');
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('update status'),
+      expect.objectContaining({ message: 'The updater crashed' }),
+    );
+    warn.mockRestore();
+  });
+
   it('replaces the update status with every update-status event', async () => {
     const { backend, store } = await open();
     const found = {

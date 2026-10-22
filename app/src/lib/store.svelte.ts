@@ -95,11 +95,18 @@ export class SettingsStore {
     await this.refreshApps();
   }
 
-  /** A backend without the update commands (an older one) answers an error here: that is a build without updates. */
+  /**
+   * A backend without the update commands (an older one) answers "Command ... not found": that is a build without
+   * updates, and nothing to report. Any other failure is logged, and the page goes on without an updater.
+   */
   private async loadUpdates(): Promise<UpdateStatus> {
     try {
       return await api.getUpdateStatus();
-    } catch {
+    } catch (raw) {
+      const error = api.toApiError(raw);
+      if (!/^(Command \S+ not found|Unknown command)/i.test(error.message)) {
+        console.warn('Could not read the update status', error);
+      }
       return offUpdateStatus();
     }
   }
