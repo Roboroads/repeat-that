@@ -107,7 +107,7 @@ for entry in "windows:*-setup.exe" "macos:*.app.tar.gz" "linux:*.AppImage"; do
   fi
 done
 if [[ ${#payloads[@]} -eq 0 ]]; then
-  echo "::error::no update file (*-setup.exe, *.app.tar.gz or *.AppImage) in $dir"
+  echo "::error::no update file (*-setup.exe, *.app.tar.gz or *.AppImage) in $dir. Builds made before TAURI_UPDATER_PUBKEY was set have none, and their app has no updater: build the platform again and attach the files of that run"
   exit 1
 fi
 
