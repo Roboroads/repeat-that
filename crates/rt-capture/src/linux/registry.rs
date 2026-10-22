@@ -349,7 +349,8 @@ struct Stream {
 struct Capture {
     id: u64,
     key: AppKey,
-    /// The app's process, whose end ends the capture once its streams are gone. 0 if unknown.
+    /// The app's process, whose end ends the capture once its streams are gone. 0 if `/proc` doesn't show it: a PID an
+    /// app in a sandbox gives is one of the sandbox, which here is another process that may never end.
     pid: u32,
     node_name: String,
     /// Our capture node, once the registry announced it.
@@ -721,7 +722,7 @@ impl State {
         self.captures.push(Capture {
             id,
             key: group.key.clone(),
-            pid: group.app.pid,
+            pid: group.key.process().unwrap_or(0),
             node_name,
             node: None,
             links: BTreeMap::new(),
