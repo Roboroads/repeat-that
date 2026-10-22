@@ -1,0 +1,139 @@
+---
+import Downloads from "../components/Downloads.astro";
+import Requirements from "../components/Requirements.astro";
+import Video from "../components/Video.astro";
+import Base from "../layouts/Base.astro";
+import { getDocs, routesBySource } from "../lib/docs";
+import { findMedia, mediaDir } from "../lib/media";
+import { formatSize, loadRelease, primaryFile } from "../lib/release";
+import { loadRequirements } from "../lib/requirements";
+import { resolve } from "node:path";
+
+const data = loadRelease();
+const release = data.release;
+const media = findMedia(mediaDir());
+const requirements = await loadRequirements(
+  process.env,
+  resolve(process.cwd(), ".."),
+  routesBySource(getDocs()),
+  (message) => console.warn(`[site] warning: ${message}`),
+);
+
+// What the hero button points at for each system we have a download for. The script in this page picks one.
+const targets: Record<string, { label: string; url: string; note: string }> = {};
+for (const platform of release?.platforms ?? []) {
+  if (platform.name !== "windows" && platform.name !== "macos" && platform.name !== "linux") continue;
+  const file = primaryFile(platform);
+  const untested = platform.name === "macos" ? " Not tested on a real Mac yet." : "";
+  targets[platform.name] = { label: platform.label, url: file.url, note: `${file.name} (${formatSize(file.size)}).${untested}` };
+}
+const unavailable = { macos: "/macos/", linux: "/linux/" };
+---
+
+<Base
+  title="Repeat That - replay what was just said on a call"
+  description="Repeat That keeps the last seconds of speech from one app in memory and replays them when you press a hotkey. Free and open source."
+>
+  <section
+    class="hero"
+    data-hero
+    data-release={release ? "true" : "false"}
+    data-targets={JSON.stringify(targets)}
+    data-unavailable={JSON.stringify(unavailable)}
+  >
+    <div class="wrap">
+      <h1>Missed what someone just said on a call? Press a key and hear it again.</h1>
+      <p class="lead">
+        Repeat That keeps a short rolling buffer of the audio from one app, such as Discord, Teams, Zoom, Slack or your browser. It skips the
+        silence and replays the last thing that was said when you press a hotkey.
+      </p>
+      <div class="hero-actions">
+        <a class="button" href="#downloads" data-hero-button>Download</a>
+        <p class="hero-note" data-hero-note>{release ? `Version ${release.version}. Free and open source.` : "Free and open source."}</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="how-it-works" aria-labelledby="how-heading">
+    <div class="wrap">
+      <h2 id="how-heading">How it works</h2>
+      <ol class="steps">
+        <li>
+          <h3>Pick the app</h3>
+          <p>
+            Start Discord, Teams or a browser tab, then choose it in the settings window. Repeat That listens to that app only, never your
+            microphone or the rest of your system sound.
+          </p>
+        </li>
+        <li>
+          <h3>It keeps the speech</h3>
+          <p>
+            The last 30 seconds of speech stay in memory, and you can set anything from 10 to 120 seconds. Silence is cut out, so that covers more than
+            30 seconds of call. Nothing is written to disk.
+          </p>
+        </li>
+        <li>
+          <h3>Press the hotkey</h3>
+          <p>
+            Ctrl+Alt+Space replays the last thing that was said. Ctrl+Alt+Enter replays it faster until it catches up with the call, and
+            Ctrl+Alt+Backspace stops. All three can be changed.
+          </p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  {media && <Video media={media} />}
+
+  <Downloads data={data} requirements={requirements} />
+
+  {requirements && <Requirements requirements={requirements} />}
+
+  <section class="section" id="privacy" aria-labelledby="privacy-heading">
+    <div class="wrap">
+      <h2 id="privacy-heading">Your audio stays on your computer</h2>
+      <p>
+        Recorded audio only ever lives in memory. It is never written to disk and never sent anywhere, and it is wiped as soon as you stop
+        capturing or quit the app. This website has no cookies and no analytics, and it loads nothing from other sites.
+      </p>
+      <p><a href="/privacy/">Read the privacy policy</a></p>
+    </div>
+  </section>
+</Base>
+
+<script>
+  import { detectOs, type Os } from "../lib/os";
+
+  type Target = { label: string; url: string; note: string };
+  const NAMES: Record<Os, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
+
+  const hero = document.querySelector<HTMLElement>("[data-hero]");
+  const button = hero?.querySelector<HTMLAnchorElement>("[data-hero-button]");
+  const note = hero?.querySelector<HTMLElement>("[data-hero-note]");
+
+  if (hero && button && note && hero.dataset.release === "true") {
+    const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
+    const os = detectOs(nav.userAgent, nav.userAgentData?.platform);
+
+    if (os) {
+      const targets: Partial<Record<Os, Target>> = JSON.parse(hero.dataset.targets ?? "{}");
+      const unavailable: Partial<Record<Os, string>> = JSON.parse(hero.dataset.unavailable ?? "{}");
+      const target = targets[os];
+
+      if (target) {
+        const card = document.querySelector<HTMLElement>(`[data-platform="${os}"]`);
+        if (card) {
+          card.dataset.detected = "true";
+          card.querySelector<HTMLElement>("[data-badge]")?.removeAttribute("hidden");
+        }
+        button.href = target.url;
+        button.textContent = `Download for ${target.label}`;
+        note.textContent = target.note;
+      } else if (unavailable[os]) {
+        button.href = unavailable[os];
+        button.textContent = `Not available for ${NAMES[os]} yet`;
+        note.textContent = `The ${NAMES[os]} page has the details.`;
+      }
+    }
+  }
+</script>

@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "release": {
+    "tag": "v0.2.0",
+    "version": "0.2.0",
+    "published_at": "2026-11-03T09:12:45Z",
+    "url": "https://github.com/Roboroads/repeat-that/releases/tag/v0.2.0",
+    "sums_url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/SHA256SUMS",
+    "platforms": [
+      {
+        "name": "windows",
+        "label": "Windows",
+        "files": [
+          {
+            "name": "Repeat-That_0.2.0_x64-setup.exe",
+            "kind": "setup-exe",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/Repeat-That_0.2.0_x64-setup.exe",
+            "size": 9612034,
+            "sha256": "977a78fe093b2522df24f902fb933ea31e80d0d841ada33ad5de671061de7508"
+          }
+        ]
+      },
+      {
+        "name": "linux",
+        "label": "Linux",
+        "files": [
+          {
+            "name": "Repeat-That_0.2.0_amd64.AppImage",
+            "kind": "appimage",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/Repeat-That_0.2.0_amd64.AppImage",
+            "size": 87114752,
+            "sha256": "4b17c5ccbbd96559976c61bcf2317838631bce39402cc78231d65ea990a310b3"
+          },
+          {
+            "name": "Repeat-That_0.2.0_amd64.deb",
+            "kind": "deb",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/Repeat-That_0.2.0_amd64.deb",
+            "size": 8120344,
+            "sha256": "5a2f599a6ddb1e176d2c3062316d8d2ecd2e7d144568f372d542f11fe7967dad"
+          },
+          {
+            "name": "Repeat-That-0.2.0-1.x86_64.rpm",
+            "kind": "rpm",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/Repeat-That-0.2.0-1.x86_64.rpm",
+            "size": 8133120,
+            "sha256": "82d744447f3a10bedcc91e4228ecd82f121214273bcf5cf524a6b17b5ebe1933"
+          }
+        ]
+      },
+      {
+        "name": "flatpak",
+        "label": "Flatpak",
+        "files": [
+          {
+            "name": "Repeat-That_0.2.0_x86_64.flatpak",
+            "kind": "flatpak",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/Repeat-That_0.2.0_x86_64.flatpak",
+            "size": 9034752,
+            "sha256": "3d5f34a81090e65ed31f0a1d5f507f0386f90d58e71b4829a70ec89fc7139519"
+          }
+        ]
+      },
+      {
+        "name": "macos",
+        "label": "macOS",
+        "files": [
+          {
+            "name": "Repeat-That_0.2.0_aarch64.dmg",
+            "kind": "dmg",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.2.0/Repeat-That_0.2.0_aarch64.dmg",
+            "size": 11534336,
+            "sha256": "640ab5c89e7060cec294fef20b041862068413ecdeba3b506a834e6526964416"
+          }
+        ]
+      }
+    ]
+  }
+}

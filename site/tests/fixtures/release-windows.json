@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "release": {
+    "tag": "v0.1.0",
+    "version": "0.1.0",
+    "published_at": "2026-10-21T13:50:34Z",
+    "url": "https://github.com/Roboroads/repeat-that/releases/tag/v0.1.0",
+    "sums_url": "https://github.com/Roboroads/repeat-that/releases/download/v0.1.0/SHA256SUMS",
+    "platforms": [
+      {
+        "name": "windows",
+        "label": "Windows",
+        "files": [
+          {
+            "name": "Repeat-That_0.1.0_x64-setup.exe",
+            "kind": "setup-exe",
+            "url": "https://github.com/Roboroads/repeat-that/releases/download/v0.1.0/Repeat-That_0.1.0_x64-setup.exe",
+            "size": 9500925,
+            "sha256": "fdc279452d7692574c3a9dc6888243eaa33a464777a3076036d707fb1eaef29d"
+          }
+        ]
+      }
+    ]
+  }
+}
