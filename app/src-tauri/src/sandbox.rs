@@ -24,26 +24,8 @@ fn tray_icon_dir_in(env: &dyn Env, sandboxed: bool) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
-
-    struct FakeEnv(HashMap<&'static str, &'static str>);
-
-    impl FakeEnv {
-        fn with(vars: &[(&'static str, &'static str)]) -> Self {
-            FakeEnv(vars.iter().copied().collect())
-        }
-    }
-
-    impl Env for FakeEnv {
-        fn var(&self, name: &str) -> Option<String> {
-            self.0
-                .get(name)
-                .filter(|value| !value.is_empty())
-                .map(|value| value.to_string())
-        }
-    }
+    use crate::session::fake::FakeEnv;
 
     #[test]
     fn the_tray_icon_goes_in_the_folder_the_sandbox_shares_with_the_host() {

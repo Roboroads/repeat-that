@@ -150,24 +150,9 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::collections::HashMap;
 
     use super::*;
-
-    #[derive(Default)]
-    struct FakeEnv(HashMap<&'static str, &'static str>);
-
-    impl FakeEnv {
-        fn with(vars: &[(&'static str, &'static str)]) -> Self {
-            FakeEnv(vars.iter().copied().collect())
-        }
-    }
-
-    impl Env for FakeEnv {
-        fn var(&self, name: &str) -> Option<String> {
-            self.0.get(name).map(|value| value.to_string())
-        }
-    }
+    use crate::session::fake::FakeEnv;
 
     /// A system that has some programs here, some on the host, and records what it was asked to start.
     #[derive(Default)]
