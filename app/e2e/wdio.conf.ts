@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const appDir = path.resolve(import.meta.dirname, '..');
 const repoDir = path.resolve(appDir, '..');
@@ -31,6 +32,12 @@ const driverCommand = process.env.TAURI_DRIVER ?? 'tauri-driver';
 const SPEC_ENV: Record<string, NodeJS.ProcessEnv> = {
   'permission.e2e.ts': { REPEAT_THAT_MOCK_PERMISSION: 'denied' },
 };
+
+/** The variables of `SPEC_ENV` for a spec, which WebdriverIO names by a `file://` URL or by a path. */
+function specEnv(spec: string): NodeJS.ProcessEnv | undefined {
+  const file = spec.startsWith('file:') ? fileURLToPath(spec) : spec;
+  return SPEC_ENV[path.basename(file)];
+}
 
 /** What one session runs: a private D-Bus, a tauri-driver (with the app below it) and the app's folders. */
 interface Session {
@@ -170,7 +177,7 @@ export const config: WebdriverIO.Config = {
       REPEAT_THAT_MOCK_WAV: fixture,
     };
     for (const own of Object.values(SPEC_ENV)) for (const name of Object.keys(own)) delete env[name];
-    for (const spec of specs) Object.assign(env, SPEC_ENV[path.basename(new URL(spec, 'file://').pathname)]);
+    for (const spec of specs) Object.assign(env, specEnv(spec));
     const driver = spawn(driverCommand, ['--port', String(port), '--native-port', String(nativePort)], {
       env,
       detached: true,

@@ -24,6 +24,11 @@ const help = () => $('[role="group"][aria-label="Allow audio capture"]');
 describe('capture that is not allowed', () => {
   before(async () => {
     await waitForPage();
+    // Without the variable the app has nothing to allow here, and every test below would fail without saying why.
+    const offered = await invoke<{ canOpenSettings: boolean; canAskAgain: boolean }>('capture_permission_help');
+    if (!offered.canAskAgain) {
+      throw new Error("the app wasn't started with REPEAT_THAT_MOCK_PERMISSION=denied (SPEC_ENV in e2e/wdio.conf.ts)");
+    }
     const radio = appRadio(FAKE_APP);
     await radio.waitForDisplayed({ timeoutMsg: `${FAKE_APP} is not in the app list` });
     await radio.click();
