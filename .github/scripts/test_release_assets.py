@@ -1197,6 +1197,14 @@ class CheckUpdaterKeysTests(unittest.TestCase):
             self.assertFalse(result.ok, text)
             self.assertIn("TAURI_SIGNING_PRIVATE_KEY", result.errors[0])
 
+    def test_a_variable_of_blanks_is_set_but_not_a_key(self):
+        # The workflows compare the variable with '' only, so they build for an updater; the app trims it to nothing.
+        for text in (" ", "\n", " \n "):
+            result = self.check(pubkey=text)
+            self.assertFalse(result.ok, repr(text))
+            self.assertIn("TAURI_UPDATER_PUBKEY", result.errors[0])
+            self.assertEqual(result.warnings, [])
+
     def test_the_public_key_with_a_line_end_passes(self):
         self.assertTrue(self.check(pubkey=PUBLIC_KEY + "\n").ok)
 

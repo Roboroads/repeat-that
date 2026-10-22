@@ -275,7 +275,8 @@ jobs:
           path: assets
 
       # The update files, see the top of this file. In `none` mode nothing below runs and the release has the installers
-      # only.
+      # only. The variable is set when it is not empty, like the `!= ''` of the Environment and the build workflows;
+      # check-release has refused a value that is no key.
       - name: Pick the update key
         id: updater
         env:
@@ -284,7 +285,7 @@ jobs:
           set -euo pipefail
           if [[ -z "$TAG" ]]; then
             mode=throwaway
-          elif [[ -n "${PUBKEY//[[:space:]]/}" ]]; then
+          elif [[ -n "$PUBKEY" ]]; then
             mode=release
           else
             mode=none
@@ -549,7 +550,7 @@ jobs:
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: |
           set -euo pipefail
-          if [[ -n "${PUBKEY//[[:space:]]/}" ]]; then
+          if [[ -n "$PUBKEY" ]]; then
             mode=release
           else
             mode=none

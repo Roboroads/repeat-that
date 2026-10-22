@@ -624,8 +624,10 @@ def check_updater_keys(pubkey, private_key, password):
     and `password` the secrets of the updater-signing Environment; each is the empty string when it is not set.
     The variable without the private key is an error (the apps of the release would have an updater that its own
     release can't feed), the secrets without the variable a warning, and neither a notice. The password is optional:
-    GitHub can't store an empty secret, so a key without a password has no secret for it."""
-    pubkey, private_key, password = pubkey.strip(), private_key.strip(), password.strip()
+    GitHub can't store an empty secret, so a key without a password has no secret for it. The variable counts as set
+    when it is not the empty string, like everywhere in the workflows (`!= ''`), so one of blanks is an error here:
+    the builds would be checked for an updater that the app, which trims the key to nothing, does not have."""
+    private_key, password = private_key.strip(), password.strip()
     guide = "See Update signing key in docs/MAINTAINING.md."
     secrets = (("TAURI_SIGNING_PRIVATE_KEY", private_key), ("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", password))
     errors, warnings, notices = [], [], []
