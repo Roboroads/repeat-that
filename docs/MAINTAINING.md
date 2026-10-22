@@ -139,6 +139,10 @@ it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it 
   published release, run the workflow again with `replace` ticked instead.
 - Asset names use hyphens (`Repeat-That_0.1.0_x64-setup.exe`) instead of Tauri's `Repeat That_...`: GitHub rewrites
   spaces in asset names, which would leave `SHA256SUMS` listing names that don't exist.
+- **Releases from before a required platform** can't be run again in full mode. `v0.1.0` predates the Linux packages:
+  the `linux` job builds the tag's commit, which has neither the Linux bundle settings nor the check scripts, so it
+  fails, and with it `Publish`, as Linux is required. A full run always publishes every required platform, so a fix to
+  such a release goes out as a new release instead.
 
 ### Windows installer
 
