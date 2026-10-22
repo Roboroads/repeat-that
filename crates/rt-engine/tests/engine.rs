@@ -59,7 +59,8 @@ struct FakeInner {
     failure: Mutex<Option<Failure>>,
     /// Volume changes fail while set (they're still recorded).
     volume_fails: AtomicBool,
-    captures: Mutex<Vec<Arc<AtomicBool>>>,
+    /// The running captures: what stops each one, and what says it ended because the OS took the permission back.
+    captures: Mutex<Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
     /// How long stopping a capture takes.
     stop_delay: Mutex<Duration>,
 }
@@ -128,8 +129,17 @@ impl FakeSource {
 
     /// Ends every running capture, as if the app quit.
     fn end_captures(&self) {
-        for capture in lock(&self.inner.captures).drain(..) {
-            capture.store(true, Ordering::Relaxed);
+        for (stop, _) in lock(&self.inner.captures).drain(..) {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Ends every running capture because the OS took the permission back, as macOS does, and refuses new ones.
+    fn refuse_captures(&self) {
+        self.fail_start(Some(Failure::PermissionDenied));
+        for (stop, refused) in lock(&self.inner.captures).drain(..) {
+            refused.store(true, Ordering::Relaxed);
+            stop.store(true, Ordering::Relaxed);
         }
     }
 
@@ -226,8 +236,8 @@ impl AppAudioSource for FakeSource {
             return Err(CaptureError::AppNotFound(app.pid));
         }
         let format = lock(&self.inner.format).unwrap_or(STEREO);
-        let stop = Arc::new(AtomicBool::new(false));
-        lock(&self.inner.captures).push(Arc::clone(&stop));
+        let (stop, refused) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        lock(&self.inner.captures).push((Arc::clone(&stop), Arc::clone(&refused)));
         let inner = Arc::clone(&self.inner);
         let stopped = Arc::clone(&stop);
         let thread = thread::spawn(move || {
@@ -254,6 +264,7 @@ impl AppAudioSource for FakeSource {
         });
         Ok(Box::new(FakeCapture {
             stop,
+            refused,
             thread: Some(thread),
             inner: Arc::clone(&self.inner),
         }))
@@ -270,6 +281,7 @@ impl AppAudioSource for FakeSource {
 
 struct FakeCapture {
     stop: Arc<AtomicBool>,
+    refused: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     inner: Arc<FakeInner>,
 }
@@ -277,6 +289,10 @@ struct FakeCapture {
 impl CaptureHandle for FakeCapture {
     fn is_running(&self) -> bool {
         self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    fn refused(&self) -> Option<String> {
+        (!self.is_running() && self.refused.load(Ordering::Relaxed)).then(|| ALLOW.into())
     }
 
     fn stop(self: Box<Self>) {}
@@ -1060,11 +1076,18 @@ fn a_permission_taken_back_keeps_the_buffer_for_a_replay() {
     source.wait_played();
     let buffered = wait_buffered(&handle, 1.2);
 
-    // macOS ends the capture when the user takes the permission back, and refuses the next start.
-    source.fail_start(Some(Failure::PermissionDenied));
-    source.end_captures();
-    let status = wait_for(&handle, secs(3.0), "not allowed", not_allowed);
+    // macOS ends the capture when the user takes the permission back, and refuses the next start. The engine says so
+    // at once, without waiting for that start, and doesn't say it waits for the app in between.
+    let updates = handle.subscribe();
+    let taken_back = Instant::now();
+    source.refuse_captures();
+    let status = wait_for(&handle, secs(0.5), "not allowed", not_allowed);
+    assert!(taken_back.elapsed() < secs(0.5));
+    assert_eq!(status.capture, CaptureState::PermissionDenied(ALLOW.into()));
     assert_near(status.buffered.as_secs_f32(), buffered, 0.05, "speech kept");
+    let states: Vec<CaptureState> = updates.try_iter().map(|s| s.capture).collect();
+    assert!(!states.contains(&CaptureState::Waiting), "{states:?}");
+    assert_eq!(source.starts(), [1], "known without trying to start again");
 
     handle.replay();
     wait_playing(&handle);
