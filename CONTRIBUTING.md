@@ -110,8 +110,11 @@ To try the backend by hand, use the probe:
 ```sh
 cargo run -p rt-capture --example probe -- list
 cargo run -p rt-capture --example probe -- capture <name> 15 --duck
-cargo run -p rt-capture --example probe -- permission --ask-again
+cargo run -p rt-capture --example probe -- permission
 ```
+
+`permission --ask-again` always fails in the probe: asking again needs the bundle identifier of the installed app, and a
+program started by cargo has none.
 
 For the permission screens without a Mac, run the app with `REPEAT_THAT_MOCK_PERMISSION=denied` (see
 [Running the end-to-end test](#running-the-end-to-end-test)).

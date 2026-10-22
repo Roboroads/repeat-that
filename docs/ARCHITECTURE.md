@@ -131,8 +131,9 @@ engine retries; a capture whose connection drops ends, and the next call connect
   or KDE's settings) and `hicolor`: the smallest PNG at least the size asked for. SVG-only apps get the generic icon.
 
 `cargo run -p rt-capture --example probe -- list | capture <app> [--duck [level]] | duck <app> [level]` tries the
-backend on real apps without writing audio to disk. It also has `icon <app> [size]` and `permission [--ask-again]`
-(the latter answers `Unsupported` outside macOS).
+backend on real apps without writing audio to disk. It also has `icon <app> [size]` and `permission [--ask-again]`.
+`permission` answers `Unsupported` outside macOS, and `--ask-again` fails everywhere in the probe, because asking again
+needs the bundle identifier of the installed app.
 
 #### macOS
 
