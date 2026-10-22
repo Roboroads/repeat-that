@@ -72,14 +72,19 @@ export async function offerSnapshot(): Promise<OfferSnapshot> {
   }, MOCK_VERSION);
 }
 
+/** The "Updates" block of General, a group named by its heading. It is there in every build, with a sentence or more. */
+const updatesBlock = () => $('//div[@role="group"][.//h3[normalize-space()="Updates"]]');
+
 /** The "Check for updates automatically" switch in General. */
 export const updateSwitch = () =>
-  $('//input[@role="switch"][@aria-labelledby=//label[normalize-space()="Check for updates automatically"]/@id]');
+  updatesBlock().$(
+    './/input[@role="switch"][@aria-labelledby=//label[normalize-space()="Check for updates automatically"]/@id]',
+  );
 
 /** "Version 0.1.0 · last checked never", under the switch. */
-export const versionLine = () => $('p*=last checked');
+export const versionLine = () => updatesBlock().$('p*=last checked');
 
-export const checkNowButton = () => $('button=Check now');
+export const checkNowButton = () => updatesBlock().$('button=Check now');
 
 /** What the last check came to, next to "Check now": "You have the latest version.", the error, ... */
-export const checkResult = () => $('div[role="status"]');
+export const checkResult = () => updatesBlock().$('div[role="status"]');
