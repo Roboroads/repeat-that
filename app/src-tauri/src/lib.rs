@@ -14,6 +14,7 @@ mod linux_package_tests;
 mod locking;
 #[cfg(test)]
 mod mock_runtime_tests;
+mod permission;
 #[cfg(target_os = "linux")]
 mod portal;
 #[cfg(all(test, target_os = "linux"))]
@@ -157,12 +158,17 @@ mod tests {
         assert!(!keep_running_after_exit_request(None, 1));
     }
 
-    /// The links the settings window opens in the browser.
+    /// The links the settings window opens in the browser: the privacy policy and the macOS issue form.
     fn links_in_the_window() -> Vec<String> {
-        let page = std::fs::read_to_string("../src/lib/components/GeneralSection.svelte").expect("the General section");
-        page.split(['\'', '"'])
-            .filter(|part| part.starts_with("https://"))
-            .map(String::from)
+        ["GeneralSection.svelte", "MacosNotice.svelte"]
+            .into_iter()
+            .flat_map(|file| {
+                let page = std::fs::read_to_string(format!("../src/lib/components/{file}")).expect(file);
+                page.split(['\'', '"'])
+                    .filter(|part| part.starts_with("https://"))
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
 
@@ -188,7 +194,10 @@ mod tests {
             "only this project's pages"
         );
         let links = links_in_the_window();
-        assert!(!links.is_empty(), "the privacy policy link");
+        assert!(
+            links.len() >= 2,
+            "the privacy policy and the macOS issue form: {links:?}"
+        );
         for link in links {
             assert!(
                 link.starts_with("https://github.com/Roboroads/repeat-that/"),

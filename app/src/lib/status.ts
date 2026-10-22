@@ -45,6 +45,9 @@ export function describeStatus(status: Status | null, target: Settings['target']
       return { headline: 'Paused', detail: null, playback, tone: 'idle' };
     case 'error':
       return { headline: `Can't capture ${name}`, detail: message, playback, tone: 'warn' };
+    case 'notAllowed':
+      // The buffer is kept, so a replay may still play; the message says how to allow capture.
+      return { headline: "Repeat That isn't allowed to capture audio", detail: message, playback, tone: 'warn' };
     case 'unsupported':
       return {
         headline: message ?? "Capturing apps isn't supported on this OS yet",

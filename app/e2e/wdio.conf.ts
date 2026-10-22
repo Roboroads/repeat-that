@@ -12,6 +12,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const appDir = path.resolve(import.meta.dirname, '..');
 const repoDir = path.resolve(appDir, '..');
@@ -23,6 +24,20 @@ const application = path.join(targetDir, 'debug', 'repeat-that');
 const fixture = path.join(repoDir, 'crates', 'rt-core', 'tests', 'fixtures', 'speech_8s.wav');
 
 const driverCommand = process.env.TAURI_DRIVER ?? 'tauri-driver';
+
+/**
+ * Variables some spec files start their app with, by file name. `permission.e2e.ts` gets an app that pretends the OS
+ * doesn't let it capture audio until "Ask again" (debug builds only, see src-tauri/src/source.rs).
+ */
+const SPEC_ENV: Record<string, NodeJS.ProcessEnv> = {
+  'permission.e2e.ts': { REPEAT_THAT_MOCK_PERMISSION: 'denied' },
+};
+
+/** The variables of `SPEC_ENV` for a spec, which WebdriverIO names by a `file://` URL or by a path. */
+function specEnv(spec: string): NodeJS.ProcessEnv | undefined {
+  const file = spec.startsWith('file:') ? fileURLToPath(spec) : spec;
+  return SPEC_ENV[path.basename(file)];
+}
 
 /** What one session runs: a private D-Bus, a tauri-driver (with the app below it) and the app's folders. */
 interface Session {
@@ -130,8 +145,9 @@ export const config: WebdriverIO.Config = {
    *    what a CI runner has, so the test runs the same everywhere.
    *  - The speech fixture as the only app (`REPEAT_THAT_MOCK_WAV`), instead of the PipeWire backend a Linux build
    *    has, and an output that plays into nothing (`REPEAT_THAT_NULL_OUTPUT`). See src-tauri/src/source.rs.
+   * A spec file in `SPEC_ENV` gets its variables on top; the others never see them, even when they are set here.
    */
-  async beforeSession(config) {
+  async beforeSession(config, _capabilities, specs) {
     const root = await mkdtemp(path.join(tmpdir(), 'repeat-that-e2e-'));
     const names = ['home', 'tmp', 'run', 'config', 'data', 'cache'];
     const folders = Object.fromEntries(names.map((name) => [name, path.join(root, name)]));
@@ -160,6 +176,8 @@ export const config: WebdriverIO.Config = {
       REPEAT_THAT_NULL_OUTPUT: '1',
       REPEAT_THAT_MOCK_WAV: fixture,
     };
+    for (const own of Object.values(SPEC_ENV)) for (const name of Object.keys(own)) delete env[name];
+    for (const spec of specs) Object.assign(env, specEnv(spec));
     const driver = spawn(driverCommand, ['--port', String(port), '--native-port', String(nativePort)], {
       env,
       detached: true,

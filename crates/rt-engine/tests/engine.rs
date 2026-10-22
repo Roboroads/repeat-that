@@ -22,6 +22,8 @@ const STEREO: CaptureFormat = CaptureFormat {
 const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../rt-core/tests/fixtures/speech_8s.wav");
 /// The gap the player puts after each utterance.
 const GAP: f32 = 0.25;
+/// How the fake says to allow capture when it isn't allowed.
+const ALLOW: &str = "Turn on Repeat That in System Settings";
 
 // --- A fake app ---------------------------------------------------------------------------------------------------
 
@@ -36,6 +38,8 @@ enum Call {
 enum Failure {
     Backend,
     Unsupported,
+    /// The OS doesn't let us capture, until the test allows it.
+    PermissionDenied,
 }
 
 /// Fake apps that play what the test gives them, with a switchable app list, and a record of every call.
@@ -55,7 +59,8 @@ struct FakeInner {
     failure: Mutex<Option<Failure>>,
     /// Volume changes fail while set (they're still recorded).
     volume_fails: AtomicBool,
-    captures: Mutex<Vec<Arc<AtomicBool>>>,
+    /// The running captures: what stops each one, and what says it ended because the OS took the permission back.
+    captures: Mutex<Vec<(Arc<AtomicBool>, Arc<AtomicBool>)>>,
     /// How long stopping a capture takes.
     stop_delay: Mutex<Duration>,
 }
@@ -124,8 +129,17 @@ impl FakeSource {
 
     /// Ends every running capture, as if the app quit.
     fn end_captures(&self) {
-        for capture in lock(&self.inner.captures).drain(..) {
-            capture.store(true, Ordering::Relaxed);
+        for (stop, _) in lock(&self.inner.captures).drain(..) {
+            stop.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Ends every running capture because the OS took the permission back, as macOS does, and refuses new ones.
+    fn refuse_captures(&self) {
+        self.fail_start(Some(Failure::PermissionDenied));
+        for (stop, refused) in lock(&self.inner.captures).drain(..) {
+            refused.store(true, Ordering::Relaxed);
+            stop.store(true, Ordering::Relaxed);
         }
     }
 
@@ -215,14 +229,15 @@ impl AppAudioSource for FakeSource {
         match *lock(&self.inner.failure) {
             Some(Failure::Backend) => return Err(CaptureError::Backend("the fake failed to start".into())),
             Some(Failure::Unsupported) => return Err(CaptureError::Unsupported("the fake can't capture".into())),
+            Some(Failure::PermissionDenied) => return Err(CaptureError::PermissionDenied(ALLOW.into())),
             None => {}
         }
         if !lock(&self.inner.apps).iter().any(|a| a.pid == app.pid) {
             return Err(CaptureError::AppNotFound(app.pid));
         }
         let format = lock(&self.inner.format).unwrap_or(STEREO);
-        let stop = Arc::new(AtomicBool::new(false));
-        lock(&self.inner.captures).push(Arc::clone(&stop));
+        let (stop, refused) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+        lock(&self.inner.captures).push((Arc::clone(&stop), Arc::clone(&refused)));
         let inner = Arc::clone(&self.inner);
         let stopped = Arc::clone(&stop);
         let thread = thread::spawn(move || {
@@ -249,6 +264,7 @@ impl AppAudioSource for FakeSource {
         });
         Ok(Box::new(FakeCapture {
             stop,
+            refused,
             thread: Some(thread),
             inner: Arc::clone(&self.inner),
         }))
@@ -265,6 +281,7 @@ impl AppAudioSource for FakeSource {
 
 struct FakeCapture {
     stop: Arc<AtomicBool>,
+    refused: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     inner: Arc<FakeInner>,
 }
@@ -272,6 +289,10 @@ struct FakeCapture {
 impl CaptureHandle for FakeCapture {
     fn is_running(&self) -> bool {
         self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    fn refused(&self) -> Option<String> {
+        (!self.is_running() && self.refused.load(Ordering::Relaxed)).then(|| ALLOW.into())
     }
 
     fn stop(self: Box<Self>) {}
@@ -1006,6 +1027,122 @@ fn retries_a_failed_start_but_not_an_unsupported_one() {
     });
     thread::sleep(secs(2.5));
     assert_eq!(source.starts(), [1]);
+}
+
+fn not_allowed(status: &Status) -> bool {
+    matches!(status.capture, CaptureState::PermissionDenied(_))
+}
+
+/// When each capture was started.
+fn start_times(source: &FakeSource) -> Vec<Instant> {
+    source
+        .calls()
+        .into_iter()
+        .filter_map(|(at, call)| matches!(call, Call::Start(_)).then_some(at))
+        .collect()
+}
+
+#[test]
+fn a_denied_permission_is_its_own_state_and_is_tried_again_until_allowed() {
+    let source = FakeSource::new(vec![discord(1)]);
+    source.fail_start(Some(Failure::PermissionDenied));
+    let output = TestOutput::new(RATE);
+    let engine = engine(&source, &output, EngineConfig::default());
+    let handle = engine.handle();
+    handle.set_target(Some(TargetApp::from(&discord(1))));
+    let status = wait_for(&handle, secs(1.0), "not allowed", not_allowed);
+    // Only the sentence that says how to allow it, without the kind of error in front.
+    assert_eq!(status.capture, CaptureState::PermissionDenied(ALLOW.into()));
+    assert_eq!(status.target_name.as_deref(), Some("Discord"));
+
+    // Tried again every 2 s, like a start that failed, so capture starts once the user allows it.
+    wait_until(secs(2.5), "a second try", || source.starts().len() == 2);
+    let times = start_times(&source);
+    let gap = times[1] - times[0];
+    assert!((secs(1.9)..secs(2.5)).contains(&gap), "tried again after {gap:?}");
+    assert!(not_allowed(&handle.status()));
+    source.fail_start(None);
+    wait_for(&handle, secs(2.5), "capturing", |s| {
+        s.capture == CaptureState::Capturing
+    });
+    assert_eq!(source.starts(), [1, 1, 1]);
+}
+
+#[test]
+fn a_permission_taken_back_keeps_the_buffer_for_a_replay() {
+    let output = TestOutput::new(RATE).speed(4.0);
+    let (source, _engine, handle) = capturing(&output, EngineConfig::default());
+    source.play(&sentence(1.0));
+    source.wait_played();
+    let buffered = wait_buffered(&handle, 1.2);
+
+    // macOS ends the capture when the user takes the permission back, and refuses the next start. The engine says so
+    // at once, without waiting for that start, and doesn't say it waits for the app in between.
+    let updates = handle.subscribe();
+    let taken_back = Instant::now();
+    source.refuse_captures();
+    let status = wait_for(&handle, secs(0.5), "not allowed", not_allowed);
+    assert!(taken_back.elapsed() < secs(0.5));
+    assert_eq!(status.capture, CaptureState::PermissionDenied(ALLOW.into()));
+    assert_near(status.buffered.as_secs_f32(), buffered, 0.05, "speech kept");
+    let states: Vec<CaptureState> = updates.try_iter().map(|s| s.capture).collect();
+    assert!(!states.contains(&CaptureState::Waiting), "{states:?}");
+    assert_eq!(source.starts(), [1], "known without trying to start again");
+
+    handle.replay();
+    wait_playing(&handle);
+    wait_idle(&handle, secs(5.0));
+    let loud = loud_secs(&output.samples(), RATE);
+    assert!(loud > 0.8, "{loud} s of the kept speech played");
+    assert!(not_allowed(&handle.status()));
+}
+
+#[test]
+fn pause_and_resume_work_while_capture_is_not_allowed() {
+    let source = FakeSource::new(vec![discord(1)]);
+    source.fail_start(Some(Failure::PermissionDenied));
+    let output = TestOutput::new(RATE);
+    let engine = engine(&source, &output, EngineConfig::default());
+    let handle = engine.handle();
+    handle.set_target(Some(TargetApp::from(&discord(1))));
+    wait_for(&handle, secs(1.0), "not allowed", not_allowed);
+
+    handle.set_paused(true);
+    wait_for(&handle, secs(1.0), "paused", |s| s.capture == CaptureState::Paused);
+    thread::sleep(secs(2.5));
+    assert_eq!(source.starts(), [1], "nothing is tried while paused");
+
+    // Resuming tries at once, and says it is still not allowed.
+    handle.set_paused(false);
+    wait_for(&handle, secs(1.0), "not allowed again", not_allowed);
+    assert_eq!(source.starts(), [1, 1]);
+    source.fail_start(None);
+    handle.set_paused(true);
+    wait_for(&handle, secs(1.0), "paused", |s| s.capture == CaptureState::Paused);
+    handle.set_paused(false);
+    wait_for(&handle, secs(1.0), "capturing", |s| {
+        s.capture == CaptureState::Capturing
+    });
+}
+
+#[test]
+fn another_target_clears_not_allowed() {
+    let source = FakeSource::new(vec![discord(1)]);
+    source.fail_start(Some(Failure::PermissionDenied));
+    let output = TestOutput::new(RATE);
+    let engine = engine(&source, &output, EngineConfig::default());
+    let handle = engine.handle();
+    handle.set_target(Some(TargetApp::from(&discord(1))));
+    wait_for(&handle, secs(1.0), "not allowed", not_allowed);
+
+    // Teams isn't running, so there's nothing to be refused yet.
+    handle.set_target(Some(TargetApp::from(&app(2, "Teams"))));
+    let status = wait_for(&handle, secs(1.0), "waiting for Teams", |s| {
+        s.capture == CaptureState::Waiting
+    });
+    assert_eq!(status.target_name.as_deref(), Some("Teams"));
+    handle.set_target(None);
+    wait_for(&handle, secs(1.0), "no target", |s| s.capture == CaptureState::NoTarget);
 }
 
 // --- Wipes --------------------------------------------------------------------------------------------------------

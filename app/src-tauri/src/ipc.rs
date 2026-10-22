@@ -212,6 +212,8 @@ pub enum CaptureStateName {
     Paused,
     /// Capture failed to start; tried again every 2 s.
     Error,
+    /// The OS doesn't let this app capture audio (macOS); tried again every 2 s, and the buffer is kept.
+    NotAllowed,
     /// Capturing isn't possible here.
     Unsupported,
 }
@@ -219,8 +221,19 @@ pub enum CaptureStateName {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CaptureStatus {
     pub state: CaptureStateName,
-    /// Why, for `error` and `unsupported`.
+    /// Why, for `error` and `unsupported`; how to allow it, for `notAllowed`.
     pub message: Option<String>,
+}
+
+/// What the user can do about a capture that isn't allowed, from inside the app: what `capture_permission_help`
+/// answers. Both are `false` where the OS doesn't ask for this permission.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionHelp {
+    /// `open_capture_permission_settings` opens the OS settings page that has the switch (macOS 15 and later).
+    pub can_open_settings: bool,
+    /// `ask_for_capture_permission` makes the OS ask once more.
+    pub can_ask_again: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]

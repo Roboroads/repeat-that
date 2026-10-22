@@ -3,6 +3,7 @@
   import { openExternal } from '../opener';
   import { isWindows } from '../platform';
   import type { SettingsStore } from '../store.svelte';
+  import MacosNotice from './MacosNotice.svelte';
   import Section from './Section.svelte';
   import Switch from './Switch.svelte';
 
@@ -35,6 +36,7 @@
 </script>
 
 <Section title="General" id="general">
+  <MacosNotice />
   <Switch
     label={autostartLabel}
     description={hasTray ? 'Starts in the tray, without opening this window.' : 'Starts without opening this window.'}

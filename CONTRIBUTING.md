@@ -47,7 +47,11 @@ xvfb-run -a npm run test:e2e    # on a desktop session, `npm run test:e2e` is en
 minutes. The specs themselves take about half a minute. Each spec file starts its own app, its own tauri-driver (on a
 free port) and its own D-Bus session, with the app's home, temp and settings folders in one scratch folder. The specs
 don't depend on each other, and they never touch your real settings or a copy of Repeat That that is already running.
-Specs are in `app/e2e/specs/*.e2e.ts`, the setup is in `app/e2e/wdio.conf.ts`.
+Specs are in `app/e2e/specs/*.e2e.ts`, the setup is in `app/e2e/wdio.conf.ts`. The `permission` spec gets an app started
+with `REPEAT_THAT_MOCK_PERMISSION=denied`, which refuses to capture, as macOS does without the permission, until "Ask
+again" is clicked. To see that state yourself, run `REPEAT_THAT_MOCK_PERMISSION=denied npm run tauri dev` in `app/`
+(debug builds only) and pick any app, or add
+`REPEAT_THAT_MOCK_WAV="$PWD/../crates/rt-core/tests/fixtures/speech_8s.wav"` to pick `speech_8s` as the test does.
 
 CI runs the same thing as the required check `E2E (Linux)`. Like every other test, it must not write captured audio to
 disk, and the `privacy` spec checks that.

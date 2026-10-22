@@ -19,7 +19,7 @@ use crate::ipc::{
 use crate::locking::lock;
 use crate::service::SettingsService;
 use crate::session::{self, Env, ProcessEnv};
-use crate::source::{self, SourceKind};
+use crate::source::{self, SharedMockPermission, SourceKind};
 use crate::tray::{self, HotkeyLabels, SharedStatus, TrayState, TrayStatus};
 
 /// The event that carries the [`Status`] after every change, and every 500 ms during a replay.
@@ -64,6 +64,7 @@ pub fn wire_status(
         Engine::Capturing => (CaptureStateName::Capturing, None),
         Engine::Paused => (CaptureStateName::Paused, None),
         Engine::Error(message) => (CaptureStateName::Error, Some(message.clone())),
+        Engine::PermissionDenied(how) => (CaptureStateName::NotAllowed, Some(how.clone())),
         Engine::Unsupported(message) => (CaptureStateName::Unsupported, Some(message.clone())),
     };
     Status {
@@ -236,7 +237,16 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
     } else {
         None
     };
-    install_with(app, source::build(kind, journal), source::output_from_env());
+    let mut source = source::build(kind, journal);
+    if let Some(permission) = source::mock_permission_from_env() {
+        eprintln!(
+            "debug: {}=denied, so capture isn't allowed until Ask again in the settings window",
+            source::MOCK_PERMISSION_VAR
+        );
+        source = permission.gate(source);
+        app.manage::<SharedMockPermission>(permission);
+    }
+    install_with(app, source, source::output_from_env());
 }
 
 /// [`install`] on the given source and output, without starting the [`StatusPublisher`]. The status goes out on every
@@ -558,8 +568,32 @@ mod tests {
             expect(CaptureStateName::Error, Some("access denied"))
         );
         assert_eq!(
+            wire(E::PermissionDenied("Turn on Repeat That in System Settings.".into())),
+            expect(
+                CaptureStateName::NotAllowed,
+                Some("Turn on Repeat That in System Settings.")
+            )
+        );
+        assert_eq!(
             wire(E::Unsupported("no backend".into())),
             expect(CaptureStateName::Unsupported, Some("no backend"))
+        );
+    }
+
+    #[test]
+    fn not_allowed_is_camel_case_on_the_wire() {
+        let status = wire_status(
+            &rt_engine::Status {
+                capture: rt_engine::CaptureState::PermissionDenied("Click Ask again and choose Allow.".into()),
+                ..Default::default()
+            },
+            ok_hotkeys(),
+            None,
+            DesktopStatus::default(),
+        );
+        assert_eq!(
+            serde_json::to_value(status).unwrap()["capture"],
+            serde_json::json!({ "state": "notAllowed", "message": "Click Ask again and choose Allow." })
         );
     }
 
