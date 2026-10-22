@@ -76,12 +76,13 @@ built and checked on GitHub's macOS runners. If something doesn't work, please
 ## Install (Linux)
 
 You need 64-bit x86 Linux with PipeWire and WirePlumber: Debian 13, Ubuntu 24.04, Fedora 40 or newer. Debian 12 is
-too old (the speech detector needs glibc 2.38). Releases after `v0.1.0` have three files on the
+too old (the speech detector needs glibc 2.38), except for the Flatpak. Releases after `v0.1.0` have four files on the
 [Releases page](https://github.com/Roboroads/repeat-that/releases):
 
 - `Repeat-That_<version>_amd64.deb` for Debian and Ubuntu: `sudo apt install ./Repeat-That_<version>_amd64.deb`
 - `Repeat-That-<version>-1.x86_64.rpm` for Fedora: `sudo dnf install ./Repeat-That-<version>-1.x86_64.rpm`
 - `Repeat-That_<version>_amd64.AppImage` for other distributions: make it executable (`chmod +x`) and run it
+- `Repeat-That_<version>_x86_64.flatpak` for any distribution with Flatpak: `flatpak install ./Repeat-That_<version>_x86_64.flatpak`
 
 Compare your download with the release's `SHA256SUMS`, see [docs/verify-downloads.md](docs/verify-downloads.md). The
 full steps, including the AppImage's differences, updating and uninstalling, are in
@@ -132,7 +133,7 @@ another program already uses a combination.
 - Waits for the app when it isn't running and picks it up again when it starts. Speech buffered before it quit can
   still be replayed.
 
-Planned: a live transcript of recent speech (local Whisper, fully offline) and a Flatpak for Linux. See the
+Planned: a live transcript of recent speech (local Whisper, fully offline) and the Flatpak on Flathub. See the
 [roadmap](ROADMAP.md).
 
 ## Platform support
@@ -140,7 +141,7 @@ Planned: a live transcript of recent speech (local Whisper, fully offline) and a
 | Platform | Minimum version | Capture method | Status |
 |---|---|---|---|
 | Windows (x64) | Windows 10 2004 / 11 | WASAPI process loopback | v0.1 |
-| Linux (x64: `.deb`, `.rpm`, AppImage) | Debian 13 / Ubuntu 24.04 / Fedora 40 with PipeWire | PipeWire per-stream capture | After v0.1.0 |
+| Linux (x64: `.deb`, `.rpm`, AppImage, Flatpak) | Debian 13 / Ubuntu 24.04 / Fedora 40 with PipeWire | PipeWire per-stream capture | After v0.1.0 |
 | macOS (Apple Silicon only) | macOS 14.2 | Core Audio process taps | Built, untested |
 
 macOS is Apple Silicon only: Microsoft ships no x86_64 or universal ONNX Runtime after 1.23.2, and the speech detector
