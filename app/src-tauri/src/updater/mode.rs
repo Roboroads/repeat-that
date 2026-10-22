@@ -1,6 +1,6 @@
-//! What this install can do about updates: install them itself, only announce them, leave them to a store, or not
-//! look for them at all. It depends on how the app was built and how it was installed, so it is worked out once at
-//! startup and holds for the whole run.
+//! What this install can do about updates: install them itself, only announce them, leave them to whatever installed
+//! it, or not look for them at all. It depends on how the app was built and how it was installed, so it is worked out
+//! once at startup and holds for the whole run.
 
 use std::path::{Path, PathBuf};
 
@@ -17,7 +17,8 @@ pub enum UpdateMode {
     /// Finds out that an update exists and points to the download page. It can't replace itself: a `.deb` or `.rpm`,
     /// a macOS app run from the disk image, an AppImage in a folder that can't be written.
     Notify,
-    /// Another program updates it (Flathub), so it never looks.
+    /// Something outside the app handles updates, so it never looks. Today that is the Flatpak, which has no network
+    /// and comes from the GitHub releases only; once it is on Flathub, Flathub updates it.
     External,
     /// Doesn't look: this build has no update key, or it is a development build.
     Off,
@@ -87,13 +88,14 @@ impl Detection {
 }
 
 pub const NO_KEY_REASON: &str = "This build doesn't check for updates.";
-pub const FLATPAK_REASON: &str = "Updates come through Flathub.";
+// The Flatpak is only on the GitHub releases for now. When it is on Flathub, this becomes a sentence about Flathub.
+pub const FLATPAK_REASON: &str = "Download new versions of the Flatpak from the releases page on GitHub.";
 pub const PACKAGE_REASON: &str = "Install updates from the download page or your package manager.";
 pub const MOVE_REASON: &str = "Move Repeat That to Applications to get updates.";
 
 /// How this install handles updates.
 pub fn detect(build: BuildFacts, env: &dyn Env, facts: &dyn InstallFacts) -> Detection {
-    // A store that updates the app comes first: it is what the user should be told, key or no key.
+    // A Flatpak comes first: it never looks for updates, so that is what the user should be told, key or no key.
     if build.in_flatpak {
         return Detection::with(UpdateMode::External, FLATPAK_REASON);
     }
@@ -270,14 +272,23 @@ mod tests {
     }
 
     #[test]
-    fn a_flatpak_leaves_updates_to_flathub() {
+    fn a_flatpak_is_sent_to_the_releases_page_for_updates() {
+        // The Flatpak only comes from the GitHub releases for now, so Flathub is not where its updates come from.
+        // Once it is on Flathub, this test changes with the sentence.
+        assert!(FLATPAK_REASON.contains("releases page"), "{FLATPAK_REASON}");
+        assert!(FLATPAK_REASON.contains("Flatpak"), "{FLATPAK_REASON}");
+        assert!(!FLATPAK_REASON.contains("Flathub"), "{FLATPAK_REASON}");
+    }
+
+    #[test]
+    fn a_flatpak_never_looks_for_updates() {
         let found = detect_with(flatpak(), &[], FakeFacts::default());
         assert_eq!(found, Detection::with(UpdateMode::External, FLATPAK_REASON));
     }
 
     #[test]
     fn a_flatpak_says_so_even_without_a_key() {
-        // Flathub builds the app itself, without the update key; the sentence that fits is still Flathub's.
+        // The Flatpak is built without the update key, and the sentence that fits is still the Flatpak's.
         let build = BuildFacts {
             has_key: false,
             ..flatpak()
