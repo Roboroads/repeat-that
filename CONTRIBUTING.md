@@ -53,6 +53,11 @@ again" is clicked. To see that state yourself, run `REPEAT_THAT_MOCK_PERMISSION=
 (debug builds only) and pick any app, or add
 `REPEAT_THAT_MOCK_WAV="$PWD/../crates/rt-core/tests/fixtures/speech_8s.wav"` to pick `speech_8s` as the test does.
 
+The `updates*` specs cover the update banner and the Updates block in General. An app has one update source for its whole
+run, so each answer of the debug build's `REPEAT_THAT_MOCK_UPDATE` has a spec file of its own: `updates` (`available`,
+which also installs), `updates-fail-download`, `updates-fail-check` and `updates-none`. `updates-off` runs without the
+variable, as every other spec does. The files and their values are listed in `SPEC_ENV` in `app/e2e/wdio.conf.ts`.
+
 CI runs the same thing as the required check `E2E (Linux)`. Like every other test, it must not write captured audio to
 disk, and the `privacy` spec checks that.
 
