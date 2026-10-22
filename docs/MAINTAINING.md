@@ -630,6 +630,8 @@ page and the SmartScreen notes (`grep -rniE "smartscreen|code-signed"` finds the
   application are under [SignPath Foundation application](#signpath-foundation-application)
 - [ ] Add topics and a social preview image so people can find the project
 - [ ] Submit the Flatpak to Flathub and host the verification token (see [Flathub](#flathub))
+- [ ] When the app is on Flathub, change `FLATPAK_REASON` in `app/src-tauri/src/updater/mode.rs` and the test beside it.
+  Until then it sends Flatpak users to the GitHub releases page, because the Flatpak only comes from there
 
 ## Flathub
 
