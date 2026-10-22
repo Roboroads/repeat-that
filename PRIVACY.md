@@ -6,7 +6,7 @@ Repeat That handles other people's voices, so privacy is a core design rule.
 
 - Captured audio is held in a fixed-size in-memory ring buffer. It is never written to disk: no temp files, no cache,
   no crash dumps containing audio.
-- Two small files are written to disk, and neither has audio in it. The settings file (`settings.json` in the app's
+- Up to three small files are written to disk, and none has audio in it. The settings file (`settings.json` in the app's
   config folder, `%APPDATA%\me.roboroads.repeat-that` on Windows,
   `~/Library/Application Support/me.roboroads.repeat-that` on macOS, `~/.config/me.roboroads.repeat-that` on Linux)
   holds your settings: the chosen app's name and the path to its program file, the buffer length, the hotkeys, the
