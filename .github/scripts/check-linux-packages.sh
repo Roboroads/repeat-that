@@ -257,9 +257,11 @@ else
   fail "it is not a type 2 AppImage (no ELF header or no AI\\x02 magic)"
 fi
 chmod +x "$appimage"
-(cd "$work" && "$appimage" --appimage-extract >/dev/null)
 appdir="$work/squashfs-root"
-if [[ -d "$appdir" ]]; then
+# A failure here is a check like any other: it is counted and explained, and the summary still prints.
+extract_code=0
+extract_out=$(cd "$work" && "$appimage" --appimage-extract 2>&1 >/dev/null) || extract_code=$?
+if [[ $extract_code -eq 0 && -d "$appdir" ]]; then
   ok "it extracts"
   roots=$(cd "$appdir" && find . -maxdepth 1 -name '*.desktop' | sed 's|^\./||')
   if [[ $(grep -c . <<<"$roots") -eq 1 ]]; then
@@ -295,7 +297,8 @@ if [[ -d "$appdir" ]]; then
     fi
   done
 else
-  fail "it does not extract with --appimage-extract"
+  fail "it does not extract with --appimage-extract (exit $extract_code)"
+  if [[ -n "$extract_out" ]]; then indent <<<"$extract_out"; fi
 fi
 
 echo
