@@ -90,10 +90,20 @@ echo "Installing $(basename "$package")"
 if [[ $refused == true ]]; then
   if out=$(try_install "$package" 2>&1); then
     fail "$(basename "$package") installs, but this system is too old to run it"
-  elif grep -qE 'libc6|libstdc\+\+6|GLIBC_|GLIBCXX_' <<<"$out"; then
-    ok "$(basename "$package") is refused for the glibc or libstdc++ it needs"
   else
-    fail "$(basename "$package") is refused, but not for glibc or libstdc++"
+    # What the package manager couldn't satisfy, one per line: apt's "Depends: libc6 (>= 2.38) but ..." and dnf's
+    # "nothing provides libc.so.6(GLIBC_2.38)(64bit) needed by ...". Every one must be glibc or libstdc++, else the
+    # refusal is for another reason.
+    unmet=$(sed -nE 's/.*(Pre)?Depends: ([^ ]+).*/\2/p; s/.*nothing provides ([^ ]+) needed by.*/\1/p' <<<"$out" | sort -u)
+    others=$(grep -vxE 'libc6|libstdc\+\+6|libc\.so\.6\(GLIBC_[0-9.]+\)\(64bit\)|libstdc\+\+\.so\.6\(GLIBCXX_[0-9.]+\)\(64bit\)' \
+      <<<"$unmet" || true)
+    if [[ -n "$unmet" && -z "$others" ]]; then
+      ok "$(basename "$package") is refused for the glibc or libstdc++ it needs: $(paste -sd " " <<<"$unmet")"
+    elif [[ -n "$unmet" ]]; then
+      fail "$(basename "$package") is refused, but also for $(paste -sd " " <<<"$others")"
+    else
+      fail "$(basename "$package") is refused, but the package manager names no unmet dependency"
+    fi
   fi
   indent <<<"$out" | tail -n 15
   if [[ $failures -gt 0 ]]; then exit 1; fi
