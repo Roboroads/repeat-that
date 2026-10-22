@@ -191,10 +191,16 @@ impl PipeWireSource {
         Ok(client)
     }
 
+    /// The duck level of `app`, which its captures compensate for. One per app in the list: two instances of one
+    /// executable are two apps with a process of their own, and ducking one doesn't make a capture of the other boost
+    /// it. An app without a known process has one by its executable, or its name.
     fn level(&self, app: &AudioApp) -> DuckLevel {
-        let key = match &app.exe_path {
-            Some(exe) => format!("exe:{}", exe.display()),
-            None => format!("name:{}", app.name),
+        let key = if app.pid != 0 {
+            format!("pid:{}", app.pid)
+        } else if let Some(exe) = &app.exe_path {
+            format!("exe:{}", exe.display())
+        } else {
+            format!("name:{}", app.name)
         };
         lock(&self.levels).entry(key).or_insert_with(DuckLevel::new).clone()
     }
@@ -380,6 +386,47 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A source for the PipeWire at `remote`, which it hasn't connected to yet.
+    fn source_at(remote: PathBuf) -> PipeWireSource {
+        PipeWireSource {
+            remote,
+            journal: None,
+            guard: Mutex::default(),
+            connection: Mutex::default(),
+            quantum: Arc::default(),
+            levels: Mutex::default(),
+            fade: Mutex::default(),
+        }
+    }
+
+    #[test]
+    fn each_instance_of_an_app_has_a_duck_level_of_its_own() {
+        let source = source_at("/nonexistent/pipewire-0".into());
+        let firefox = |pid| AudioApp {
+            pid,
+            name: "Firefox".into(),
+            exe_path: Some("/usr/lib/firefox/firefox".into()),
+        };
+        source.level(&firefox(100)).set(0.25, 1);
+        assert_eq!(source.level(&firefox(100)).get(), 0.25);
+        assert_eq!(
+            source.level(&firefox(200)).get(),
+            1.0,
+            "the other instance isn't ducked"
+        );
+        // Without a process, the executable tells apps apart, else the name.
+        source.level(&firefox(0)).set(0.5, 1);
+        assert_eq!(source.level(&firefox(0)).get(), 0.5);
+        let named = |name: &str| AudioApp {
+            pid: 0,
+            name: name.into(),
+            exe_path: None,
+        };
+        source.level(&named("Spotify")).set(0.2, 1);
+        assert_eq!(source.level(&named("Spotify")).get(), 0.2);
+        assert_eq!(source.level(&named("Discord")).get(), 1.0);
+    }
+
     #[test]
     fn a_new_connection_starts_with_every_app_at_full_volume() {
         // An app ducked through a connection that broke, a PipeWire restart say; the socket doesn't answer yet.
@@ -387,15 +434,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         drop(UnixListener::bind(dir.join("pipewire-0")).unwrap());
-        let source = PipeWireSource {
-            remote: dir.join("pipewire-0"),
-            journal: None,
-            guard: Mutex::default(),
-            connection: Mutex::default(),
-            quantum: Arc::default(),
-            levels: Mutex::default(),
-            fade: Mutex::default(),
-        };
+        let source = source_at(dir.join("pipewire-0"));
         let app = AudioApp {
             pid: 1234,
             name: "Discord".into(),
