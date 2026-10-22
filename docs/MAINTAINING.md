@@ -152,6 +152,65 @@ On a pull request, the installer is a workflow artifact (kept for 30 days) named
 can be tried on a real Windows PC before it merges. Artifacts are downloaded as a zip holding the installer. The job
 summary shows its checksum. The workflow checks that the app version matches the tag when it is given one.
 
+### macOS installer
+
+`build-macos.yml` builds the Apple Silicon `.dmg` on `macos-latest` with tauri-action and `--target
+aarch64-apple-darwin`. Tauri takes its macOS settings from
+[`tauri.macos.conf.json`](../app/src-tauri/tauri.macos.conf.json) (the `dmg` target only, macOS 14.2 as the minimum, the
+hardened runtime and [`Entitlements.plist`](../app/src-tauri/Entitlements.plist)) and merges
+[`Info.plist`](../app/src-tauri/Info.plist) into the app's. The file is staged as `Repeat-That_<version>_aarch64.dmg`
+(hyphens, for the reason given under [Release assets](#release-assets)) and uploaded as `release-macos-<file>`. There is
+no Intel or universal build: see [ONNX Runtime on macOS](#onnx-runtime-on-macos). The user-facing steps are in
+[`install-macos.md`](install-macos.md), and how the build is put together is under Releases in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#releases).
+
+The `Mode` job runs first and picks one of three modes, which the run's summary names:
+
+| Mode | How to start it | What you get |
+|---|---|---|
+| Dry run | a pull request, or Actions → Build macOS installers → Run workflow on a branch other than `main`, no tag | an ad hoc signed `.dmg` that isn't notarized, from a job with no secrets. Open it with right-click → Open. |
+| Signed dry run | Actions → Build macOS installers → Run workflow on `main`, no tag | a signed, notarized `.dmg` as a workflow artifact, to check that the secrets and Apple's service work |
+| Release | called by `publish-release.yml`, or Run workflow on `main` with the release `tag` | the same, plus the version check and the "untested" paragraph in the release notes |
+
+Only the signed modes use the `apple-signing` Environment, so only they see the secrets, and only runs on `main` get
+them. A signed build also refuses a commit that isn't on `main`, since it runs that commit's build scripts with the
+secrets in reach. A run with a tag on any other branch fails at once.
+
+Every run ends with `check-macos-bundle.sh` on the finished `.dmg` and prints its `ok:` and `FAIL:` lines in the job
+summary; the list of checks is under Releases in [`ARCHITECTURE.md`](ARCHITECTURE.md#releases). It needs a Mac to run,
+so it can't be tried locally without one. The `Notarize and staple the .dmg` step prints Apple's answer; when the status
+isn't `Accepted` it also prints `notarytool log`, which says what Apple objected to. If the secrets are missing, the
+`Check the signing secrets` step names the ones that are empty.
+
+**The release note.** In release mode a `Release note` job runs after a successful build and adds a paragraph to the
+release notes: macOS hasn't been tested on a real Mac, plus a link to the macOS issue form. It starts with the marker
+`<!-- macos-untested -->` and is added once, so running it again, or the late attach after a full run, changes nothing.
+It never runs for a build that failed, so a release without a `.dmg` has no macOS paragraph.
+
+**Removing the "untested" notices** is a follow-up that waits until someone has confirmed on a Mac that it works: delete
+the paragraph from `macos-release-note.sh` and the notices in `README.md`, `docs/macos.md`, `docs/install-macos.md` and
+`app/src/lib/components/MacosNotice.svelte`.
+
+**When the macOS job fails in a release.** Windows and Linux still publish, without a `.dmg` and without its line in
+`SHA256SUMS`. Fix the cause (usually the Apple side: a lapsed membership, a revoked key, or the notary service being
+down), then run Build macOS installers on `main` with the tag, and attach the result with the
+[late attach](#late-macos-attach) below.
+
+### ONNX Runtime on macOS
+
+On macOS the speech detector's ONNX Runtime is linked in, as on Windows and Linux: `ort` (pinned with `=` in
+`crates/rt-core/Cargo.toml`) downloads its prebuilt static library for `aarch64-apple-darwin` at build time. There is
+no fetch script, no library of ours to pin or checksum, and nothing to bundle, sign or list under licenses.
+
+When you bump `ort`, watch the macOS jobs. The `Rust (macos-latest)` check fails to link if the new `ort` has no
+`aarch64-apple-darwin` prebuilt. The macOS build's `--rt-self-check` step fails unless Silero loads, in the ad hoc mode
+too, so it also catches a runtime that links but doesn't run.
+
+Intel Macs are out because of the table behind this: `ort` has no prebuilt for `x86_64-apple-darwin`, and Microsoft
+publishes no x86_64 or universal macOS ONNX Runtime after 1.23.2 (`ort` 2.0.0-rc.15 needs 1.31). If either changes, an
+Intel or universal build needs a second target in `build-macos.yml`, `lipo` checks in `check-macos-bundle.sh`, and a
+new file name, which `release_assets.py` would have to know.
+
 ### Late macOS attach
 
 macOS is optional, so a macOS build or notarization that fails doesn't hold back Windows and Linux. The late attach adds
@@ -206,6 +265,32 @@ Running it twice fails because the `.dmg` already exists, unless `replace` is ti
 (for example a re-run of the release) keeps the `.dmg` and its line when macOS isn't rebuilt.
 [`verify-downloads.md`](verify-downloads.md) tells users to download `SHA256SUMS` again when theirs has no `.dmg` line.
 
+### macOS capture test
+
+[`macos-capture.yml`](../.github/workflows/macos-capture.yml) runs `crates/rt-capture/tests/macos_audio.rs` on a
+`macos-latest` runner: `afplay` plays synthetic tones and noise into the BlackHole 2ch virtual device (installed on the
+runner only, GPL-3.0, never shipped), and the tests list, capture, duck and mute that player and record what the device
+plays from its input. All audio stays in memory. The summary shows the captured level, the click check figures and the
+time it took to get the app back after a `kill -9`.
+
+Nobody can click the permission dialog on a runner. `macos-ci-audio.sh` therefore first runs the test without the
+permission, while nothing has been asked yet, and then writes the grant into the runner's TCC databases. That worked on
+the first runs: the status went from `NotAsked` to `Allowed`, and all seven tests ran with `RT_REQUIRE_TCC=1` and
+passed. If a future runner image stops accepting it, the script reports `tcc=missing`, only the test without the
+permission runs, and the summary says that the others were skipped. That is a warning and not a failure, so read the
+summary now and then.
+
+The test binary is unsigned and runs outside the hardened runtime, so this doesn't cover the real permission dialog, the
+System Settings pane, or the notarized app. The
+[checklist for people with a Mac](install-macos.md#testing-checklist-if-you-have-a-mac) does.
+
+The check isn't required yet: it isn't in `required_status_checks` in
+[`.github/rulesets/main.json`](../.github/rulesets/main.json), because it has to prove it runs reliably first. To
+require it later, add its name, `macOS capture`, to that list and apply the ruleset again (see
+[Branch protection](#branch-protection)). The workflow only runs for changes to the capture and core crates, the Cargo
+files and its own files, so first take the `paths` filter off its `pull_request` trigger: a required check that doesn't
+run leaves every other PR waiting for it.
+
 ### First release
 
 `release-please-config.json` has `"release-as": "0.1.0"`, so the first release is 0.1.0 whatever the commits suggest.
@@ -221,9 +306,10 @@ rejects any other `release-as`, and the release workflows reject other tags.
 
 ### Signing
 
-The installer isn't code-signed, so SmartScreen warns on first run (the install guide explains the click-through).
-Signing through SignPath is on the checklist below. There's no auto-updater, so there is no update signing key to look
-after.
+The Windows installer isn't code-signed, so SmartScreen warns on first run (the install guide explains the
+click-through). Signing through SignPath is on the checklist below. The macOS `.dmg` is signed and notarized, see
+[macOS signing and notarization](#macos-signing-and-notarization). There's no auto-updater, so there is no update
+signing key to look after.
 
 ## Going public checklist
 
@@ -240,9 +326,10 @@ after.
 
 ## macOS signing and notarization
 
-macOS releases are signed with a Developer ID Application certificate and notarized with Apple's `notarytool`. The
-milestone 6 release workflow does both through tauri-action, which reads the variables below. They are needed before the
-first macOS release, not before the repository goes public. The names come from the Tauri
+macOS releases are signed with a Developer ID Application certificate and notarized with Apple's `notarytool`.
+[`build-macos.yml`](../.github/workflows/build-macos.yml) does both: tauri-action signs the app and notarizes it, which
+reads the variables below, and a later step notarizes the `.dmg` with the same API key. They are needed before the first
+macOS release, not before the repository goes public. The names come from the Tauri
 [macOS code signing guide](https://v2.tauri.app/distribute/sign/macos/) and
 [environment variable reference](https://v2.tauri.app/reference/environment-variables/).
 
@@ -260,8 +347,10 @@ Notarization uses an App Store Connect API key. That is the recommended route, s
 password or two-factor prompts. Create the key under Users and Access → Integrations in App Store Connect with Developer
 access. Apple lets you download the `.p8` file once.
 
-Secrets of the `apple-signing` Environment (Settings → Environments → `apple-signing`, deployment branches limited to
-`main`), so pull request builds never get them:
+Secrets of the `apple-signing` Environment, so pull request builds never get them. To create it: Settings → Environments
+→ New environment → `apple-signing`, then under Deployment branches and tags choose Selected branches and tags and add
+`main`. Add the six values below as Environment secrets, not as repository secrets. Only the signed modes of the build
+name the Environment, and `main` is the only branch that may use it:
 - `APPLE_CERTIFICATE`: the Developer ID Application certificate exported from Keychain Access as a `.p12`,
   base64-encoded as in the Tauri reference: `openssl base64 -A -in MyCertificate.p12 -out MyCertificate-base64.txt`.
 - `APPLE_CERTIFICATE_PASSWORD`: the password set when exporting the `.p12`.
@@ -272,9 +361,9 @@ Secrets of the `apple-signing` Environment (Settings → Environments → `apple
 - `APPLE_API_KEY_CONTENT`: the full text of the `.p8` file. The name is ours, Tauri doesn't read it.
 
 Set in the workflow, not a secret:
-- `APPLE_API_KEY_PATH`: the path to the `.p8` file, which Tauri reads from disk. In the macOS build workflow (for
-  example `build-macos.yml`), a step before the tauri-action step writes the secret to a file and exports the path for
-  the later steps:
+- `APPLE_API_KEY_PATH`: the path to the `.p8` file, which Tauri reads from disk. In `build-macos.yml` a step before the
+  tauri-action step writes the secret to a file and exports the path for the later steps (the `.dmg` notarization uses
+  it too):
 
 ```yaml
 - name: Write the App Store Connect API key
@@ -289,7 +378,8 @@ Set in the workflow, not a secret:
 ```
 
 The tauri-action step then gets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-`APPLE_API_ISSUER` and `APPLE_API_KEY` from the secrets through its `env:` block.
+`APPLE_API_ISSUER` and `APPLE_API_KEY` from the secrets through its `env:` block. The ad hoc build gets none of them,
+not even empty: Tauri takes an empty `APPLE_CERTIFICATE` as a certificate to import.
 
 `APPLE_SIGNING_IDENTITY` is listed as required on purpose. The Tauri reference says it is inferred from
 `APPLE_CERTIFICATE` when neither the variable nor `bundle.macOS.signingIdentity` is set, but the Tauri CI example passes
@@ -297,6 +387,44 @@ it, so we do too and the identity is never a guess.
 
 Notarization with an Apple ID instead: `APPLE_ID` (the account email), `APPLE_PASSWORD` (an app-specific password, not
 the account password) and `APPLE_TEAM_ID`. Tauri requires all three together. Use one notarization route, not both.
+
+### Making the certificate without a Mac
+
+Keychain Access on a Mac is the usual way to get the `.p12`, but you can do it with OpenSSL on Linux. Only the Account
+Holder can create a Developer ID certificate.
+
+1. Make a key and a certificate signing request. Keep `developer-id.key` private: whoever has it and the certificate
+   can sign software as the project.
+
+   ```sh
+   openssl genrsa -out developer-id.key 2048
+   openssl req -new -key developer-id.key -out developer-id.csr \
+     -subj "/emailAddress=<Apple ID email>/CN=<your name>/C=<country code>"
+   ```
+
+2. At developer.apple.com, go to Certificates, Identifiers & Profiles → Certificates → add one, choose **Developer ID
+   Application** and the **G2 Sub-CA**, and upload `developer-id.csr`. Download the certificate, which is
+   `developerID_application.cer`.
+3. Convert it, add Apple's intermediate certificate and build the `.p12`. The `.cer` files Apple hands out are in DER
+   form, and OpenSSL wants PEM. The intermediate for the G2 Sub-CA is "Developer ID - G2" on Apple's
+   [certificate authority page](https://www.apple.com/certificateauthority/) (`DeveloperIDG2CA.cer`).
+
+   ```sh
+   openssl x509 -inform DER -in developerID_application.cer -out developerID_application.pem
+   openssl x509 -inform DER -in DeveloperIDG2CA.cer -out DeveloperIDG2CA.pem
+   openssl pkcs12 -export -legacy -inkey developer-id.key -in developerID_application.pem \
+     -certfile DeveloperIDG2CA.pem -out cert.p12
+   ```
+
+   OpenSSL 3 writes a `.p12` that macOS's `security import` can't read (it fails with a MAC verification error) unless
+   you ask for the older algorithms with `-legacy`; with OpenSSL 1.1 leave the flag out. The command asks for the
+   password that becomes `APPLE_CERTIFICATE_PASSWORD`.
+4. `openssl base64 -A -in cert.p12 -out cert-base64.txt` gives the text for `APPLE_CERTIFICATE`, as above.
+5. `openssl x509 -in developerID_application.pem -noout -subject` prints the certificate's name in `CN`, for example
+   `Developer ID Application: Your Name (TEAMID)`. That is `APPLE_SIGNING_IDENTITY`, used as it is.
+
+Delete `cert.p12`, the base64 text and, unless you want to renew with the same key, `developer-id.key` once the secrets
+are saved. A signed dry run on `main` (see [macOS installer](#macos-installer)) shows whether they work.
 
 ### Renewals and rotation
 

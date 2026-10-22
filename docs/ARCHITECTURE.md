@@ -32,11 +32,11 @@ pub trait AppAudioSource: Send + Sync {
 
 `platform_source()` returns the backend for the current OS, and `platform_source_with(PlatformOptions { duck_journal })`
 does so with the options each OS decides what to do with (Windows and Linux: a duck journal, which also starts the duck
-guard, except in a Flatpak).
+guard, except in a Flatpak; macOS ignores them, see [macOS](#macos)).
 `HAS_PLATFORM_BACKEND` says whether this OS has one at all.
 
-**One module per OS.** `lib.rs` includes exactly one OS module under the name `os`: `windows`, `linux`, or `unsupported`
-on an OS without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same
+**One module per OS.** `lib.rs` includes exactly one OS module under the name `os`: `windows`, `linux`, `macos`, or
+`unsupported` on an OS without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same
 items, and the platform-neutral entry points only call these:
 
 | Item | Used by |
@@ -50,19 +50,22 @@ items, and the platform-neutral entry points only call these:
 
 A new backend adds its module, a `use <module> as os;` line and its OS to the `not(any(..))` of `unsupported` in
 `lib.rs`, and nothing else in the platform-neutral code. A `pub mod` gives tests and tools the backend's own types
-(`rt_capture::windows::WasapiSource`, `rt_capture::linux::PipeWireSource`).
+(`rt_capture::windows::WasapiSource`, `rt_capture::linux::PipeWireSource`, `rt_capture::macos::CoreAudioSource`).
 
 When the OS refuses capture, a backend returns `CaptureError::PermissionDenied`, whose message says how to allow it
 (its `Display` puts "audio capture is not allowed:" in front, like the other variants name their kind). The engine
-shows it as an ordinary retried error for now; a dedicated state for it comes with the macOS permission UI. If the
-backend refuses already while the app sets it up, the app's source sets it up again on its next use (the engine's
-reconnect poll, an app list), so capture starts as soon as the permission is given. `Unsupported` is final.
+turns it into its own state, *not allowed*, which is retried like an error and keeps the buffer (see
+[`rt-engine`](#rt-engine--capture-buffer-and-playback-on-their-own-threads)). If the backend refuses already while the
+app sets it up, the app's source sets it up again on its next use (the engine's reconnect poll, an app list), so capture
+starts as soon as the permission is given. `Unsupported` is final. Only macOS asks the user for this permission;
+`rt_capture::permission` has the calls for it on every OS (`status`, `help`, `ask_again`, `open_settings`), which
+return `Unsupported` everywhere else, so they can be tested on Linux.
 
 | Backend | API | Notes |
 |---|---|---|
 | Windows | WASAPI `ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`windows` crate) | Win10 2004+. Uses `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — Discord/Teams/browsers play audio from child processes. Captures 48 kHz stereo `f32`; the audio engine converts. |
 | Linux | PipeWire 0.3.65+ (`pipewire` crate): a capture stream of our own, linked by hand to the output ports of the app's playback streams | Apps that play through the PulseAudio API (most) come through pipewire-pulse. Systems with only PulseAudio get "Capture needs PipeWire". Captures stereo `f32` at the graph rate. |
-| macOS | Core Audio process taps (`AudioHardwareCreateProcessTap`, macOS 14.2+) via `objc2` | Needs the audio-capture TCC permission and an `NSAudioCaptureUsageDescription`. |
+| macOS | Core Audio process taps (`AudioHardwareCreateProcessTap`, macOS 14.2+) via `objc2`: a private stereo tap of the app's processes, inside a private aggregate device on the app's own output device | Needs the audio-capture TCC permission and an `NSAudioCaptureUsageDescription`. Apple Silicon only. Below macOS 14.2 every call returns `Unsupported`. There is no per-app volume, so ducking replays the app's audio ourselves, see [macOS](#macos). |
 | Mock | Plays a WAV file (or samples in memory) as if it were an app | Used for tests and development on any OS. |
 
 **Apps are process trees.** The app list groups audio sessions by their top-most process: a session's process is
@@ -71,9 +74,12 @@ started them (new Teams). That top-most PID is what gets captured, including its
 
 Ducking (`set_app_volume`) also lives here, because it is per-OS and per-app (Windows: `ISimpleAudioVolume` on every
 audio session in the app's process tree). The level is relative: the backend remembers each session's volume before
-ducking and restores it at `1.0`, so the user's own per-app volume is kept. The lowest level is 5%: a muted app can't
-be captured. On Windows, process loopback captures the app *after* its volume, so captures of a ducked app are
-amplified by `1 / level`. Speech that arrives during a replay is still buffered at full level.
+ducking and restores it at `1.0`, so the user's own per-app volume is kept. The lowest level is 5% (`MIN_DUCK_LEVEL`): a
+muted app can't be captured. The platform's lowest level is `PLATFORM_MIN_DUCK_LEVEL`, which is `MIN_DUCK_LEVEL`
+everywhere but macOS, where it is 0 (see [macOS](#macos)); the app takes its slider and its settings limit from it, and
+a settings file from a Mac that holds 0 is raised to 5% on the other systems. On Windows, process loopback captures the
+app *after* its volume, so captures of a ducked app are amplified by `1 / level`. Speech that arrives during a replay is
+still buffered at full level.
 
 Windows doesn't say when a volume change reaches the captured audio (process loopback reports no stream latency), so
 the compensation can only switch at an estimate, which is milliseconds off. Ducking therefore fades the volume in
@@ -124,15 +130,68 @@ engine retries; a capture whose connection drops ends, and the next call connect
   file name) in `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`, and looks its `Icon=` up in the desktop's icon theme (from GTK's
   or KDE's settings) and `hicolor`: the smallest PNG at least the size asked for. SVG-only apps get the generic icon.
 
-`cargo run -p rt-capture --example probe -- list | capture <app> [--duck] | duck <app>` tries the backend on real
-apps without writing audio to disk.
+`cargo run -p rt-capture --example probe -- list | capture <app> [--duck [level]] | duck <app> [level]` tries the
+backend on real apps without writing audio to disk. It also has `icon <app> [size]` and `permission [--ask-again]`
+(the latter answers `Unsupported` outside macOS).
+
+#### macOS
+
+The source (`CoreAudioSource`, in `crates/rt-capture/src/macos/`) calls Core Audio directly through the
+`objc2` crates. It has no duck journal and no duck guard: the taps are private to the app, so macOS removes them, and
+the mute with them, when the app quits or crashes (`HAS_DUCK_GUARD` is false, and `run_duck_guard` returns `false`).
+CI checks this by killing a ducking process with `kill -9`.
+
+- *The app list.* The audio process objects come from `kAudioHardwarePropertyProcessObjectList`. Each process is
+  grouped under the process macOS holds responsible for it (`responsibility_get_pid_responsible_for_pid`, an
+  undocumented function loaded with `dlsym`), which puts Safari's WebKit helper under Safari and Chrome's or Discord's
+  helpers under their app. If that function is missing, the group is the process's outermost `.app` bundle, and Safari's
+  audio may then be listed as "WebKit". Each group is one `AudioApp`: the responsible PID, the bundle's display name and
+  the bundle path as `exe_path` (which also gives the icon, through `NSWorkspace`). An app is listed once it has used
+  Core Audio; a program that isn't an app bundle is listed only while it plays. Our own process isn't listed.
+  The grouping is pure code over a list of `(pid, path, responsible pid)` and is unit tested on every OS.
+- *Capture.* `start` checks the permission, makes a private stereo tap (`CATapDescription`) of the group's processes,
+  and puts it in a private aggregate device whose main subdevice is the app's own output device, then runs an IOProc on
+  it. The IOProc interleaves what the tap delivers and hands it to the `FrameSink` with the tap's format. It never
+  blocks or allocates; settings reach it through atomics. A watcher thread follows the app's processes as they come and
+  go (a property listener, with a 500 ms poll as a fallback) and checks the permission every 2 seconds. The capture
+  ends by itself when the app has no process left, when its device goes away, or when the permission is taken back; the
+  engine then looks for the app again as on Windows, or goes to *not allowed*, which `CaptureHandle::refused` tells it.
+  Dropping the capture destroys the IOProc, the aggregate and the tap, in that order.
+- *The permission.* TCC's `kTCCServiceAudioCapture`. macOS has no public call that says whether it was given, so the
+  backend loads `TCCAccessPreflight` and `TCCAccessRequest` from the private TCC framework at run time. Allowed starts
+  the capture. Not asked yet makes macOS show its question (once per run, and again on `ask_again`) and returns the
+  retried error "Waiting for you to allow audio capture in the macOS dialog". Denied returns `PermissionDenied`, with
+  the steps for this macOS version as its message. If the functions are missing, the backend assumes it may capture and
+  goes on: detection is then off, which is a written assumption. `ask_again` runs `/usr/bin/tccutil reset AudioCapture
+  <bundle id>` and then asks; it works only in the installed app, because it needs the bundle identifier.
+  `open_settings` opens `x-apple.systempreferences:com.apple.preference.security`, which is Privacy & Security and not
+  the audio pane, because no deep link to it is documented. From macOS 15 on both work; on 14.x only `ask_again` does.
+- *Ducking.* macOS has no per-app volume, so a ducked app is muted and its audio is played again by us, on the app's
+  own device, at the duck level. A mute has to go through a tap that is being read, and switching the capture tap's mute
+  dropped captured audio, so the mute is a second tap in an aggregate device of its own, which exists only while the app
+  is ducked. Taps record before the mute, so the capture keeps its full level and needs no compensation. The takeover
+  order (`passthrough.rs`, a pure state machine that is unit tested) never leaves a gap: our replay fades in over 5 ms
+  to full level, is heard for about 20 ms, then the app is muted, 20 ms later our replay fades to the duck level over
+  about 150 ms. Restoring runs the other way. For that moment the app is up to 6 dB louder than it should be; CI
+  measured +4.2 to +5.0 dB for 15 to 40 ms (the on-device check allows +7 dB for 100 ms, because 5 ms windows of its
+  noise vary by about 1.3 times on their own). At level 0 nothing is played: ducking only mutes and restoring only
+  unmutes. If the app's device can't be opened, the app is only muted. The level goes down to 0 on macOS, where
+  `PLATFORM_MIN_DUCK_LEVEL` is 0; on Windows and Linux capture sees the app's volume, so a muted app couldn't be
+  captured and the minimum stays 5%.
+- *Versions.* Capturing needs macOS 14.2. Below it `source` returns `Unsupported("Capturing apps needs macOS 14.2 or
+  later")`, and the bundle refuses to open (`minimumSystemVersion`).
 
 ### `rt-core` — platform-independent logic
 - **Downmix and resampling**: captured audio is mixed to mono (kept at the capture rate for playback) and resampled
   to 16 kHz for the VAD.
 - **VAD**: Silero VAD, bundled (`models/silero_vad.onnx`, MIT) and run with ONNX Runtime through `ort`, which is
-  statically linked, so nothing extra ships next to the app. Frames are classified as speech or non-speech, with hangover/padding (~200 ms) so that word
-  edges aren't clipped.
+  statically linked, so nothing extra ships next to the app. Frames are classified as speech or non-speech, with
+  hangover/padding (~200 ms) so that word edges aren't clipped. On macOS `ort` links the static prebuilt ONNX Runtime it
+  has for `aarch64-apple-darwin`, the only macOS target it has one for: Microsoft publishes no x86_64 or universal macOS
+  build after 1.23.2, and `ort` 2.0.0-rc.15 needs 1.31. That is why the app is Apple Silicon only. Because it is linked
+  in, there is no library to bundle, load or sign, and the self-check of the signed, hardened-runtime build shows Silero
+  loading. If Silero fails anyway, the engine falls back to a simple energy detector and says so (`vad_fallback`);
+  `--rt-self-check` (below) reports it.
 - **`Segmenter`**: splits the stream into *utterances* (contiguous speech segments) while they are spoken. Once
   speech reaches 250 ms, an utterance opens and audio is appended to it as it comes in; shorter bursts (a cough, a
   click) are dropped. A pause longer than 700 ms closes it, trimmed to the padding. A monologue is split every 15 s,
@@ -174,9 +233,9 @@ disconnected.
   caught up with live and its tail played, so the app doesn't hold the device while idle and follows default-device
   changes. A device that fails mid-replay is replaced by the default, from where the player was. With nothing buffered
   a soft beep plays instead (two 80 ms tones at about -18 dBFS, generated in code).
-- **Ducking**: a replay ducks the app (20% by default) as it starts; the volume comes back 300 ms after the replay ends
-  or stops, unless another replay starts within those 300 ms. Without any output device the replay is aborted and
-  nothing is ducked.
+- **Ducking**: a replay ducks the app (20% by default, at least `PLATFORM_MIN_DUCK_LEVEL`) as it starts; the volume
+  comes back 300 ms after the replay ends or stops, unless another replay starts within those 300 ms. Without any
+  output device the replay is aborted and nothing is ducked.
 - **Catch-up**: from idle it starts a replay at catch-up speed (1.5×), which ends as soon as it has caught up with
   live instead of following the speaker. Each hotkey pressed again during a replay at its own speed steps one
   utterance back (at the oldest one, back to its start); pressed during a replay at the other speed, it switches to
@@ -189,8 +248,8 @@ disconnected.
   list shows its sinks by name, else ALSA), `NullOutput` (real-time, discarded; for machines without audio) and
   `TestOutput` (collected in memory, optionally faster than real time; for tests).
 
-`cargo run -p rt-engine --example engine_probe -- <app>` runs the engine on a real app (Windows and Linux; elsewhere
-the fixture plays as a mock app) and replays on Enter.
+`cargo run -p rt-engine --example engine_probe -- <app>` runs the engine on a real app (on an OS without a backend the
+fixture plays as a mock app) and replays on Enter.
 
 ### `rt-transcribe` (planned)
 `whisper-rs` (whisper.cpp) on utterances as they finish, producing a scrollable "what was just said" transcript.
@@ -204,8 +263,9 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 - Settings via `tauri-plugin-store`: target app, buffer length, VAD sensitivity, output device, hotkeys, speed, duck
   level, autostart. Every change goes to the engine at once; pausing isn't stored, so every launch captures.
 - The engine starts at launch with the stored settings. Its source is the OS backend, `WasapiSource` on Windows and
-  `PipeWireSource` on Linux (with a duck journal of volumes in the app's local data directory, and a duck guard).
-  Elsewhere debug builds play the rt-core speech fixture as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` plays another WAV on any OS, and in debug
+  `PipeWireSource` on Linux (with a duck journal of volumes in the app's local data directory, and a duck guard) and
+  `CoreAudioSource` on macOS (neither). On an OS without a backend, debug builds play the rt-core speech fixture as a
+  fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` plays another WAV on any OS, and in debug
   builds `REPEAT_THAT_NULL_OUTPUT=1` plays replays into nothing and `REPEAT_THAT_MOCK_PERMISSION=denied` refuses
   captures as macOS does without the permission, until "Ask again" in the window. Quit stops the engine, which wipes
   the buffer and gives the app its volume back.
@@ -214,12 +274,18 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   Both are commands in `app/src-tauri/src/permission.rs`, so the opener plugin stays limited to this project's GitHub
   pages. When macOS takes the permission back during a capture, the capture ends and says so
   (`CaptureHandle::refused`), and the engine goes straight to *not allowed*.
+- On macOS the app is a menu bar app: `LSUIElement` in `Info.plist` and the `Accessory` activation policy mean no Dock
+  icon and no app menu bar, and opening the app again from Finder or Spotlight (`RunEvent::Reopen`) shows the settings
+  window. Start at login is a LaunchAgent (`tauri-plugin-autostart`). The Ducking slider goes down to 0%, shown as
+  "Muted", and the General section shows a notice that macOS support is untested, with a link to the issue form
+  (`.github/ISSUE_TEMPLATE/macos.yml`). Both come from `isMac()` in the window and from `PLATFORM_MIN_DUCK_LEVEL` in the
+  settings, which clamps a level the OS can't use.
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
 - Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,
   prints one JSON line `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..}` and exits before Tauri starts. The
   exit code is 0 only when Silero loaded and ran one frame of silence. CI runs it on every OS, and the macOS bundle
-  check will use it too. It plays and captures nothing. In debug builds `REPEAT_THAT_MOCK_VAD_FALLBACK=1` reports the
+  check runs it on the built app. It plays and captures nothing. In debug builds `REPEAT_THAT_MOCK_VAD_FALLBACK=1` reports the
   fallback without loading Silero. A Windows release build has no console, so it prints nothing there and the exit code
   is all a caller sees: run `start /wait repeat-that.exe --rt-self-check` and read `%ERRORLEVEL%`, or
   `Start-Process -Wait -PassThru repeat-that.exe --rt-self-check` in PowerShell and read `$p.ExitCode`.
@@ -254,31 +320,58 @@ GitHub Actions builds:
 - Windows: NSIS `.exe` (per-user install, no admin rights), x64 only for v0.1 (ARM64 later: `ort` has no CPU build for
   it yet)
 - Linux: `.deb` (+ AppImage later)
-- macOS: Apple Silicon `.dmg` (no Intel or universal build: Microsoft ships no x86_64 or universal ONNX Runtime after
-  1.23.2), signed with a Developer ID Application certificate and notarized with `notarytool` (the
-  ticket is stapled to the app), so Gatekeeper opens it without extra steps. The certificate and notarization
-  credentials are GitHub Actions secrets, listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization).
+- macOS: `Repeat-That_<version>_aarch64.dmg` for Apple Silicon only (no Intel or universal build, see the VAD note
+  under [`rt-core`](#rt-core--platform-independent-logic)). It is signed with a Developer ID Application certificate and
+  notarized, with the ticket stapled to the `.app` and to the `.dmg`, so Gatekeeper opens it without extra steps.
+  `build-macos.yml` builds it, with the certificate and notarization credentials from the `apple-signing` Environment,
+  listed in [MAINTAINING.md](MAINTAINING.md#macos-signing-and-notarization). macOS is an optional platform of
+  `publish-release.yml`: a failed macOS job doesn't hold back Windows and Linux, and the `.dmg` is attached later (the
+  [late attach](MAINTAINING.md#late-macos-attach)).
 - Every release publishes a `SHA256SUMS` file so users can verify downloads
   ([verify-downloads.md](verify-downloads.md)).
 
-macOS ties the audio-capture permission to the app's signing identity. A Developer ID signature stays the same from
-one release to the next, so an update doesn't reset the permission. The user can still deny it or revoke it later, so
-the app should detect that capture returns no audio and point the user to the permission setting.
+**The macOS build modes.** `build-macos.yml` picks one of three, in a job that runs before a macOS runner is asked for:
 
-Milestone 6 has to make capture work under the hardened runtime, which notarization requires and Tauri turns on by
-default (`bundle.macOS.hardenedRuntime`). Apple's
+| Mode | When | Signing | Result |
+|---|---|---|---|
+| Dry run | a pull request, or a run without a tag on a branch other than `main` | ad hoc (`APPLE_SIGNING_IDENTITY=-`), not notarized; no Environment, so no secrets | a workflow artifact |
+| Signed dry run | a run on `main` without a tag | Developer ID, notarized; uses the `apple-signing` Environment | a workflow artifact |
+| Release | a run on `main` with a tag, called by `publish-release.yml` or started by hand for a late attach | as the signed dry run, plus the check that the app version matches the tag | `release-macos-<file>` for `publish-release.yml`, and the "untested" paragraph in the release notes |
+
+A signed build only builds a commit that is on `main`, because it runs that commit's build scripts while the signing
+secrets are in reach. An ad hoc build can't be opened from a download without a right-click, so it is for trying the
+build, not for a release. Every mode sets `MACOSX_DEPLOYMENT_TARGET=14.2`, so the binary's minimum matches
+`LSMinimumSystemVersion`. Release mode also adds the paragraph that says macOS hasn't been tested on a real Mac to the
+release notes, once (`macos-release-note.sh`, behind the marker `<!-- macos-untested -->`).
+
+**What the build checks.** `check-macos-bundle.sh` mounts the finished `.dmg` read-only and checks the app inside, so
+what is checked is what ships. In every mode: one `.app`; `NSAudioCaptureUsageDescription`, `LSUIElement` and
+`LSMinimumSystemVersion` 14.2 in `Info.plist`; an arm64-only binary built for no newer macOS than that; `codesign
+--verify --deep --strict`; the hardened runtime on; the entitlements exactly those of `Entitlements.plist`; and
+`--rt-self-check` reporting Silero on `aarch64` with the bundle's version. Silero is required even in the ad hoc mode,
+because it is linked in and a fallback would mean something broke. Signed builds also check that the app and the image
+are signed by the Developer ID identity, that `spctl` accepts both as "Notarized Developer ID", and that both have their
+ticket stapled.
+
+macOS ties the audio-capture permission to the app's signing identity. A Developer ID signature stays the same from
+one release to the next, so an update shouldn't reset the permission (nobody has tried this on a Mac). The user can
+still deny it or revoke it later, which the backend sees through TCC and the window explains (see [macOS](#macos)).
+
+Notarization requires the hardened runtime, which Tauri turns on (`bundle.macOS.hardenedRuntime`, also set in
+`tauri.macos.conf.json`). Apple's
 [documentation for Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps)
 asks for the `NSAudioCaptureUsageDescription` key in `Info.plist` (Tauri merges `app/src-tauri/Info.plist` into the
 bundle's) and names no entitlement. The sample app [AudioCap](https://github.com/insidegui/AudioCap) uses taps with the
 hardened runtime and ships `com.apple.security.device.audio-input`, but it is also sandboxed, so that doesn't prove the
-entitlement is needed here. Put entitlements in `app/src-tauri/Entitlements.plist`, set through
-`bundle.macOS.entitlements`, test on a signed, notarized build, and keep only what capture turns out to need.
+entitlement is needed here. `app/src-tauri/Entitlements.plist` therefore lists that one entitlement, set through
+`bundle.macOS.entitlements`. It gives the app no access by itself (the user's permission still decides), so keeping
+it costs nothing if capture doesn't need it. This is a written assumption: the capture test in CI runs an unsigned test binary, outside the hardened runtime, and nobody has
+tried a notarized build on a Mac. If capture turns out to work without the entitlement, remove it; if it needs more,
+add it, and the bundle check keeps the list in `Entitlements.plist` and in the signed app the same.
 
-Tauri signs the `.dmg` with the same identity, but it notarizes and staples only the `.app` inside it. Milestone 6 also
-has to notarize and staple the `.dmg` in the release workflow (`xcrun notarytool submit` with the same API key, then
-`xcrun stapler staple`), and check the file that gets uploaded:
-`spctl -a -t open --context context:primary-signature -v` and `xcrun stapler validate` on the `.dmg`, and
-`xcrun stapler validate` on the app inside.
+Tauri signs the app with the hardened runtime and the entitlements, notarizes the `.app` and staples its ticket, and
+then signs the `.dmg`, but it doesn't notarize the `.dmg`. The workflow does that (`xcrun notarytool submit --wait`
+with the same API key, then `xcrun stapler staple`), so there are two notarizations per signed build.
 
 There is no auto-updater yet (it is on the roadmap under later ideas). When it arrives, the Tauri updater will verify
 updates with its own key pair, stored as a GitHub Actions secret and separate from any code signing.
