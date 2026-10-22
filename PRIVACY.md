@@ -26,6 +26,16 @@ Repeat That handles other people's voices, so privacy is a core design rule, not
   at any time, which ends the capture. While an app is ducked on macOS, Repeat That plays that app's audio again at the
   lower volume, straight from memory; that audio isn't kept either.
 
+## This website
+
+The website at [repeat-that.roboroads.me](https://repeat-that.roboroads.me) is hosted on GitHub Pages. GitHub logs the
+IP address of visitors to a Pages site, as described in
+[GitHub's privacy statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+The site itself sets no cookies, runs no analytics and loads nothing from other websites: no fonts, scripts, images or
+embeds. The home page reads your browser's user agent to highlight the download for your operating system. That happens
+in your browser and the result isn't sent anywhere. The download links go to GitHub, which sees the request when you
+follow one. The demo video, when there is one, comes from the site itself and isn't requested until you press play.
+
 ## A note on recording laws
 
 Laws about recording conversations differ by country and region. Some places require consent from everyone in the

@@ -2,6 +2,8 @@
 
 **Missed what someone just said on a call? Press a key and hear it again.**
 
+Website and downloads: [repeat-that.roboroads.me](https://repeat-that.roboroads.me)
+
 Repeat That keeps a short rolling buffer of the audio coming out of one app — Discord, Teams, Zoom, Slack, your browser —
 skips the silence, and replays the last thing that was said whenever you press a hotkey. No awkward
 "sorry, could you repeat that?" needed.
@@ -116,6 +118,9 @@ with the call.
 While a replay plays, the app's volume drops to 20% (you can change that or turn it off), and it comes back about
 300 ms after the replay ends. All three hotkeys can be changed in the settings, and the settings window warns when
 another program already uses a combination.
+
+The [user guide](docs/guide.md) covers every setting, what differs per operating system and what to do when a replay
+beeps instead of playing.
 
 ## Features
 
