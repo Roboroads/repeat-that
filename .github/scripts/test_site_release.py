@@ -5,11 +5,13 @@ few bytes of text, nothing that looks like audio).
 """
 
 import contextlib
+import errno
 import io
 import json
 import random
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import release_assets as ra
@@ -373,6 +375,34 @@ class CommandLineTests(unittest.TestCase):
     def test_the_output_is_the_rendered_data(self):
         _, _, _, text = self.run_in_folder(release(EXE), sums_text(EXE))
         self.assertEqual(text, sr.render(build(EXE)[0]))
+
+    def test_a_failed_write_leaves_the_old_output_alone_and_no_temporary_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "release.json").write_text(json.dumps(release(EXE)), encoding="utf-8")
+            (folder / "SHA256SUMS").write_text(sums_text(EXE), encoding="utf-8")
+            output = folder / "data.json"
+            output.write_text("old\n", encoding="utf-8")
+            with unittest.mock.patch("os.replace", side_effect=OSError(errno.EIO, "Input/output error")):
+                code, _, err = self.run_main(
+                    "--release-json", str(folder / "release.json"),
+                    "--sums", str(folder / "SHA256SUMS"),
+                    "--repo", REPO,
+                    "--output", str(output),
+                )  # fmt: skip
+            self.assertEqual(code, 1)
+            self.assertTrue(err.startswith("::error::"), err)
+            self.assertIn(str(output), err)
+            self.assertIn("Input/output error", err)
+            self.assertEqual(output.read_text(encoding="utf-8"), "old\n")
+            left = sorted(path.name for path in folder.iterdir())
+            self.assertEqual(left, ["SHA256SUMS", "data.json", "release.json"])
+
+    def test_a_write_leaves_no_temporary_file_behind(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "out" / "data.json"
+            self.assertEqual(self.run_main("--none", "--output", str(output))[0], 0)
+            self.assertEqual([path.name for path in output.parent.iterdir()], ["data.json"])
 
     def test_none_writes_a_null_release(self):
         with tempfile.TemporaryDirectory() as folder:

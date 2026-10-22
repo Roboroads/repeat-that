@@ -187,6 +187,21 @@ def read_sums(path):
         return None
 
 
+def write_output(path, text):
+    """Write `text` to a temporary file next to `path`, then move it over `path`: a failed write leaves the old file
+    (or none) instead of a partial one."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        with open(temporary, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(text)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--release-json", help="output of `gh release view --json ...`")
@@ -218,10 +233,7 @@ def main(argv=None):
     for warning in warnings:
         print(f"::warning::{warning}")
     try:
-        output = Path(args.output)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with open(output, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(render(data))
+        write_output(args.output, render(data))
     except OSError as error:
         print(f"::error::cannot write {args.output}: {error.strerror}", file=sys.stderr)
         return 1
