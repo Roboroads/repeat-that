@@ -54,6 +54,21 @@ describe("parseRequirements", () => {
     expect(everything).not.toContain("must not end up");
   });
 
+  it("ignores the logo and the badges above the section, so the site never loads them", async () => {
+    const top = [
+      '<div align="center">',
+      '<img src="app/src-tauri/icons/svg/app.svg" width="112" alt="The logo">',
+      "[![CI](https://img.shields.io/github/actions/workflow/status/Roboroads/repeat-that/ci.yml?branch=main)](https://example.org/ci)",
+      "![Logo](app/src-tauri/icons/svg/app.svg)",
+      "</div>",
+    ].join("\n\n");
+    const withBadges = await parseRequirements(`# Repeat That\n\n${top}\n\n${fixture.split("# Repeat That\n")[1]}`, routes);
+    expect(withBadges).toEqual(result);
+    const everything = JSON.stringify(withBadges);
+    expect(everything).not.toContain("<img");
+    expect(everything).not.toContain("shields.io");
+  });
+
   it("returns null when the README has no System requirements section", async () => {
     expect(await parseRequirements("# Repeat That\n\n## Install (Windows)\n\nText\n", routes)).toBeNull();
   });
@@ -111,5 +126,12 @@ describe.skipIf(!realHasSection)("the README of this repository", () => {
       expect(p.rows.map((r) => r.label)).toEqual(expect.arrayContaining(["Operating system", "Processor"]));
       expect(summaryLine(p)).not.toBe("");
     }
+  });
+
+  it("puts nothing from other sites on the landing page, whatever badges the README has", async () => {
+    const result = (await parseRequirements(readFileSync(realReadme, "utf8"), routes))!;
+    const everything = JSON.stringify(result);
+    expect(everything).not.toContain("<img");
+    expect(everything).not.toContain("shields.io");
   });
 });

@@ -3,9 +3,9 @@
 Repeat That needs 64-bit Windows 10 version 2004 (build 19041) or newer, or Windows 11. Windows on ARM isn't
 supported yet.
 
-The app is free and volunteer-run, and the installer isn't code-signed yet (we're applying for free signing through
-[SignPath Foundation](https://signpath.org), see the [code signing policy](code-signing.md)). Windows therefore shows a
-SmartScreen warning the first time you run it. That's expected; the steps below get you past it.
+The app is free and volunteer-run. The installer isn't code-signed yet (we're applying for free signing through
+[SignPath Foundation](https://signpath.org), see the [code signing policy](code-signing.md)), so Windows shows a
+SmartScreen warning the first time you run it. That's expected, and the steps below get you past it.
 
 ## Download
 
@@ -28,18 +28,18 @@ release has:
 
 After that, pick the app whose audio you want to keep (Discord, Teams, your browser, ...) in the settings window.
 [guide.md](guide.md) explains the hotkeys and the settings. Captured audio stays in memory and is never written to
-disk; see [PRIVACY.md](../PRIVACY.md).
+disk (see [PRIVACY.md](../PRIVACY.md)).
 
 ## Verify your download
 
-Compare your download with the release's `SHA256SUMS` before you run it; see [verify-downloads.md](verify-downloads.md).
+Compare your download with the release's `SHA256SUMS` before you run it (see [verify-downloads.md](verify-downloads.md)).
 
 ## Updating and uninstalling
 
 There's no automatic updater yet. To update, download the newer installer and run it over the old version; your settings
 are kept.
 
-To uninstall, use **Settings → Apps → Installed apps → Repeat That**. The uninstaller offers to delete the app's data.
+To uninstall, use **Settings > Apps > Installed apps > Repeat That**. The uninstaller offers to delete the app's data.
 The data is in `%APPDATA%\me.roboroads.repeat-that` and holds your settings and the chosen app's name and path, never
 audio.
 
