@@ -29,6 +29,9 @@ tauri-plugin-global-shortcut = "2.4"
 tauri-plugin-opener = "2.7"
 tauri-plugin-single-instance = "2.5"
 tauri-plugin-store = "2.5"
+# Checks for and installs signed updates (MIT or Apache-2.0). It is registered only in a build that has the update public
+# key compiled in (updater.rs); without one the app makes no update request at all.
+tauri-plugin-updater = "2"
 
 # The Wayland hotkey backend and the session checks talk to the XDG desktop portals and the session bus. Both crates are
 # MIT. `zbus` is in the tree already (single-instance, opener) and runs on async-io; ashpd follows it instead of

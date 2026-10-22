@@ -48,6 +48,17 @@ fn silero_loads_so_it_exits_0() {
     assert_eq!(report["version"], env!("CARGO_PKG_VERSION"));
 }
 
+/// The self-check says whether the build has an update key, which release builds assert once the key is set.
+#[test]
+fn it_says_whether_the_build_has_an_update_key() {
+    let report = report(&self_check(false));
+    assert!(report["updater"].is_boolean(), "{report}");
+    // Built here without a key, the updater is not in the app. (With one it is, as long as the key is a key file.)
+    if option_env!("REPEAT_THAT_UPDATER_PUBKEY").is_none_or(|key| key.trim().is_empty()) {
+        assert_eq!(report["updater"], false);
+    }
+}
+
 /// The mock only exists in debug builds, so a release build has no way to reach the fallback from here.
 #[cfg(debug_assertions)]
 #[test]

@@ -7,6 +7,7 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::engine;
 use crate::settings::HOTKEYS;
+use crate::updater;
 use crate::window;
 
 /// Something the user asked for, from the tray menu, a hotkey or the settings window.
@@ -17,16 +18,19 @@ pub enum AppAction {
     CatchUp,
     TogglePause,
     OpenSettings,
+    /// The tray's "Check for updates…".
+    CheckForUpdates,
     Quit,
 }
 
 impl AppAction {
-    pub const ALL: [AppAction; 6] = [
+    pub const ALL: [AppAction; 7] = [
         AppAction::Replay,
         AppAction::Stop,
         AppAction::CatchUp,
         AppAction::TogglePause,
         AppAction::OpenSettings,
+        AppAction::CheckForUpdates,
         AppAction::Quit,
     ];
 
@@ -38,6 +42,7 @@ impl AppAction {
             AppAction::CatchUp => "catch_up",
             AppAction::TogglePause => "toggle_pause",
             AppAction::OpenSettings => "open_settings",
+            AppAction::CheckForUpdates => "check_updates",
             AppAction::Quit => "quit",
         }
     }
@@ -61,6 +66,9 @@ pub type SharedEngine = Arc<dyn EngineControl>;
 /// What actions need from the app. The real implementation drives the windows and the tray; tests use a fake.
 pub trait ActionHost {
     fn show_settings(&self);
+    /// The tray's "Check for updates…": shows the settings window, where the answer appears, and starts a check you
+    /// asked for, unless an update is already found or on its way.
+    fn check_for_updates(&self);
     fn quit(&self);
     /// Flips between paused and not paused as one step, so two toggles at once end up back where they started.
     fn toggle_paused(&self);
@@ -70,6 +78,11 @@ pub trait ActionHost {
 impl<R: Runtime> ActionHost for AppHandle<R> {
     fn show_settings(&self) {
         window::show_settings(self);
+    }
+
+    fn check_for_updates(&self) {
+        window::show_settings(self);
+        updater::check_from_tray(self);
     }
 
     fn quit(&self) {
@@ -108,6 +121,7 @@ pub fn run_launch_action<S: AsRef<str>>(args: &[S], host: &dyn ActionHost) {
 pub fn dispatch(action: AppAction, host: &dyn ActionHost) {
     match action {
         AppAction::OpenSettings => host.show_settings(),
+        AppAction::CheckForUpdates => host.check_for_updates(),
         AppAction::Quit => host.quit(),
         AppAction::TogglePause => host.toggle_paused(),
         AppAction::Replay => host.engine().replay(),
@@ -161,6 +175,10 @@ pub mod fake {
             self.calls.borrow_mut().push("show_settings".into());
         }
 
+        fn check_for_updates(&self) {
+            self.calls.borrow_mut().push("check_for_updates".into());
+        }
+
         fn quit(&self) {
             self.calls.borrow_mut().push("quit".into());
         }
@@ -197,6 +215,15 @@ mod tests {
     }
 
     #[test]
+    fn check_for_updates_is_the_hosts_to_do() {
+        // Showing the window and starting the check go together for the host, which knows if an update is waiting.
+        assert_eq!(
+            run(AppAction::CheckForUpdates, &FakeHost::default()),
+            ["check_for_updates"]
+        );
+    }
+
+    #[test]
     fn toggle_pause_flips_the_state_both_ways() {
         let host = FakeHost::default();
         assert_eq!(run(AppAction::TogglePause, &host), ["toggle_paused"]);
@@ -221,7 +248,12 @@ mod tests {
     #[test]
     fn window_actions_leave_the_engine_alone() {
         let host = FakeHost::default();
-        for action in [AppAction::OpenSettings, AppAction::TogglePause, AppAction::Quit] {
+        for action in [
+            AppAction::OpenSettings,
+            AppAction::TogglePause,
+            AppAction::CheckForUpdates,
+            AppAction::Quit,
+        ] {
             dispatch(action, &host);
         }
         assert!(host.engine.calls.lock().unwrap().is_empty());

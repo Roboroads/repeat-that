@@ -1,6 +1,7 @@
 //! The hidden `--rt-self-check` argument: prints one JSON line saying which speech detector loaded, and exits.
 //!
-//! `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..}`. The exit code is 0 only when Silero loaded, so a
+//! `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..,"updater":true|false}`, the last one being whether the
+//! build has an update key compiled in. The exit code is 0 only when Silero loaded, so a
 //! script (CI, a bundle check) can tell a working install from one that fell back to the energy detector. It loads
 //! Silero the way the engine does, runs one frame of silence through it, and plays and captures nothing.
 //!
@@ -39,6 +40,8 @@ pub struct Report {
     arch: &'static str,
     os: &'static str,
     version: &'static str,
+    /// Whether the build has an update key compiled in, which is what makes the updater exist.
+    updater: bool,
 }
 
 impl Report {
@@ -48,6 +51,7 @@ impl Report {
             arch: std::env::consts::ARCH,
             os: std::env::consts::OS,
             version: env!("CARGO_PKG_VERSION"),
+            updater: crate::updater::is_compiled_in(),
         }
     }
 
@@ -131,16 +135,25 @@ mod tests {
     }
 
     #[test]
-    fn json_line_lists_the_four_fields_in_order() {
+    fn json_line_lists_the_five_fields_in_order() {
         let line = Report::new(Detector::Silero).json_line();
         let expected = format!(
-            r#"{{"vad":"silero","arch":"{}","os":"{}","version":"{}"}}"#,
+            r#"{{"vad":"silero","arch":"{}","os":"{}","version":"{}","updater":{}}}"#,
             std::env::consts::ARCH,
             std::env::consts::OS,
-            env!("CARGO_PKG_VERSION")
+            env!("CARGO_PKG_VERSION"),
+            crate::updater::is_compiled_in()
         );
         assert_eq!(line, expected);
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn the_report_says_whether_the_build_has_an_update_key() {
+        let report = Report::new(Detector::Silero);
+        let value: serde_json::Value = serde_json::from_str(&report.json_line()).unwrap();
+        assert!(value["updater"].is_boolean(), "{value}");
+        assert_eq!(value["updater"], crate::updater::is_compiled_in());
     }
 
     #[test]
@@ -151,6 +164,7 @@ mod tests {
             assert_eq!(value["arch"], std::env::consts::ARCH);
             assert_eq!(value["os"], std::env::consts::OS);
             assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+            assert!(value["updater"].is_boolean());
         }
     }
 

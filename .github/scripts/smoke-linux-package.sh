@@ -56,7 +56,8 @@ if ! find_packages "$dir"; then
   ls -l "$dir"
   exit 1
 fi
-expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\"}"
+# No update key is compiled into these builds (yet), so the self-check says there is no updater.
+expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\",\"updater\":false}"
 
 echo "System: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"')"
 
