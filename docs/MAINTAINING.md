@@ -943,7 +943,7 @@ With the key, `Publish` (and the late attach, for macOS) does this after it down
 5. It runs `release_assets.py check-manifests` over the folder, which fails when a manifest's `version` isn't the tag,
    when a `url` in it isn't a file of this release among the files, or when its `signature` isn't the content of that
    file's `.sig`.
-6. When it writes `SHA256SUMS`, `release_assets.py check-assets --updater` fails if a platform that was built lacks
+6. Before it writes `SHA256SUMS`, `release_assets.py check-assets --updater` fails if a platform that was built lacks
    one of its update files.
 
 A dry run, which is a run without a tag (and so every pull request that touches the publishing), makes a throwaway key
