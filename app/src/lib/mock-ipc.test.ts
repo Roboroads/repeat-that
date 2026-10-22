@@ -386,6 +386,79 @@ describe('update commands', () => {
     await vi.waitFor(() => expect(b.handle('get_update_status', {})).toMatchObject({ state: 'available' }));
   });
 
+  describe('the schedule of automatic checks', () => {
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+    const SETTLED = { settings: { checkForUpdates: true } };
+    const checks = (events: Array<{ event: string; payload: unknown }>) =>
+      updatesEvents(events).filter((status) => status.state === 'checking').length;
+
+    it('checks again a day after the last check', () => {
+      const { b, events } = backend({ ...SETTLED, updates: { mode: 'install', outcome: 'none' } });
+
+      b.tick(5000);
+      expect(checks(events)).toBe(1);
+      b.tick(DAY - 1);
+      expect(checks(events)).toBe(1);
+      b.tick(1);
+      expect(checks(events)).toBe(2);
+      b.tick(DAY);
+      expect(checks(events)).toBe(3);
+    });
+
+    it('tries again an hour after a check that failed, then goes back to a day', () => {
+      const { b, events } = backend({ ...SETTLED, updates: { mode: 'install', outcome: 'fail-check' } });
+
+      b.tick(5000);
+      b.tick(HOUR - 1);
+      expect(checks(events)).toBe(1);
+      b.tick(1);
+      expect(checks(events)).toBe(2);
+
+      b.updates.outcome = 'none';
+      b.tick(HOUR);
+      expect(checks(events)).toBe(3);
+      b.tick(DAY - 1);
+      expect(checks(events)).toBe(3);
+      b.tick(1);
+      expect(checks(events)).toBe(4);
+    });
+
+    it('stops when the setting is turned off, and starts again when it is turned on', () => {
+      const { b, events } = backend({ ...SETTLED, updates: { mode: 'install', outcome: 'none' } });
+      b.tick(5000);
+
+      b.handle('update_settings', { patch: { checkForUpdates: false } });
+      b.tick(2 * DAY);
+      expect(checks(events)).toBe(1);
+
+      b.handle('update_settings', { patch: { checkForUpdates: true } });
+      // Checked a moment ago, so the next one is not due for a day.
+      b.tick(5000);
+      expect(checks(events)).toBe(1);
+      b.tick(DAY);
+      expect(checks(events)).toBe(2);
+    });
+
+    it('checks five seconds after the setting is turned on when this run has not checked for a day', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        const { b, events } = backend({ updates: { mode: 'install', outcome: 'none' } });
+        await b.handle('check_for_updates', {});
+        vi.setSystemTime(Date.now() + DAY);
+
+        b.handle('update_settings', { patch: { checkForUpdates: true } });
+        b.tick(4999);
+        expect(checks(events)).toBe(1);
+        b.tick(1);
+
+        expect(checks(events)).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it('does not check by itself while the setting is off or where there is no updater', async () => {
     const off = backend({ updates: { mode: 'install' } });
     off.b.handle('update_settings', { patch: { checkForUpdates: false } });

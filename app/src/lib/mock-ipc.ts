@@ -72,6 +72,8 @@ export interface MockBackendInit {
 
 /** The real app checks 60 s after it starts; a person clicking through the mock should not wait that long. */
 const MOCK_AUTO_CHECK_MS = 5000;
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const MOCK_DOWNLOAD_MS = 2000;
 const MOCK_NOTES = [
   'Sample release notes, as plain text.',
@@ -382,6 +384,8 @@ export class MockBackend {
 
     const lastCheckedAt = Date.now();
     const { outcome, release } = this.updates;
+    // A failed automatic check is tried again after an hour; the daily schedule goes on after any other.
+    if (outcome === 'fail-check' && !manual && this.autoCheckInMs !== null) this.autoCheckInMs = HOUR_MS;
     if (outcome === 'none') {
       return this.pushUpdate({
         state: 'upToDate',
@@ -443,7 +447,7 @@ export class MockBackend {
     if (this.autoCheckInMs !== null) {
       this.autoCheckInMs -= ms;
       if (this.autoCheckInMs <= 0) {
-        this.autoCheckInMs = null;
+        this.autoCheckInMs = DAY_MS;
         void this.check(false);
       }
     }
@@ -505,7 +509,9 @@ export class MockBackend {
       this.autoCheckInMs = null;
     } else if (this.settings.checkForUpdates !== true && this.checksByItself()) {
       // Turned on: the real app checks after 5 s unless this run has checked in the last 24 h.
-      if (this.updateState.lastCheckedAt === null) this.autoCheckInMs = MOCK_AUTO_CHECK_MS;
+      const { lastCheckedAt } = this.updateState;
+      const since = lastCheckedAt === null ? DAY_MS : Date.now() - lastCheckedAt;
+      this.autoCheckInMs = since >= DAY_MS ? MOCK_AUTO_CHECK_MS : DAY_MS - since;
     }
     this.settings = next;
     this.bufferedMs = Math.min(this.bufferedMs, next.bufferSeconds * 1000);
