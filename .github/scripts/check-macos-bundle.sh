@@ -133,9 +133,10 @@ fi
 if [ "$update_bundle" = true ]; then
   # What the updater makes of the archive: the first component of every path is dropped, so it must be the one .app.
   holder="the archive"
-  entries=$(tar -tzf "$dmg" 2>&1) || {
+  # tar's warnings (on stderr) stay out of the list of entries, which is read below.
+  entries=$(tar -tzf "$dmg" 2>"$work/tar-list.err") || {
     fail "the archive can't be read"
-    echo "$entries" | indent
+    indent <"$work/tar-list.err"
     echo "1 check failed"
     exit 1
   }
