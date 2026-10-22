@@ -67,13 +67,13 @@ describe('updates, with a version on offer', () => {
   });
 
   it('checks again on "Check now", and keeps the offer', async () => {
-    const before = (await backendUpdateStatus()).lastCheckedAt;
-    expect(before).not.toBeNull();
+    const lastChecked = (await backendUpdateStatus()).lastCheckedAt;
+    expect(lastChecked).not.toBeNull();
     await checkNowButton().click();
     await browser.waitUntil(
       async () => {
         const status = await backendUpdateStatus();
-        return status.manual && status.state === 'available' && (status.lastCheckedAt ?? 0) > (before ?? 0);
+        return status.manual && status.state === 'available' && (status.lastCheckedAt ?? 0) > (lastChecked ?? 0);
       },
       { timeoutMsg: 'the check the button started never finished' },
     );
