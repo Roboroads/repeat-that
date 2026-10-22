@@ -29,6 +29,9 @@ pub(crate) const EXE_PATHS_IGNORE_CASE: bool = false;
 const NO_PIPEWIRE: &str =
     "Capture needs PipeWire, and it isn't running. Systems with only PulseAudio aren't supported.";
 
+/// What capture says while PipeWire isn't running yet, as when the app starts before it at login.
+const NO_PIPEWIRE_YET: &str = "PipeWire isn't running yet. Capture starts as soon as it is.";
+
 /// The PipeWire source. A duck journal in `options` also gives it the duck guard, which reads the journal to know what
 /// to restore, except in a Flatpak, where a guard can't outlive the app.
 pub(crate) fn source(options: PlatformOptions) -> Result<Box<dyn AppAudioSource>> {
@@ -78,13 +81,26 @@ fn socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     Some(Path::new(&dir).join(remote))
 }
 
-/// The socket to connect to, or [`CaptureError::Unsupported`] if there is none: then PipeWire isn't running, and
-/// won't be for this session. If the socket is there but connecting fails, PipeWire may still be starting, and that is
-/// a [`CaptureError::Backend`] error the engine tries again.
-fn remote(socket: Option<PathBuf>, exists: impl Fn(&Path) -> bool) -> Result<PathBuf> {
-    socket
-        .filter(|path| exists(path))
-        .ok_or_else(|| CaptureError::Unsupported(NO_PIPEWIRE.into()))
+/// Where a PulseAudio server's socket is: `native` in `$PULSE_RUNTIME_PATH`, else in `pulse` in `$XDG_RUNTIME_DIR`.
+/// pipewire-pulse serves the same socket, but only once PipeWire runs.
+fn pulse_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    let set = |name: &str| var(name).filter(|value| !value.is_empty());
+    let dir = set("PULSE_RUNTIME_PATH")
+        .map(PathBuf::from)
+        .or_else(|| set("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("pulse")))?;
+    Some(dir.join("native"))
+}
+
+/// The socket to connect to. Without it, [`CaptureError::Unsupported`] where PipeWire won't come for this session:
+/// there is no runtime folder, or PulseAudio serves its `pulse` socket instead. Otherwise PipeWire may start after us,
+/// as when a window manager's config starts both at login, and that is a [`CaptureError::Backend`] error the app tries
+/// again, as is a socket that is there but doesn't answer yet.
+fn remote(socket: Option<PathBuf>, pulse: Option<PathBuf>, exists: impl Fn(&Path) -> bool) -> Result<PathBuf> {
+    match socket {
+        Some(socket) if exists(&socket) => Ok(socket),
+        Some(_) if !pulse.is_some_and(|pulse| exists(&pulse)) => Err(CaptureError::Backend(NO_PIPEWIRE_YET.into())),
+        _ => Err(CaptureError::Unsupported(NO_PIPEWIRE.into())),
+    }
 }
 
 /// The time between the steps of a fade: one cycle of the graph (`quantum`, in nanoseconds; 1024 frames at 48 kHz if
@@ -135,10 +151,12 @@ enum Guard {
 }
 
 impl PipeWireSource {
-    /// The source for the PipeWire of this session. [`CaptureError::Unsupported`] if PipeWire isn't running. It
-    /// connects on first use.
+    /// The source for the PipeWire of this session. [`CaptureError::Unsupported`] if PipeWire won't run in it, as
+    /// where PulseAudio runs instead, and a [`CaptureError::Backend`] error to try again while PipeWire isn't running
+    /// yet. It connects on first use.
     pub fn new() -> Result<Self> {
-        let remote = remote(socket(|name| std::env::var_os(name)), Path::exists)?;
+        let var = |name: &str| std::env::var_os(name);
+        let remote = remote(socket(var), pulse_socket(var), Path::exists)?;
         Ok(Self {
             remote,
             journal: None,
@@ -357,14 +375,45 @@ mod tests {
     }
 
     #[test]
-    fn without_a_socket_capture_needs_pipewire_and_that_is_final() {
-        let missing = remote(Some("/run/user/1000/pipewire-0".into()), |_| false);
-        match missing {
+    fn pulseaudio_alone_means_no_pipewire_for_the_session() {
+        let socket = || Some(PathBuf::from("/run/user/1000/pipewire-0"));
+        let pulse = || Some(PathBuf::from("/run/user/1000/pulse/native"));
+        let only_pulse = remote(socket(), pulse(), |path| path.ends_with("native"));
+        match only_pulse {
             Err(CaptureError::Unsupported(why)) => assert_eq!(why, NO_PIPEWIRE),
             other => panic!("expected Unsupported, got {other:?}"),
         }
-        assert!(matches!(remote(None, |_| true), Err(CaptureError::Unsupported(_))));
-        assert_eq!(remote(Some("/s".into()), |_| true).unwrap(), Path::new("/s"));
+        // Without a runtime folder there is no session to run PipeWire in.
+        assert!(matches!(
+            remote(None, None, |_| true),
+            Err(CaptureError::Unsupported(_))
+        ));
+        assert_eq!(remote(Some("/s".into()), pulse(), |_| true).unwrap(), Path::new("/s"));
+    }
+
+    #[test]
+    fn without_any_socket_yet_pipewire_may_still_start() {
+        // A window manager's config that starts us before `exec pipewire`, say.
+        let socket = Some(PathBuf::from("/run/user/1000/pipewire-0"));
+        let pulse = Some(PathBuf::from("/run/user/1000/pulse/native"));
+        match remote(socket, pulse, |_| false) {
+            Err(CaptureError::Backend(why)) => assert_eq!(why, NO_PIPEWIRE_YET),
+            other => panic!("expected a Backend error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_pulse_socket_is_found_where_pulseaudio_puts_it() {
+        let pulse = |vars: &[(&str, &str)]| pulse_socket(env(vars));
+        assert_eq!(
+            pulse(&[("XDG_RUNTIME_DIR", "/run/user/1000")]),
+            Some("/run/user/1000/pulse/native".into())
+        );
+        assert_eq!(
+            pulse(&[("XDG_RUNTIME_DIR", "/run/user/1000"), ("PULSE_RUNTIME_PATH", "/run/pa")]),
+            Some("/run/pa/native".into())
+        );
+        assert_eq!(pulse(&[]), None);
     }
 
     #[test]

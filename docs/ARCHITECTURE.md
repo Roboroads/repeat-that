@@ -61,7 +61,7 @@ reconnect poll, an app list), so capture starts as soon as the permission is giv
 | Backend | API | Notes |
 |---|---|---|
 | Windows | WASAPI `ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`windows` crate) | Win10 2004+. Uses `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — Discord/Teams/browsers play audio from child processes. Captures 48 kHz stereo `f32`; the audio engine converts. |
-| Linux | PipeWire 0.3.65+ (`pipewire` crate): a capture stream of our own, linked by hand to the output ports of the app's playback streams | Apps that play through the PulseAudio API (most) come through pipewire-pulse. Systems with only PulseAudio get "Capture needs PipeWire". Captures stereo `f32` at the graph rate. |
+| Linux | PipeWire 0.3.65+ (`pipewire` crate): a capture stream of our own, linked by hand to the output ports of the app's playback streams | Apps that play through the PulseAudio API (most) come through pipewire-pulse. Systems with only PulseAudio get "Capture needs PipeWire"; before PipeWire runs, as when the window manager starts it after us, capture keeps trying. Captures stereo `f32` at the graph rate. |
 | macOS | Core Audio process taps (`AudioHardwareCreateProcessTap`, macOS 14.2+) via `objc2` | Needs the audio-capture TCC permission and an `NSAudioCaptureUsageDescription`. |
 | Mock | Plays a WAV file (or samples in memory) as if it were an app | Used for tests and development on any OS. |
 
