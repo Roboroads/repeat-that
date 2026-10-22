@@ -117,6 +117,25 @@ impl SettingsService {
         Ok(next)
     }
 
+    /// The system won't start the app at login, though the setting asked for it: the Background portal says so when the
+    /// user answers its question, which is after [`update`](Self::update) has returned. The setting goes back off and the
+    /// window hears of it. The OS entry isn't touched, because it is what refused (turning it off again would be another
+    /// question for the user). Does nothing when the setting is off already.
+    pub fn autostart_refused(&self, reason: &str) {
+        eprintln!("Start at login is off again: {reason}");
+        let _writing = lock(&self.writer);
+        let mut next = self.get();
+        if !next.autostart {
+            return;
+        }
+        next.autostart = false;
+        if let Err(err) = self.persistence.save(&next) {
+            eprintln!("could not save the settings file: {err}");
+        }
+        *lock(&self.current) = next.clone();
+        (self.on_change)(&next);
+    }
+
     /// The first run ends when the user picks an app or closes the window, and at the latest when the app ends
     /// ([`end_first_run_session`](Self::end_first_run_session)).
     pub fn mark_first_run_done(&self) {
@@ -192,7 +211,14 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
 fn os_autostart<R: Runtime>(app: &AppHandle<R>) -> Arc<dyn Autostart> {
     #[cfg(target_os = "linux")]
     if rt_capture::in_flatpak() {
-        return Arc::new(PortalAutostart);
+        // The portal's answer comes after the settings were saved; a refusal turns the setting off again.
+        let handle = app.clone();
+        let portal = PortalAutostart::new(move |reason| {
+            if let Some(service) = handle.try_state::<SettingsService>() {
+                service.autostart_refused(&reason);
+            }
+        });
+        return Arc::new(portal);
     }
     Arc::new(OsAutostart(app.clone()))
 }
@@ -705,6 +731,26 @@ mod tests {
         s.service.update(json!({ "autostart": false })).unwrap();
         assert!(!*s.autostart.enabled.lock().unwrap());
         assert_eq!(*s.autostart.writes.lock().unwrap(), [true, false]);
+    }
+
+    #[test]
+    fn a_start_at_login_the_system_refused_turns_the_setting_off_without_asking_the_os_again() {
+        let s = setup();
+        s.service.update(json!({ "autostart": true })).unwrap();
+        s.service.autostart_refused("the system did not allow it");
+        assert!(!s.service.get().autostart);
+        assert!(!s.persistence.saves().last().unwrap().autostart);
+        assert!(!s.changes.lock().unwrap().last().unwrap().autostart);
+        // Only the request that was refused: asking the OS to turn it off again would ask the user again.
+        assert_eq!(*s.autostart.writes.lock().unwrap(), [true]);
+    }
+
+    #[test]
+    fn a_refusal_for_a_setting_that_is_off_already_changes_nothing() {
+        let s = setup();
+        s.service.autostart_refused("the system did not allow it");
+        assert!(s.persistence.saves().is_empty());
+        assert!(s.changes.lock().unwrap().is_empty());
     }
 
     #[test]
