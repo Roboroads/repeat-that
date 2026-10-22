@@ -1,12 +1,11 @@
 // @ts-check
-// A small static server for the browser tests: `node tests/e2e/serve.mjs <folder> <port>`.
+// A small static server for the browser tests, used by start.mjs.
 // It serves the way GitHub Pages does (a folder gives its index.html, a folder without a trailing slash redirects, dot
-// folders such as .well-known are served, no directory listings), and unlike `astro preview` it always stays in the
-// foreground, which Playwright's webServer needs.
+// folders such as .well-known are served, no directory listings). `astro preview` isn't used because it can detach into
+// the background, which Playwright's webServer can't follow.
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { extname, join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 
 /** @type {Record<string, string>} */
 const TYPES = {
@@ -59,13 +58,4 @@ export function createStaticServer(folder) {
     response.writeHead(200, { "content-type": TYPES[extname(path)] ?? "application/octet-stream" });
     createReadStream(path).pipe(response);
   });
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [folder, port] = process.argv.slice(2);
-  if (!folder || !port) {
-    console.error("usage: node tests/e2e/serve.mjs <folder> <port>");
-    process.exit(2);
-  }
-  createStaticServer(folder).listen(Number(port), "127.0.0.1", () => console.log(`serving ${resolve(folder)} on http://127.0.0.1:${port}/`));
 }
