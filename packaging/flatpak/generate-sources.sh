@@ -4,6 +4,7 @@
 #   cargo-sources.json   every Rust crate of Cargo.lock, as sources for flatpak-builder (flatpak-cargo-generator)
 #   node-sources.json    every npm package of app/package-lock.json (flatpak-node-generator)
 #   shared-modules/      Flathub's shared-modules at the commit pinned below (the tray library's modules)
+#   source/              a copy of the repository's files (what git knows, not what it ignores), which the manifest builds
 #
 # None of them is committed: they follow the lock files, so a dependency update never leaves them stale. CI runs this
 # before flatpak-builder (.github/workflows/build-flatpak.yml); run it yourself before building by hand:
@@ -101,6 +102,15 @@ echo "Writing node-sources.json"
 
 echo "Checking out shared-modules"
 checkout "$shared_repo" "$shared_commit" "$here/shared-modules"
+
+# The sources of the app as the manifest builds them: the files git knows (tracked ones, and new ones that aren't ignored),
+# as they are in the working tree, and nothing else: no build output, no node_modules, no tool or editor folders. The
+# website (site/) has nothing to do with the app.
+echo "Copying the sources to source/"
+rm -rf "$here/source"
+mkdir "$here/source"
+git -C "$root" ls-files -z --cached --others --exclude-standard -- . ':(exclude)site' ':(exclude)packaging/flatpak/source' |
+  tar -C "$root" --null --ignore-failed-read -T - -cf - | tar -C "$here/source" -xf -
 
 if [[ -z "$flathub_tag" ]]; then
   exit 0

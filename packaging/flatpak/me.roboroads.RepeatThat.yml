@@ -99,18 +99,9 @@ modules:
       - install -Dm644 app/src-tauri/icons/icon.png "${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png"
     sources:
       # flathub:begin (generate-sources.sh --flathub swaps this source for the release's tag and commit)
+      # `source` is the copy of the repository's files that generate-sources.sh makes.
       - type: dir
-        path: ../..
-        skip:
-          - .git
-          - .claude
-          - .ai
-          - target
-          - site
-          - app/node_modules
-          - app/dist
-          - packaging/flatpak/shared-modules
-          - packaging/flatpak/flathub
+        path: source
       # flathub:end
       - cargo-sources.json
       - node-sources.json

@@ -10,6 +10,7 @@ __pycache__/
 /packaging/flatpak/cargo-sources.json
 /packaging/flatpak/node-sources.json
 /packaging/flatpak/shared-modules/
+/packaging/flatpak/source/
 /packaging/flatpak/flathub/
 # Written by flatpak-builder (docs/MAINTAINING.md, Flatpak), from the repository root
 /.flatpak-builder/
