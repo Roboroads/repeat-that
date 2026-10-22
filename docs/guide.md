@@ -163,8 +163,8 @@ plays. If the chosen device is unplugged, replays use the system default and the
 Pause capture is in the settings window and the tray menu. It stops capturing, discards the buffer, ends a replay that
 is playing and gives the app its volume back. Press it again to resume. It needs an app to be picked first.
 
-Start at login is called Start with Windows on Windows. Repeat That then starts in the tray without opening the window.
-On Linux it passes `--hidden` to do that. If you move or rename an AppImage, turn the switch off and on again, see
+Start at login is called Start with Windows on Windows. The entry it adds passes `--hidden`, so Repeat That starts in
+the tray without opening the window. If you move or rename an AppImage, turn the switch off and on again, see
 [install-linux.md](install-linux.md#run-the-appimage).
 
 ## Privacy in short
