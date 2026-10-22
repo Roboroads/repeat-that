@@ -91,7 +91,7 @@ with `python3 -m unittest discover -s .github/scripts`.
 | Platform | Required | Files | Build job in `publish-release.yml` |
 |---|---|---|---|
 | `windows` | yes | `*-setup.exe` | `windows`, calls `build-windows.yml` |
-| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | added with the Linux packages |
+| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | `linux`, calls `build-linux.yml` |
 | `flatpak` | yes | `*.flatpak` | added with the Flatpak |
 | `macos` | **no** | `*.dmg` | `macos`, calls `build-macos.yml` |
 
@@ -151,6 +151,43 @@ Windows, and the build fails if another installer shows up. Install instructions
 On a pull request, the installer is a workflow artifact (kept for 30 days) named `release-windows-<file>`, so a change
 can be tried on a real Windows PC before it merges. Artifacts are downloaded as a zip holding the installer. The job
 summary shows its checksum. The workflow checks that the app version matches the tag when it is given one.
+
+### Linux packages
+
+[`build-linux.yml`](../.github/workflows/build-linux.yml) builds the x64 `.deb`, `.rpm` and AppImage with tauri-action
+in a `debian:12` container, the oldest supported system, so the binary needs no newer glibc than Debian 12's and the
+AppImage carries Debian 12's libraries. The settings are in
+[`tauri.linux.conf.json`](../app/src-tauri/tauri.linux.conf.json): the three targets, the dependencies, the desktop
+entry and the icons. The files are staged as `Repeat-That_<version>_amd64.deb`, `Repeat-That-<version>-1.x86_64.rpm` and
+`Repeat-That_<version>_amd64.AppImage` and uploaded as one `release-linux-<file>` artifact each. Install instructions
+for users are in [`install-linux.md`](install-linux.md), and how the packages are put together is under Releases in
+[`ARCHITECTURE.md`](ARCHITECTURE.md#releases).
+
+Two jobs check them, and a failure in either fails the `linux` job of a release, which holds the release back:
+
+- `Packages (Linux x64)` runs [`check-linux-packages.sh`](../.github/scripts/check-linux-packages.sh) on the staged
+  files: names and versions, the dependencies, the files both packages install, the desktop entries
+  (`desktop-file-validate`, the hidden one included), the binary's glibc needs (at most 2.36), and that the AppImage has
+  the real desktop entry at its root and no `libpipewire-0.3` or `libspa-0.2` inside. The job summary shows the result
+  and the checksums.
+- `Install on <system>` runs [`smoke-linux-package.sh`](../.github/scripts/smoke-linux-package.sh) as root in a fresh
+  `debian:12`, `debian:13`, `ubuntu:24.04` and `fedora:40` container: it installs the `.deb` or the `.rpm` without
+  recommended packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays
+  nothing), validates the installed desktop entries, runs the AppImage's self-check, and uninstalls.
+
+On a pull request the packages are workflow artifacts (kept for 30 days), so they can be tried on a real desktop
+before the change merges. Artifacts lose the executable bit, so `chmod +x` the AppImage after unzipping it.
+
+**Dependencies.** Tauri adds WebKitGTK, GTK and the AppIndicator library to both packages itself. The config adds what
+the binary links on top of that: PipeWire's and ALSA's client libraries. Debian 13 and Ubuntu 24.04 renamed both for the
+64-bit `time_t` transition, so the `.deb` names each as an alternative (`libpipewire-0.3-0t64 | libpipewire-0.3-0`);
+the `.rpm` names sonames (`libpipewire-0.3.so.0()(64bit)`), like Tauri does for its own. When the binary starts linking
+another system library, `ldd` in the install jobs fails on the system that lacks it: add the library to both lists.
+
+**Raising the minimum** (for example to Debian 13): change the build container, `glibc_max` in
+`check-linux-packages.sh`, the install matrix and the systems named in `install-linux.md`, the README and
+`ARCHITECTURE.md`. To test another distribution, add it to the matrix of the `install` job; the script needs `apt-get`
+or `dnf`.
 
 ### macOS installer
 

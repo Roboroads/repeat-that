@@ -320,7 +320,10 @@ duck thread:    the blocking set_app_volume fades, latest level wins
 GitHub Actions builds:
 - Windows: NSIS `.exe` (per-user install, no admin rights), x64 only for v0.1 (ARM64 later: `ort` has no CPU build for
   it yet)
-- Linux: `.deb` (+ AppImage later)
+- Linux: `Repeat-That_<version>_amd64.deb`, `Repeat-That-<version>-1.x86_64.rpm` and
+  `Repeat-That_<version>_amd64.AppImage`, x64 only. `build-linux.yml` builds them in a `debian:12` container, so the
+  binary needs no newer glibc than Debian 12's, and installs them on Debian 12 and 13, Ubuntu 24.04 and Fedora 40
+  before they count. Linux is a required platform of `publish-release.yml`. A Flatpak comes later.
 - macOS: `Repeat-That_<version>_aarch64.dmg` for Apple Silicon only (no Intel or universal build, see the VAD note
   under [`rt-core`](#rt-core--platform-independent-logic)). It is signed with a Developer ID Application certificate and
   notarized, with the ticket stapled to the `.app` and to the `.dmg`, so Gatekeeper opens it without extra steps.
@@ -373,6 +376,22 @@ add it, and the bundle check keeps the list in `Entitlements.plist` and in the s
 Tauri signs the app with the hardened runtime and the entitlements, notarizes the `.app` and staples its ticket, and
 then signs the `.dmg`, but it doesn't notarize the `.dmg`. The workflow does that (`xcrun notarytool submit --wait`
 with the same API key, then `xcrun stapler staple`), so there are two notarizations per signed build.
+
+**The Linux packages.** The bundle settings are in `app/src-tauri/tauri.linux.conf.json`. Tauri adds WebKitGTK, GTK
+and the AppIndicator library (loaded at run time for the tray) to the dependencies; the config adds PipeWire's and
+ALSA's client libraries, which the binary links, with the `t64` package names of Debian 13 and Ubuntu 24.04 as
+alternatives on the `.deb` and sonames on the `.rpm`, and recommends PipeWire and WirePlumber. The desktop entry is
+installed as `me.roboroads.repeat-that.desktop`, the app ID the GlobalShortcuts portal is given, so the desktop can
+name the app's shortcuts and match its windows. The bundler always makes an entry of its own named after the product,
+`Repeat That.desktop`; the packages ship it hidden (`linux/hidden.desktop`), and the AppImage, whose root entry it
+would be, gets the real entry in its place. The AppImage leaves out `libpipewire-0.3` (linuxdeploy's exclude list has
+it), so the system's client library talks to the system's PipeWire and loads plugins of its own version.
+
+`check-linux-packages.sh` unpacks all three and checks names, versions, dependencies, the files the `.deb` and the
+`.rpm` install (the same in both), both desktop entries with `desktop-file-validate`, the binary's glibc needs, and the
+AppImage's root entry, icon and libraries. `smoke-linux-package.sh` then installs the package with the distribution's
+package manager in a fresh container of each supported system, without recommended packages, checks `ldd` and runs
+`--rt-self-check` from the package and from the AppImage, and uninstalls again.
 
 There is no auto-updater yet (it is on the roadmap under later ideas). When it arrives, the Tauri updater will verify
 updates with its own key pair, stored as a GitHub Actions secret and separate from any code signing.
