@@ -21,8 +21,10 @@ FAKE_APT_GET = """#!/usr/bin/env bash
 echo "apt-get $*" >> "$FAKE_DIR/calls"
 sub=
 for arg in "$@"; do
-  case $arg in update | install) sub=$arg ;; esac
+  case $arg in update | install) sub=$arg ;; -f) fix=1 ;; esac
 done
+# `apt-get -f install` is the repair of a half-finished install, with a plan of its own.
+if [ -n "${fix:-}" ]; then sub=fix; fi
 plan=FAKE_PLAN_${sub^^}
 read -ra steps <<< "${!plan:-ok}"
 count=$(cat "$FAKE_DIR/count.$sub" 2>/dev/null || echo 0)
@@ -35,7 +37,7 @@ case $step in
   hang) sleep 60; exit 0 ;;
 esac
 """
-FAKE_DPKG = '#!/usr/bin/env bash\necho "dpkg $*" >> "$FAKE_DIR/calls"\n'
+FAKE_DPKG = '#!/usr/bin/env bash\necho "dpkg $*" >> "$FAKE_DIR/calls"\nexit "${FAKE_DPKG_STATUS:-0}"\n'
 FAKE_SUDO = '#!/usr/bin/env bash\necho "sudo $*" >> "$FAKE_DIR/calls"\nexec "$@"\n'
 
 
@@ -51,7 +53,7 @@ class AptInstallTest(unittest.TestCase):
             (bindir / name).chmod(0o755)
         self.bindir = bindir
 
-    def run_script(self, *args, update="ok", install="ok", **env):
+    def run_script(self, *args, update="ok", install="ok", fix="ok", **env):
         """Runs the script; returns the finished process and how long it took."""
         environment = {
             **os.environ,
@@ -59,6 +61,7 @@ class AptInstallTest(unittest.TestCase):
             "FAKE_DIR": str(self.dir),
             "FAKE_PLAN_UPDATE": update,
             "FAKE_PLAN_INSTALL": install,
+            "FAKE_PLAN_FIX": fix,
             "APT_UPDATE_TIMEOUT": "1",
             "APT_INSTALL_TIMEOUT": "1",
             "APT_RETRY_PAUSE": "0",
@@ -71,10 +74,27 @@ class AptInstallTest(unittest.TestCase):
         )
         return done, time.monotonic() - start
 
-    def calls(self, prefix):
+    def logged(self):
         log = self.dir / "calls"
-        lines = log.read_text().splitlines() if log.exists() else []
-        return [line for line in lines if line.startswith(prefix + " ")]
+        return log.read_text().splitlines() if log.exists() else []
+
+    def calls(self, prefix):
+        """The calls of one command; for apt-get, the updates and installs, not the repairs."""
+        lines = [line for line in self.logged() if line.startswith(prefix + " ")]
+        return [line for line in lines if " -f install" not in line]
+
+    def sequence(self):
+        """What ran, in order: update, install, repair (apt-get -f install) and dpkg. Not the sudo lines."""
+        names = []
+        for line in self.logged():
+            if line.startswith("dpkg "):
+                names.append("dpkg")
+            elif line.startswith("apt-get "):
+                if " -f install" in line:
+                    names.append("repair")
+                else:
+                    names.append("update" if line.endswith(" update") else "install")
+        return names
 
     def test_installs_the_packages_once_when_apt_works(self):
         done, _ = self.run_script("--step", STEP, *PACKAGES)
@@ -134,11 +154,26 @@ class AptInstallTest(unittest.TestCase):
         self.assertIn("::error::", done.stdout)
         self.assertIn("apt-get update could not get the apt lock within 1s", done.stdout)
 
-    def test_a_retry_first_finishes_what_a_killed_dpkg_left_behind(self):
-        self.run_script("--step", STEP, *PACKAGES, install="fail ok")
-        configure = self.calls("dpkg")
-        self.assertEqual(len(configure), 1)
-        self.assertIn("--configure -a", configure[0])
+    def test_a_retry_after_a_failed_install_repairs_what_it_left_behind_first(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.sequence(), ["update", "install", "dpkg", "repair", "update", "install"])
+        self.assertIn("--configure -a", self.calls("dpkg")[0])
+        repair = [line for line in self.logged() if line.startswith("apt-get ") and " -f install" in line]
+        self.assertEqual(len(repair), 1)
+        self.assertIn("-y", repair[0].split())
+
+    def test_a_retry_after_a_failed_update_has_nothing_to_repair(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, update="fail ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(self.sequence(), ["update", "update", "install"])
+
+    def test_a_repair_that_fails_is_reported_and_the_retry_goes_on(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail ok", fix="fail", FAKE_DPKG_STATUS="1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn(f"::warning::{STEP}: dpkg --configure -a exited with status 1", done.stdout)
+        self.assertIn(f"::warning::{STEP}: apt-get -f install exited with status 100", done.stdout)
+        self.assertEqual(self.sequence(), ["update", "install", "dpkg", "repair", "update", "install"])
 
     def test_a_hung_update_is_killed_and_retried(self):
         done, took = self.run_script("--step", STEP, *PACKAGES, update="hang ok")

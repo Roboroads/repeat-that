@@ -16,7 +16,7 @@
 # APT_LOCK_POLL (5 seconds between two tries while another apt holds a lock).
 #
 # One hang that a second attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case is
-# about 15 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
+# about 17 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
 set -euo pipefail
 
 usage() {
@@ -108,19 +108,34 @@ apt_call() {
   done
 }
 
-# One attempt. On failure, `failure` says what went wrong.
+installing=false
+
+# One attempt. On failure, `failure` says what went wrong, and `installing` whether it got as far as the install.
 attempt_install() {
+  installing=false
   apt_call "apt-get update" "$update_timeout" update || return 1
+  installing=true
   apt_call "apt-get install" "$install_timeout" install -y --no-install-recommends "$@"
+}
+
+# What an install that failed or was stopped half-way can leave behind: a package dpkg had unpacked but not configured,
+# and dependencies apt had not installed yet. apt refuses to start again until both are dealt with. Neither fixes
+# everything, so a failure of either is a warning in the log and the retry goes on.
+repair() {
+  local status=0 failed=$failure
+  limited 60 dpkg --configure -a || status=$?
+  if ((status != 0)); then
+    echo "::warning::$step: dpkg --configure -a exited with status $status; going on"
+  fi
+  apt_call "apt-get -f install" 60 -f install -y || echo "::warning::$step: $failure; going on"
+  failure=$failed
 }
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do
   if ((attempt > 1)); then
     echo "::warning::$step: $failure; trying again (attempt $attempt of $attempts)"
     sleep "$pause"
-    # A dpkg that was stopped half-way leaves packages half-unpacked, and apt refuses to go on until this has finished
-    # them. It does nothing on a clean system.
-    limited 60 dpkg --configure -a || true
+    if [[ $installing == true ]]; then repair; fi
   fi
   if attempt_install "$@"; then
     exit 0
