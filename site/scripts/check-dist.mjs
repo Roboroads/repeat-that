@@ -118,9 +118,10 @@ export function checkDist(distDir) {
     let anchors = anchorCache.get(file);
     if (!anchors) {
       anchors = new Set();
-      const html = readFileSync(join(root, file), "utf8");
-      for (const match of html.matchAll(/\s(?:id|name)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi)) {
-        anchors.add(decode(match[1] ?? match[2] ?? match[3]));
+      // A link can land on any element with an id, and on an <a name>. Other names (meta, input) are not targets.
+      for (const { name, attributes } of readHtml(readFileSync(join(root, file), "utf8")).tags) {
+        if (attributes.id) anchors.add(attributes.id);
+        if (name === "a" && attributes.name) anchors.add(attributes.name);
       }
       anchorCache.set(file, anchors);
     }

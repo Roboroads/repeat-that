@@ -86,6 +86,24 @@ describe("checkDist", () => {
     expect(same.join("\n")).toMatch(/#nowhere/);
   });
 
+  it("does not take the name of a meta tag or a form field for an anchor", () => {
+    const html = `<meta name="description" content="x"><input name="query"><a href="#description">x</a><a href="#query">y</a>`;
+    const errors = checkDist(build({ "index.html": html }));
+    expect(errors).toHaveLength(2);
+    expect(errors.join("\n")).toMatch(/#description/);
+    expect(errors.join("\n")).toMatch(/#query/);
+  });
+
+  it("takes an id on any element and the name of an a element for an anchor", () => {
+    const html = `<span id="one"></span><a name="two"></a><a href="#one">x</a><a href="#two">y</a>`;
+    expect(checkDist(build({ "index.html": html }))).toEqual([]);
+  });
+
+  it("does not take an id inside an inline script for an anchor", () => {
+    const html = `<script>const html = '<div id="fake"></div>';</script><a href="#fake">x</a>`;
+    expect(checkDist(build({ "index.html": html }))).toHaveLength(1);
+  });
+
   it("catches a script, a stylesheet, an image, an iframe and a video from another origin", () => {
     const html = [
       `<script src="https://cdn.example.com/a.js"></script>`,
