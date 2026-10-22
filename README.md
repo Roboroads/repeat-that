@@ -147,6 +147,8 @@ beeps instead of playing.
 - Tray icon and menu (Replay, Stop, Catch-up, Pause capture, Settings, Quit). The tooltip says how far behind live a
   replay is.
 - Optional start with Windows, or at login on a Mac or on Linux, in the tray.
+- Checks GitHub once a day for a new version if you allow it, and installs it when you click (the `.deb` and `.rpm` link
+  to the release page). It is the only network connection the app makes, see [PRIVACY.md](PRIVACY.md#update-checks).
 - Waits for the app when it isn't running and picks it up again when it starts. Speech buffered before it quit can
   still be replayed.
 

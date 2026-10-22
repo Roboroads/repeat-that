@@ -87,7 +87,9 @@ someone presses play. Opening the page contacts no third party.
 
 ## Later / ideas
 - [ ] Translations (English, Dutch first)
-- [ ] Auto-update
+- [x] Auto-update: the app checks GitHub for a signed update once you allow it, installs it on Windows, macOS and for
+  the AppImage, and links to the release page for the `.deb` and `.rpm`. It is compiled in only when the update key is
+  set (see [Update signing key](docs/MAINTAINING.md#update-signing-key)), and no release has carried it yet
 - [ ] Auto-detect which app is in an active call
 - [ ] Capture multiple apps at once
 - [ ] Small always-on-top mini player / waveform timeline

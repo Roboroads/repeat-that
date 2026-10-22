@@ -86,8 +86,9 @@ didn't work, with your macOS version.
 1. Open the app from Applications. Only the standard "downloaded from the internet" question appears.
    `spctl -a -t exec -vv "/Applications/Repeat That.app"` in Terminal prints `source=Notarized Developer ID`.
 2. `/Applications/Repeat\ That.app/Contents/MacOS/repeat-that --rt-self-check` prints one line of JSON like
-   `{"vad":"silero","arch":"aarch64","os":"macos","version":"0.1.0"}` and exits with 0 (`echo $?`). A `"fallback"`
-   there means the speech detector didn't load. Paste the line into your report.
+   `{"vad":"silero","arch":"aarch64","os":"macos","version":"0.1.1","updater":true}` and exits with 0 (`echo $?`). A
+   `"fallback"` there means the speech detector didn't load. `"updater"` says whether this build can check for
+   updates, and `false` only means it has no update key. Paste the line into your report.
 3. The menu bar icon shows, there is no Dock icon, and the settings window opens on the first run.
 4. Play audio in Safari, Music or Discord. The app shows up in the App list with its icon and its own name (not
    "WebKit" or a helper process).
@@ -106,11 +107,19 @@ didn't work, with your macOS version.
    a second.
 10. Turn on **Start at login**, log out and in. Repeat That starts in the menu bar without its window.
 11. Install a newer version over the old one. The permission and the picked app are still there.
+12. With a newer release out, open General in the settings window and click **Check now**. The banner offers the new
+    version, and **Install and restart** replaces the app and starts the new one, with the permission and the picked
+    app still there. Nobody has tried this on a Mac. Run the app from Applications, not from the disk image.
 
 ## Updating and uninstalling
 
-There's no automatic updater yet. To update, quit Repeat That, download the newer `.dmg` and drag the app onto
-Applications again, replacing the old one. Your settings are kept, and the permission should be too, because every
+Repeat That can check for updates itself once you allow it: the settings window asks the first time, and General has
+the switch and a **Check now** button. When a newer version is out, a banner offers **Install and restart**. That only
+works from Applications. Run straight from the disk image or the Downloads folder, the app says so and the banner
+links to the download page instead. What a check sends is in [PRIVACY.md](../PRIVACY.md#update-checks).
+
+To update by hand, or from a version without the updater, quit Repeat That, download the newer `.dmg` and drag the app
+onto Applications again, replacing the old one. Your settings are kept, and the permission should be too, because every
 release is signed with the same certificate.
 
 To uninstall:

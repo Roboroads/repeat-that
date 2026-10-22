@@ -1,10 +1,11 @@
 # Security policy
 
-Repeat That keeps captured audio in memory only, has no account and no telemetry, and has no network features yet (a
-Tauri auto-updater that downloads and installs new builds is planned, see the [roadmap](ROADMAP.md)). See
-[PRIVACY.md](PRIVACY.md). That means the realistic security bugs are in the app itself: another program being able to
-read the audio buffer, captured audio ending up on disk, or another app's volume being left lowered. The one thing
-capture does write to disk is the duck journal, which holds app volumes only, so that file is expected.
+Repeat That keeps captured audio in memory only, and has no account and no telemetry. Its one network feature is an
+update check that stays off until the user allows it, and that installs a new version only when it is signed with the
+project's update key. See [PRIVACY.md](PRIVACY.md#update-checks). The realistic security bugs are therefore in the app
+itself: another program being able to read the audio buffer, captured audio ending up on disk, another app's volume
+being left lowered, or the updater installing a file it shouldn't. The one thing capture does write to disk is the duck
+journal, which holds app volumes only, so that file is expected.
 
 ## Reporting a vulnerability
 
@@ -22,12 +23,22 @@ In scope:
 - the app
 - the capture backends (WASAPI on Windows, PipeWire on Linux and Core Audio on macOS)
 - the duck guard process and the duck journal
-- the auto-updater, once it exists
+- the update check and installer, and the way the update signing key is kept and used
 - release artifacts and their checksums (from v0.1)
 
 Bugs in a third-party dependency belong upstream unless Repeat That uses it in a way that makes it exploitable.
 Dependabot alerts are on for known advisories in our dependencies. Recording laws are not a security matter, see
 [PRIVACY.md](PRIVACY.md).
+
+## If the update signing key leaks
+
+Releases carry files signed with an update signing key, and the app installs an update only if it is signed with that
+key. Its private half is a secret that only the release workflow can use, plus a copy the maintainer keeps. If it
+leaks, a thief still needs a way to hand a file to the app, which reads its updates from this repository's releases
+over HTTPS. But the old key can't be taken out of apps that already have it. The fix is a new key and a release with
+the new public key in it. People on the old key then get a "Couldn't install" message with a link to the release page,
+and have to install that release by hand. The maintainer would say so in a security advisory. How the key is kept and
+replaced is in [MAINTAINING.md](docs/MAINTAINING.md#rotating-or-losing-the-key).
 
 ## Supported versions
 

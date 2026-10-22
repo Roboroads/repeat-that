@@ -308,13 +308,45 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   (`tauri.flatpak.conf.json`, merged at build time through `TAURI_CONFIG`), so the single-instance D-Bus name
   `me.roboroads.RepeatThat.SingleInstance` is in the sandbox's own namespace and `flatpak run … --replay` reaches the
   running app. How the Flatpak is built and checked is in [MAINTAINING.md](MAINTAINING.md#flatpak).
+- Updates live in `app/src-tauri/src/updater.rs`, with the rules in submodules that are pure and tested without a
+  network or a window (`mode.rs`, `schedule.rs`, `machine.rs`, `notes.rs`, `source.rs`). The updater exists only in a
+  build with the update public key compiled in (`REPEAT_THAT_UPDATER_PUBKEY`, which the release workflows set from the
+  repository variable `TAURI_UPDATER_PUBKEY`). Without it the plugin isn't registered, nothing contacts the network,
+  and the mode is `off` (as it is in a debug build, unless a mock is set); the plugin's settings (the key and the endpoint) are put into the app's config at startup
+  rather than written in `tauri.conf.json`, so a build without a key has none of it, and `createUpdaterArtifacts` stays
+  off so `tauri build` never asks for the private key. The mode is worked out once at startup from the build and the
+  install: `external` in a Flatpak (`FLATPAK_ID`, or `/.flatpak-info`), which never checks; `install` on Windows, on
+  macOS, and for an AppImage that can replace itself (it creates an empty file in its folder and deletes it again);
+  `notify` for a `.deb` or `.rpm`, a macOS app that runs from a disk image (`/Volumes/`) or from App Translocation, and
+  an AppImage in a folder it can't write to. `notify` checks like `install` but only links to the release page.
+- The endpoint is `https://github.com/Roboroads/repeat-that/releases/latest/download/latest-{{target}}-{{arch}}.json`.
+  `REPEAT_THAT_UPDATER_ENDPOINT` replaces it at build time, for `https` or for `http` on `127.0.0.1` or `localhost`
+  only, and there is no setting for it at run time. Automatic checks run only when the setting `checkForUpdates` is
+  `true` (`null`, the default, means "not asked yet" and counts as no) and the mode is `install` or `notify`: 60
+  seconds after the start, then every 24 hours, and an hour after a failure. Nothing about it is stored. A check the
+  user asks for ("Check now", the tray item) runs whatever the setting says. A 404 or an equal or older version counts
+  as "up to date".
+- The window has no permission on the updater plugin. It calls three commands (`get_update_status`,
+  `check_for_updates`, `install_update`) and listens to the `update-status` event, so it can't point a download at
+  another place. The link to the release is built from a fixed address and a version that has been checked to be plain
+  `X.Y.Z`, never copied from the manifest, and the notes are shown as text with HTML comments and control characters
+  taken out, cut at 4000 characters.
+- `install_update` is refused unless a version is on offer and the mode is `install`. It downloads (the plugin refuses
+  a file whose signature doesn't match the compiled-in key), then ends the engine, which stops a replay and gives a
+  ducked app its volume back, and restarts the app. On Windows the engine ends before the installer starts, because
+  NSIS ends the process; on macOS and for an AppImage the files are replaced while the app runs, so the engine ends
+  after that. A failure before the engine ends leaves the app running, with the error and the release link in the
+  window. The tray gets an item that reads "Check for updates...", "Checking for updates...", "Update to X..." or
+  "Downloading update...", in the modes that check. In debug builds
+  `REPEAT_THAT_MOCK_UPDATE=available|none|fail-check|fail-download` stands in for the network (`available` offers
+  99.0.0, and installing it restarts nothing).
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
 - Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,
-  prints one JSON line `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..}` and exits before Tauri starts. The
-  exit code is 0 only when Silero loaded and ran one frame of silence. CI runs it on every OS, and the macOS bundle
-  check runs it on the built app. It plays and captures nothing. In debug builds `REPEAT_THAT_MOCK_VAD_FALLBACK=1` reports the
-  fallback without loading Silero. A Windows release build has no console, so it prints nothing there and the exit code
+  prints one JSON line `{"vad":"silero"|"fallback","arch":..,"os":..,"version":..,"updater":true|false}` and exits
+  before Tauri starts (`updater` is whether an update key is compiled in). The exit code is 0 only when Silero loaded
+  and ran one frame of silence. CI runs it on every OS, and the macOS bundle check runs it on the built app. It plays
+  and captures nothing. In debug builds `REPEAT_THAT_MOCK_VAD_FALLBACK=1` reports the fallback without loading Silero. A Windows release build has no console, so it prints nothing there and the exit code
   is all a caller sees: run `start /wait repeat-that.exe --rt-self-check` and read `%ERRORLEVEL%`, or
   `Start-Process -Wait -PassThru repeat-that.exe --rt-self-check` in PowerShell and read `$p.ExitCode`.
 - Svelte + TypeScript UI in `app/src`, built with Vite.
@@ -368,7 +400,8 @@ GitHub Actions builds:
   `publish-release.yml`: a failed macOS job doesn't hold back the required platforms, and the `.dmg` is attached later
   (the [late attach](MAINTAINING.md#late-macos-attach)).
 - Every release publishes a `SHA256SUMS` file so users can verify downloads
-  ([verify-downloads.md](verify-downloads.md)).
+  ([verify-downloads.md](verify-downloads.md)). With an update key it also carries the signed update files and a
+  manifest per platform (below), and `SHA256SUMS` lists them.
 
 **The macOS build modes.** `build-macos.yml` picks one of three, in a job that runs before a macOS runner is asked for:
 
@@ -441,8 +474,22 @@ package manager in a fresh container of each supported system, without recommend
 `--rt-self-check` from the package and from the AppImage, and uninstalls again. On Debian 12 it checks that apt
 refuses the `.deb`.
 
-There is no auto-updater yet (it is on the roadmap under later ideas). When it arrives, the Tauri updater will verify
-updates with its own key pair, stored as a GitHub Actions secret and separate from any code signing.
+**The update files.** With an update key, `publish-release.yml` makes what the app's updater reads, after the platforms
+have been built: it signs the Windows installer, the AppImage and a `.app.tar.gz` of the macOS app with `tauri signer
+sign`, checks every signature against the public key with `minisign -V`, and writes one `latest-<target>-<arch>.json`
+per platform (`latest-windows-x86_64.json`, `latest-linux-x86_64.json`, `latest-darwin-aarch64.json`) in Tauri's static
+manifest format. A manifest gives the version (the tag without the `v`), the notes of the release, and for the platform
+the `url` of the file on the release and its signature. It is written once and never changes, so `SHA256SUMS` only gains
+lines, and the macOS manifest can come with the late attach without touching the others. The `.deb`, `.rpm` and Flatpak
+have no update files: the packages only announce a new version, and the Flatpak never checks. Signing happens in the
+publish job and not in the build workflows, so one place holds the private key and the signature covers the final files,
+which stays true if Windows code signing is added. The builds only get the public key, which they compile in.
+`build-macos.yml` packs the stapled `.app` as `Repeat-That_<version>_aarch64.app.tar.gz`, and `check-macos-bundle.sh
+--update-bundle` runs the signature, ticket, Gatekeeper and self-check tests on what is inside it. `release_assets.py`
+knows the update files as part of their platform, but keeps them out of the rule that a platform must produce all its
+files, because a release without a key has none; its `--updater` flag asks for them, and for manifests that name the
+tag and files of the same release. A dry run uses a throwaway key. The update key is separate from any code signing,
+and how it is made, stored and replaced is in [MAINTAINING.md](MAINTAINING.md#update-signing-key).
 
 The Windows installer is not code signed yet, so Windows shows a SmartScreen warning. Open-source code signing on
 Windows: apply to [SignPath Foundation](https://signpath.org).
