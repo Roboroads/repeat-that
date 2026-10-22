@@ -1,14 +1,17 @@
 //! Grouping processes into apps. Discord, Teams and browsers play audio from child processes, so the app a user picks
 //! is a tree of processes, identified by its top-most process.
 
-// Only the Windows backend uses this so far; the tests run everywhere.
-#![cfg_attr(not(windows), allow(dead_code))]
+// Only the Windows and Linux backends use this; the tests run everywhere.
+#![cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 
 use std::collections::HashMap;
 
 /// Helper processes that belong to the app that started them, even though their executable is different (Teams plays
-/// its audio from WebView2).
+/// its audio from WebView2). None are known on Linux yet.
+#[cfg(windows)]
 const HELPER_EXES: &[&str] = &["msedgewebview2.exe"];
+#[cfg(not(windows))]
+const HELPER_EXES: &[&str] = &[];
 
 /// Guards against parent loops, which PID reuse can create.
 const MAX_DEPTH: usize = 64;
@@ -16,7 +19,7 @@ const MAX_DEPTH: usize = 64;
 #[derive(Debug, Clone)]
 pub(crate) struct Process {
     pub parent: u32,
-    /// Executable file name, e.g. `Discord.exe`.
+    /// Executable file name, e.g. `Discord.exe` (`Discord` on Linux).
     pub exe: String,
 }
 
@@ -46,6 +49,7 @@ impl ProcessTable {
     }
 
     /// Whether `pid` is `root` or one of its descendants.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn is_in_tree(&self, pid: u32, root: u32) -> bool {
         let mut current = pid;
         for _ in 0..MAX_DEPTH {
@@ -94,6 +98,7 @@ mod tests {
         assert_eq!(t.app_root(10), 10);
     }
 
+    #[cfg(windows)]
     #[test]
     fn webview_belongs_to_the_app_that_started_it() {
         let t = table(&[

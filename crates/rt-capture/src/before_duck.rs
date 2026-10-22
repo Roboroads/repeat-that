@@ -1,7 +1,7 @@
 //! The volume each ducked audio session had before ducking, so ducking never loses the user's own per-app volume.
 
-// Only the Windows backend uses this so far; the tests run everywhere.
-#![cfg_attr(not(windows), allow(dead_code))]
+// Only the Windows and Linux backends use this; the tests run everywhere.
+#![cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 
 use std::collections::HashMap;
 
@@ -64,8 +64,23 @@ impl BeforeDuck {
         self.0.contains_key(id)
     }
 
+    /// The volumes of session `id` from before ducking and from the latest duck, if it is ducked.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn get(&self, id: &str) -> Option<&JournalEntry> {
+        self.0.get(id)
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// Takes session `id` as ducked, as `entry` says, without changing its volume: a session that got a ducked volume
+    /// from elsewhere, like a new stream that Linux's session manager gives the volume it remembers from a duck of
+    /// another one. A session that is ducked already keeps what it has.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub fn adopt(&mut self, id: &str, entry: JournalEntry) {
+        self.0.entry(id.to_owned()).or_insert(entry);
     }
 
     /// Forgets session `id` once its volume from before ducking is back.
@@ -117,10 +132,29 @@ mod tests {
     fn ducked_sessions_are_known_until_restored() {
         let mut before = BeforeDuck::default();
         assert!(!before.contains("a"));
+        assert_eq!(before.get("a"), None);
         before.target("a", 0.5, session(0.8));
         assert!(before.contains("a"));
+        assert_eq!(before.get("a").map(|e| (e.original, e.ducked)), Some((0.8, 0.4)));
         before.restored("a");
         assert!(!before.contains("a"));
+    }
+
+    #[test]
+    fn an_adopted_session_is_restored_to_the_original_it_was_given() {
+        let mut before = BeforeDuck::default();
+        before.adopt(
+            "b",
+            JournalEntry {
+                identifier: "app".into(),
+                original: 0.8,
+                ducked: 0.2,
+            },
+        );
+        assert!(before.contains("b"));
+        // Its volume isn't read again, and later ducks scale the original it was given.
+        assert_eq!(before.target("b", 0.5, || unreachable!()), Some(0.4));
+        assert_eq!(before.target("b", 1.0, || unreachable!()), Some(0.8));
     }
 
     #[test]

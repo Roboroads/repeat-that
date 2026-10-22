@@ -31,11 +31,12 @@ pub trait AppAudioSource: Send + Sync {
 ```
 
 `platform_source()` returns the backend for the current OS, and `platform_source_with(PlatformOptions { duck_journal })`
-does so with the options each OS decides what to do with (Windows: a duck journal, which also starts the duck guard).
+does so with the options each OS decides what to do with (Windows and Linux: a duck journal, which also starts the duck
+guard, except in a Flatpak).
 `HAS_PLATFORM_BACKEND` says whether this OS has one at all.
 
-**One module per OS.** `lib.rs` includes exactly one OS module under the name `os`: `windows`, or `unsupported` on an OS
-without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same
+**One module per OS.** `lib.rs` includes exactly one OS module under the name `os`: `windows`, `linux`, or `unsupported`
+on an OS without a backend (it refuses everything, and `HAS_PLATFORM_BACKEND` is false there). Every OS module has the same
 items, and the platform-neutral entry points only call these:
 
 | Item | Used by |
@@ -49,7 +50,7 @@ items, and the platform-neutral entry points only call these:
 
 A new backend adds its module, a `use <module> as os;` line and its OS to the `not(any(..))` of `unsupported` in
 `lib.rs`, and nothing else in the platform-neutral code. A `pub mod` gives tests and tools the backend's own types
-(`rt_capture::windows::WasapiSource`).
+(`rt_capture::windows::WasapiSource`, `rt_capture::linux::PipeWireSource`).
 
 When the OS refuses capture, a backend returns `CaptureError::PermissionDenied`, whose message says how to allow it
 (its `Display` puts "audio capture is not allowed:" in front, like the other variants name their kind). The engine
@@ -60,7 +61,7 @@ reconnect poll, an app list), so capture starts as soon as the permission is giv
 | Backend | API | Notes |
 |---|---|---|
 | Windows | WASAPI `ActivateAudioInterfaceAsync` with `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` (`windows` crate) | Win10 2004+. Uses `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE` — Discord/Teams/browsers play audio from child processes. Captures 48 kHz stereo `f32`; the audio engine converts. |
-| Linux | PipeWire (`pipewire` crate): connect a capture stream to the app's output node | PulseAudio-only systems are out of scope initially. |
+| Linux | PipeWire 0.3.65+ (`pipewire` crate): a capture stream of our own, linked by hand to the output ports of the app's playback streams | Apps that play through the PulseAudio API (most) come through pipewire-pulse. Systems with only PulseAudio get "Capture needs PipeWire". Captures stereo `f32` at the graph rate. |
 | macOS | Core Audio process taps (`AudioHardwareCreateProcessTap`, macOS 14.2+) via `objc2` | Needs the audio-capture TCC permission and an `NSAudioCaptureUsageDescription`. |
 | Mock | Plays a WAV file (or samples in memory) as if it were an app | Used for tests and development on any OS. |
 
@@ -86,6 +87,42 @@ source restores them; after a crash or kill, a silent duck guard process (`Wasap
 own executable started with hidden arguments) restores them as soon as the app is gone; after a power loss, or if the
 guard died too, the next start restores them from the duck journal (`WasapiSource::with_duck_journal`, volumes and
 session identifiers only, never audio). Sessions whose volume the user changed by hand meanwhile are left alone.
+
+**Linux.** The source talks to PipeWire from a thread of its own, which keeps the registry, every playback stream's
+volume, the capture streams and their links; the trait's calls send it commands and wait for the answer (5 s at most).
+No PipeWire socket means `Unsupported` ("Capture needs PipeWire"), a socket that doesn't answer a `Backend` error the
+engine retries; a capture whose connection drops ends, and the next call connects again.
+
+- *The app list.* Every `Stream/Output/Audio` node is a stream of some app. Its PID is the one the daemon saw on the
+  client's socket (`pipewire.sec.pid`), except for PulseAudio apps, whose client is pipewire-pulse: there it is the PID
+  the app gives (`application.process.id`), if `/proc` agrees about its binary. Where `/proc` shows the process, the
+  app is its process tree, as on Windows; otherwise (in a Flatpak, or a PulseAudio app inside one) the app is every
+  stream with the same `application.process.binary`, else `application.name`, and has no executable. Names come from
+  the `.desktop` file of the executable or binary, else `application.name`. Our own process tree isn't listed.
+- *Capture.* Our capture stream never connects on its own; the source links the output ports of the app's streams to
+  it (mono to both sides, surround folded into stereo) and links new streams as they come. Only ports of
+  `Stream/Output/Audio` nodes are ever linked, so a microphone or any other source never ends up in a capture; a test
+  checks this with a virtual microphone playing a tone. The capture ends once the app's streams are gone and its
+  process too.
+- *Ducking.* A stream's volume is its node's `channelVolumes`, scaled alike so it keeps its balance; mute is never
+  touched. Streams apply their volume before their output ports, so the capture is ducked too and compensated like on
+  Windows, but PipeWire applies a volume from the next graph cycle on, so the fade steps once per cycle (its length,
+  measured by the capture) and each cycle gets one gain. An asynchronous stream (`node.async`, like `pw-cat`) made the
+  audio we capture in the cycle before, so its gain is the level from one cycle earlier. CI's measurements are in
+  `ramp.rs`. A stream the app opens during a duck is ducked as soon as its volume is known.
+- *What WirePlumber remembers.* WirePlumber stores each stream's volume under a key (its media role, else app ID, app
+  name, media name or node name) and gives it to the next stream with that key. A stream that comes up at the ducked
+  volume of one of ours with the same key is taken as ducked from that one's original, so it is neither ducked twice
+  nor left down. The duck journal names streams by that key, so a stream that comes back ducked after a crash is found
+  and restored once it has played for a moment (WirePlumber sets the remembered volume a moment after the stream
+  appears).
+- *Crash safety.* The duck guard is the app's executable started again, or `$APPIMAGE` when it runs from an AppImage,
+  whose mount goes away with the app; it waits with `pidfd_open` and `poll`. In a Flatpak (`FLATPAK_ID`, or
+  `/.flatpak-info`) there is no guard, because it would die with the sandbox: the journal restores ducked apps at the
+  next start.
+- *Icons.* `app_icon` maps the executable's file name to a `.desktop` file (its `Exec`, `TryExec`, `StartupWMClass` or
+  file name) in `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`, and looks its `Icon=` up in the desktop's icon theme (from GTK's
+  or KDE's settings) and `hicolor`: the smallest PNG at least the size asked for. SVG-only apps get the generic icon.
 
 `cargo run -p rt-capture --example probe -- list | capture <app> [--duck] | duck <app>` tries the backend on real
 apps without writing audio to disk.
@@ -148,11 +185,12 @@ disconnected.
   back, and wipe the buffer. A capture in another format (sample rate, channels) starts a new buffer.
 - **Settings apply live**: a smaller buffer evicts at once, a new sensitivity applies from the next VAD frame, neither
   wipes anything. Speeds apply at once; the duck level and the output device at the next replay.
-- **Outputs**: `CpalOutput` (the sound card), `NullOutput` (real-time, discarded; for machines without audio) and
+- **Outputs**: `CpalOutput` (the sound card; on Linux through cpal's PipeWire host when PipeWire runs, so the device
+  list shows its sinks by name, else ALSA), `NullOutput` (real-time, discarded; for machines without audio) and
   `TestOutput` (collected in memory, optionally faster than real time; for tests).
 
-`cargo run -p rt-engine --example engine_probe -- <app>` runs the engine on a real app (Windows; elsewhere the
-fixture plays as a mock app) and replays on Enter.
+`cargo run -p rt-engine --example engine_probe -- <app>` runs the engine on a real app (Windows and Linux; elsewhere
+the fixture plays as a mock app) and replays on Enter.
 
 ### `rt-transcribe` (planned)
 `whisper-rs` (whisper.cpp) on utterances as they finish, producing a scrollable "what was just said" transcript.
@@ -165,9 +203,9 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   unavailable, e.g. some Wayland compositors).
 - Settings via `tauri-plugin-store`: target app, buffer length, VAD sensitivity, output device, hotkeys, speed, duck
   level, autostart. Every change goes to the engine at once; pausing isn't stored, so every launch captures.
-- The engine starts at launch with the stored settings. Its source is `WasapiSource` on Windows (with a duck journal
-  of volumes in the app's local data directory, and a duck guard). Elsewhere debug builds play the rt-core speech
-  fixture as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` plays another WAV on any OS, and in debug
+- The engine starts at launch with the stored settings. Its source is the OS backend, `WasapiSource` on Windows and
+  `PipeWireSource` on Linux (with a duck journal of volumes in the app's local data directory, and a duck guard).
+  Elsewhere debug builds play the rt-core speech fixture as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` plays another WAV on any OS, and in debug
   builds `REPEAT_THAT_NULL_OUTPUT=1` plays replays into nothing and `REPEAT_THAT_MOCK_PERMISSION=denied` refuses
   captures as macOS does without the permission, until "Ask again" in the window. Quit stops the engine, which wipes
   the buffer and gives the app its volume back.

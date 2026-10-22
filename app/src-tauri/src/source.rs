@@ -35,7 +35,8 @@ const DEBUG_FIXTURE: Option<&str> = None;
 /// Which capture source to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceKind {
-    /// The OS's capture backend: WASAPI process loopback on Windows, Core Audio process taps on macOS.
+    /// The OS's capture backend: WASAPI process loopback on Windows, PipeWire on Linux, Core Audio process taps on
+    /// macOS.
     Platform,
     /// A WAV file playing as a fake app, named after the file.
     Mock(PathBuf),
