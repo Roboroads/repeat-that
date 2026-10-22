@@ -23,6 +23,7 @@ use crate::actions::AppAction;
 use crate::hotkeys::{EdgeHandler, KeyEdge, ShortcutBackend};
 use crate::ipc::{ConfigureOutcome, HOTKEY_COUNT, HotkeyBackendKind, HotkeyTriggers};
 use crate::locking::lock;
+use crate::session::{Env, ProcessEnv};
 use crate::settings::{HOTKEY_ACTIONS, HOTKEYS, parse_accel};
 
 /// The ID the app tells the portal it has: the name of its desktop file without `.desktop`.
@@ -31,6 +32,17 @@ use crate::settings::{HOTKEY_ACTIONS, HOTKEYS, parse_accel};
 /// `me.roboroads.repeat-that.desktop`, where the bundler would name it after the binary. The portal shows the app's name
 /// and icon next to its shortcuts from that file, and a name that doesn't match one gets them shown without.
 pub const HOST_APP_ID: &str = "me.roboroads.repeat-that";
+
+/// The component Plasma's portal keeps the app's shortcuts in, which is the app ID it knows the app by: the one the app
+/// registered ([`HOST_APP_ID`]), or in a Flatpak the Flatpak ID, which it reads from the sandbox (an app inside one
+/// can't register another). `None` in a Flatpak that has no ID in its environment, where there is no component to name.
+fn kde_component(env: &dyn Env, in_flatpak: bool) -> Option<String> {
+    if in_flatpak {
+        env.var("FLATPAK_ID")
+    } else {
+        Some(HOST_APP_ID.to_string())
+    }
+}
 
 /// How long to wait for the portal to answer a request to open its settings.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -631,14 +643,17 @@ mod worker {
             .await
             .map_err(|err| format!("the shortcuts portal is not there: {err}"))?;
         // Portals know apps by their ID. A packaged app is told apart by its desktop file, an unpackaged one has to say
-        // who it is. Older portals don't have the call; they find the app by other means.
-        match AppID::try_from(HOST_APP_ID) {
-            Ok(id) => {
-                if let Err(err) = ashpd::register_host_app_with_connection(connection.clone(), id).await {
-                    eprintln!("could not tell the portal the app's ID (fine on older portals): {err}");
+        // who it is. Older portals don't have the call; they find the app by other means. A Flatpak is known by its
+        // Flatpak ID, which the portal reads from the sandbox, and the call is for apps outside one.
+        if !rt_capture::in_flatpak() {
+            match AppID::try_from(HOST_APP_ID) {
+                Ok(id) => {
+                    if let Err(err) = ashpd::register_host_app_with_connection(connection.clone(), id).await {
+                        eprintln!("could not tell the portal the app's ID (fine on older portals): {err}");
+                    }
                 }
+                Err(err) => eprintln!("{HOST_APP_ID} is not a valid app ID: {err}"),
             }
-            Err(err) => eprintln!("{HOST_APP_ID} is not a valid app ID: {err}"),
         }
 
         let portal = GlobalShortcuts::with_connection(connection.clone())
@@ -681,9 +696,9 @@ mod worker {
         while requests.try_recv().is_ok() {}
         *established = true;
         bind(&portal, &session, link, &link.session_up(version)).await;
-        // Plasma 6.3's portal lists the shortcuts under the app ID once a session starts, see `kglobalaccel`. Done after
-        // the first answer, when the portal has registered them, whether the dialog was accepted or not. Later binds in
-        // the session leave the name alone.
+        // Plasma 6.3's portal lists the shortcuts under the app ID once a session starts, see `kglobalaccel`, in a Flatpak
+        // too: it names them after the Flatpak ID. Done after the first answer, when the portal has registered them,
+        // whether the dialog was accepted or not. Later binds in the session leave the name alone.
         name_for_kde(connection);
 
         loop {
@@ -721,11 +736,14 @@ mod worker {
     /// Gives the shortcuts their name in KDE (see `kglobalaccel`) on a task of its own, with a time limit, so a desktop
     /// that is slow to answer never holds up the hotkeys or the settings button.
     fn name_for_kde(connection: &zbus::Connection) {
+        let Some(component) = kde_component(&ProcessEnv, rt_capture::in_flatpak()) else {
+            return;
+        };
         let connection = connection.clone();
         tauri::async_runtime::spawn(async move {
             let name = std::pin::pin!(kglobalaccel::name_component(
                 &connection,
-                HOST_APP_ID,
+                &component,
                 kglobalaccel::APP_NAME
             ));
             match select(name, std::pin::pin!(pause(KDE_NAME_TIMEOUT))).await {
@@ -772,9 +790,31 @@ mod tests {
     use super::*;
     use crate::hotkeys::HotkeyManager;
     use crate::ipc::{HotkeyBindings, HotkeyState, HotkeyStates};
+    use crate::session::fake::FakeEnv;
 
     fn trigger(accel: &str) -> Option<String> {
         xdg_trigger(&parse_accel(accel).unwrap())
+    }
+
+    // The component KDE keeps the shortcuts in
+
+    #[test]
+    fn a_flatpak_is_known_to_plasma_by_its_flatpak_id() {
+        let env = FakeEnv::with(&[("FLATPAK_ID", "me.roboroads.RepeatThat")]);
+        assert_eq!(kde_component(&env, true).as_deref(), Some("me.roboroads.RepeatThat"));
+    }
+
+    #[test]
+    fn anything_else_is_known_by_the_id_the_app_registered() {
+        assert_eq!(kde_component(&FakeEnv::default(), false).as_deref(), Some(HOST_APP_ID));
+        // Not a Flatpak: a stray variable doesn't change what the app registered.
+        let env = FakeEnv::with(&[("FLATPAK_ID", "org.example.Other")]);
+        assert_eq!(kde_component(&env, false).as_deref(), Some(HOST_APP_ID));
+    }
+
+    #[test]
+    fn a_flatpak_without_an_id_has_no_component_to_name() {
+        assert_eq!(kde_component(&FakeEnv::default(), true), None);
     }
 
     // The format of the keys

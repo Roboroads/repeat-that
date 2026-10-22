@@ -446,7 +446,7 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let model = current_model(app);
     let menu = build_menu(app, &model)?;
     let icons = TrayIcons::load()?;
-    TrayIconBuilder::with_id(TRAY_ID)
+    let builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icons.image(model.icon))
         .tooltip(&model.tooltip)
         .menu(&menu)
@@ -466,8 +466,15 @@ pub fn setup<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             {
                 actions::dispatch(AppAction::OpenSettings, tray.app_handle());
             }
-        })
-        .build(app)?;
+        });
+    // The Linux tray library hands the desktop's tray the icon as a file; in a Flatpak that has to be in a folder the
+    // host can read too.
+    #[cfg(target_os = "linux")]
+    let builder = match crate::sandbox::tray_icon_dir() {
+        Some(dir) => builder.temp_dir_path(dir),
+        None => builder,
+    };
+    builder.build(app)?;
     app.manage(TrayView {
         menu,
         icons,

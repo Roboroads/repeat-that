@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Repeat That
+Comment=Replay what was just said on a call
+Keywords=replay;rewind;repeat;speech;voice;call;audio;
+Exec=repeat-that
+Icon=me.roboroads.RepeatThat
+Terminal=false
+Categories=AudioVideo;Audio;Utility;
+StartupWMClass=repeat-that

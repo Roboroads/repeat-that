@@ -8,14 +8,17 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::{env, thread};
 
 use crate::duck_guard;
 
-/// Whether this process runs in a Flatpak sandbox.
-pub(super) fn sandboxed() -> bool {
-    sandboxed_by(env::var_os("FLATPAK_ID"), Path::new("/.flatpak-info").exists())
+/// Whether this process runs in a Flatpak sandbox: Flatpak sets `FLATPAK_ID`, and `/.flatpak-info` is in every sandbox
+/// whatever the environment. Looked at once, as the answer can't change while the process runs.
+pub fn in_flatpak() -> bool {
+    static IN_FLATPAK: OnceLock<bool> = OnceLock::new();
+    *IN_FLATPAK.get_or_init(|| sandboxed_by(env::var_os("FLATPAK_ID"), Path::new("/.flatpak-info").exists()))
 }
 
 fn sandboxed_by(flatpak_id: Option<OsString>, flatpak_info: bool) -> bool {

@@ -39,7 +39,10 @@
   for the speech detector's ONNX Runtime, and CI checks that apt refuses the `.deb` there)
 - [x] The packages are listed in the release's `SHA256SUMS` (checked in a dry run of the publish workflow and a
   rehearsal release; no real release has had them yet)
-- [ ] Flatpak on Flathub
+- [x] Flatpak (`Repeat-That_<version>_x86_64.flatpak`) built in CI from `packaging/flatpak`, checked and linted as for
+  Flathub, and listed in the release's `SHA256SUMS`
+- [ ] Flatpak on Flathub (the files are ready, see [Flathub](docs/MAINTAINING.md#flathub); the submission and the
+  verification of `roboroads.me` are the maintainer's)
 
 ## Milestone 6 — macOS (built, not yet tested on real hardware)
 Nobody on the team has a Mac, so macOS is released as untested: GitHub's macOS runners are the only test so far, and the

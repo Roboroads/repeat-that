@@ -6,3 +6,15 @@ dist/
 .DS_Store
 # Python caches of the scripts under .github/scripts
 __pycache__/
+# Written by packaging/flatpak/generate-sources.sh
+/packaging/flatpak/cargo-sources.json
+/packaging/flatpak/node-sources.json
+/packaging/flatpak/shared-modules/
+/packaging/flatpak/source/
+/packaging/flatpak/flathub/
+# Written by flatpak-builder (docs/MAINTAINING.md, Flatpak), from the repository root
+/.flatpak-builder/
+/build-dir/
+/repo/
+/state/
+/bundle/

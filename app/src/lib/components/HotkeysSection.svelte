@@ -204,6 +204,10 @@
         This desktop can't open them from here. In KDE, look under System Settings → Shortcuts → Repeat That. In GNOME,
         under Settings → Keyboard → View and Customize Shortcuts → Apps.
       </p>
+      <p class="note">
+        If an action has no key, another shortcut may already use it, for instance another install of Repeat That. KDE
+        leaves such a key out without saying so. Remove the other entry there, then reset the action to its default.
+      </p>
     {/if}
     {#if configureError}
       <p class="note problem" role="alert">{configureError}</p>

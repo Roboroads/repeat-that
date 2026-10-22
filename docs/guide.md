@@ -131,8 +131,8 @@ sound itself at the lower volume. If you hear a click or a small bump when a rep
 
 If Repeat That is killed or crashes during a replay, the volume is restored without you doing anything. On macOS the
 system removes the mute when the app is gone. On Windows, and on Linux with the `.deb`, the `.rpm` or the AppImage, a
-helper process puts the volume back, and after a power cut the next start does. A Flatpak (there isn't one yet) can't
-run a helper, so there the volume comes back the next time Repeat That starts.
+helper process puts the volume back, and after a power cut the next start does. A Flatpak can't run a helper, so
+there the volume comes back the next time Repeat That starts.
 
 ## Other settings
 

@@ -1,0 +1,113 @@
+# Flatpak manifest of Repeat That. How it is built, tested and sent to Flathub: docs/MAINTAINING.md (Flatpak).
+#
+# Everything is built from source with no network: the Rust and npm packages come from cargo-sources.json and
+# node-sources.json, which generate-sources.sh writes from Cargo.lock and app/package-lock.json (they are not committed,
+# so a dependency update never leaves them stale). The one prebuilt file is the static ONNX Runtime below.
+app-id: me.roboroads.RepeatThat
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+  - org.freedesktop.Sdk.Extension.node22
+  - org.freedesktop.Sdk.Extension.llvm22
+command: repeat-that
+
+finish-args:
+  # The settings window: WebKitGTK on Wayland, or X11 where there is no Wayland.
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # PipeWire's socket, for the list of apps that play sound, the capture of the one the user picks, ducking its volume
+  # and the replay. A Flatpak that is given the socket can already hear every app on the desktop; the app connects as a
+  # manager (`media.category = Manager`), which WirePlumber's default access rules give the right to link streams and
+  # set volumes. The PulseAudio socket is not needed (the replay goes out through PipeWire, too).
+  - --filesystem=xdg-run/pipewire-0
+  # The tray icon: the app tells the desktop's tray (StatusNotifier) about its icon and menu.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # KDE's shortcut daemon, for one call: Plasma 6.3's GlobalShortcuts portal lists the app's shortcuts under the Flatpak ID
+  # ("me.roboroads.RepeatThat") instead of "Repeat That", and the app gives them their name through kglobalaccel
+  # (`allActionsForComponent` and `doRegister` for its own component only). Without this permission the sandbox hides the
+  # name, so the call can't be made. Plasma 6.4 and later get the name from the desktop file, and the permission can go
+  # when 6.3 is out of use. It is not asked for anything else.
+  - --talk-name=org.kde.kglobalaccel
+  # No network and no home folder: the app needs neither, and audio never leaves memory.
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/node22/bin:/usr/lib/sdk/llvm22/bin
+  prepend-ld-library-path: /usr/lib/sdk/llvm22/lib
+
+modules:
+  # libayatana-appindicator and what it needs. The tray library of Tauri opens it at run time, and the GNOME runtime
+  # does not have it. These modules come from Flathub's shared-modules (generate-sources.sh checks it out at the
+  # commit it pins; a Flathub repository has it as a git submodule).
+  - shared-modules/libayatana-appindicator/libayatana-appindicator-gtk3.json
+
+  # The ONNX Runtime that `ort-sys` links in statically, for the speech detector (Silero). It is the very archive that
+  # `ort-sys` would download itself (its build/download/dist.tsv, for x86_64 Linux without extra features), pinned here
+  # because the build has no network. check_ort_pin.py checks the pin against Cargo.lock, so an `ort` update that
+  # needs another ONNX Runtime fails the Flatpak build instead of building one that fails at run time. The archive is
+  # a raw LZMA2 stream of a tar with one file, libonnxruntime.a. It is only needed while building.
+  - name: onnxruntime
+    buildsystem: simple
+    only-arches:
+      - x86_64
+    sources:
+      - type: file
+        url: https://cdn.pyke.io/0/pyke:ort-rs/ms@1.31.0/x86_64-unknown-linux-gnu.tar.lzma2
+        sha256: 02aac0d3b4927026292088986d7a377c657c88761b1c068be217a67b35447678
+        dest-filename: onnxruntime.tar.lzma2
+    build-commands:
+      - mkdir -p /app/lib/ort-static
+      - xz --format=raw --lzma2=dict=64MiB --decompress --stdout onnxruntime.tar.lzma2 | tar -x -C /app/lib/ort-static
+      - test -s /app/lib/ort-static/libonnxruntime.a
+    cleanup:
+      - /lib/ort-static
+
+  - name: repeat-that
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/repeat-that/cargo
+        CARGO_NET_OFFLINE: 'true'
+        # ort-sys links this one instead of downloading its own.
+        ORT_LIB_LOCATION: /app/lib/ort-static
+        # pipewire-sys and its bindgen need libclang.
+        LIBCLANG_PATH: /usr/lib/sdk/llvm22/lib
+        XDG_CACHE_HOME: /run/build/repeat-that/flatpak-node/cache
+        npm_config_nodedir: /usr/lib/sdk/node22
+    build-commands:
+      # The settings window: Svelte, built by Vite into app/dist, which the app embeds.
+      - npm ci --offline --prefer-offline --no-audit --no-fund --cache "$FLATPAK_BUILDER_BUILDDIR/flatpak-node/npm-cache" --prefix app
+      - npm run build --prefix app
+      # The app. The identifier in tauri.flatpak.conf.json (me.roboroads.RepeatThat) is the Flatpak's app ID: it names the
+      # app's folders, its single-instance D-Bus name, and the GTK application ID that the desktop matches to the
+      # .desktop file. `tauri/custom-protocol` makes the app load its embedded window, as `tauri build` does.
+      # --ignore-rust-version: the rust-stable extension can be a release behind the newest stable the workspace names.
+      - >-
+        TAURI_CONFIG="$(cat app/src-tauri/tauri.flatpak.conf.json)"
+        cargo build --release --offline --locked --ignore-rust-version --jobs "${FLATPAK_BUILDER_N_JOBS:-4}"
+        --package repeat-that --features tauri/custom-protocol
+      - install -Dm755 target/release/repeat-that "${FLATPAK_DEST}/bin/repeat-that"
+      - install -Dm644 packaging/flatpak/me.roboroads.RepeatThat.desktop "${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop"
+      # The metainfo gets its <releases> from CHANGELOG.md for the version in Cargo.toml.
+      - >-
+        python3 packaging/flatpak/metainfo_releases.py
+        --metainfo packaging/flatpak/me.roboroads.RepeatThat.metainfo.xml --changelog CHANGELOG.md
+        --version "$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+        --output "${FLATPAK_BUILDER_BUILDDIR}/metainfo.xml"
+      - install -Dm644 "${FLATPAK_BUILDER_BUILDDIR}/metainfo.xml" "${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml"
+      - install -Dm644 app/src-tauri/icons/svg/app.svg "${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg"
+      - install -Dm644 app/src-tauri/icons/32x32.png "${FLATPAK_DEST}/share/icons/hicolor/32x32/apps/${FLATPAK_ID}.png"
+      - install -Dm644 app/src-tauri/icons/128x128.png "${FLATPAK_DEST}/share/icons/hicolor/128x128/apps/${FLATPAK_ID}.png"
+      - install -Dm644 app/src-tauri/icons/128x128@2x.png "${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+      - install -Dm644 app/src-tauri/icons/icon.png "${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png"
+    sources:
+      # flathub:begin (generate-sources.sh --flathub swaps this source for the release's tag and commit)
+      # `source` is the copy of the repository's files that generate-sources.sh makes.
+      - type: dir
+        path: source
+      # flathub:end
+      - cargo-sources.json
+      - node-sources.json

@@ -283,6 +283,31 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   "Muted", and the General section shows a notice that macOS support is untested, with a link to the issue form
   (`.github/ISSUE_TEMPLATE/macos.yml`). Both come from `isMac()` in the window and from `PLATFORM_MIN_DUCK_LEVEL` in the
   settings, which clamps a level the OS can't use.
+- In a Flatpak (`app/src-tauri/src/sandbox.rs`: `FLATPAK_ID`, or `/.flatpak-info`) three things differ. Start at login
+  goes through the Background portal (`PortalAutostart` in `autostart.rs`: `RequestBackground` with `autostart` and the
+  command `repeat-that --hidden`), because the plugin's entry would land in the sandbox's config folder. The portal can't
+  tell whether an entry exists, so the stored flag is the truth (`reconcile`). The portal answers when the user does, so
+  `set_enabled` only sends the request, on the async runtime, and returns: nothing waits for a dialog, and the answer is
+  checked against the setting when it comes. A refusal turns the setting off again (`SettingsService::autostart_refused`,
+  which doesn't ask the OS again), and a late "yes" to what was turned off meanwhile is taken back with another request.
+  Since the app sits in the tray with no window, a desktop may end it unless it may run in the background, so at start it
+  also sends a `RequestBackground` without `autostart` (the portal asks the user once and remembers). A "no" is only
+  logged, with `flatpak permission-set background background me.roboroads.RepeatThat yes` as the way to allow it. The tray icon file goes to
+  `$XDG_RUNTIME_DIR/app/$FLATPAK_ID`, the folder the sandbox shares with the host at the same path, so the desktop's tray
+  can read it (the library's default, `$XDG_RUNTIME_DIR/tray-icon`, is inside the sandbox). And the app doesn't tell the
+  portal an app ID (`register_host_app`): the portal knows a Flatpak by the ID it reads from the sandbox (checked: the
+  frontend hands the backend `me.roboroads.RepeatThat` and the three preferred triggers). It does give the shortcuts
+  their name in kglobalaccel (see `kglobalaccel.rs`) under that Flatpak ID, which is why the Flatpak may talk to
+  `org.kde.kglobalaccel`: the sandbox hides that name otherwise, so Plasma 6.3's portal would list the shortcuts under
+  the Flatpak ID. A default key that stays unassigned on Plasma is one that another component already holds
+  (kglobalacceld skips a taken key, and the portal only offers a key for an action it has not seen), for instance the
+  same app installed as a package. This was checked with a real kglobalacceld 6.3.5 and the calls of the portal's
+  `setActions`: a fresh component gets all three default keys, and the same keys under a second component come out
+  empty, for the Flatpak ID and the package's ID alike. The package takes the same route (the portal), so it only seems
+  to work when it registers its keys first, or on X11, where the plugin grabs the keys without KDE. The Flatpak's identifier is `me.roboroads.RepeatThat`
+  (`tauri.flatpak.conf.json`, merged at build time through `TAURI_CONFIG`), so the single-instance D-Bus name
+  `me.roboroads.RepeatThat.SingleInstance` is in the sandbox's own namespace and `flatpak run … --replay` reaches the
+  running app. How the Flatpak is built and checked is in [MAINTAINING.md](MAINTAINING.md#flatpak).
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
 - Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,
@@ -325,7 +350,16 @@ GitHub Actions builds:
 - Linux: `Repeat-That_<version>_amd64.deb`, `Repeat-That-<version>-1.x86_64.rpm` and
   `Repeat-That_<version>_amd64.AppImage`, x64 only. `build-linux.yml` builds them in an `ubuntu:24.04` container
   (glibc 2.39, the oldest of the supported systems) and installs them on Debian 13, Ubuntu 24.04, Fedora 40 and
-  Fedora 44 before they count. Linux is a required platform of `publish-release.yml`. A Flatpak comes later.
+  Fedora 44 before they count. Linux is a required platform of `publish-release.yml`.
+- Flatpak: `Repeat-That_<version>_x86_64.flatpak`, app ID `me.roboroads.RepeatThat`, x64 only. `build-flatpak.yml` builds
+  it from `packaging/flatpak` in Flathub's container for the GNOME 51 runtime, without network (the Rust and npm sources
+  are generated from the lock files, and the one prebuilt file, the static ONNX Runtime, is pinned and checked against
+  `Cargo.lock`), then installs it, checks its permissions, files and self-check, starts it under a virtual display and runs
+  Flathub's linter. It is a required platform of `publish-release.yml`, and the same manifest goes to Flathub
+  ([MAINTAINING.md](MAINTAINING.md#flatpak)). The sandbox has the display, the GPU, PipeWire's socket
+  (`--filesystem=xdg-run/pipewire-0`: the app connects as a manager, `media.category = Manager`, which PipeWire turns into
+  `flatpak-manager` access for a sandboxed client, so it can link streams and set volumes) and the D-Bus names of the
+  tray and of KDE's shortcut daemon.
 - macOS: `Repeat-That_<version>_aarch64.dmg` for Apple Silicon only (no Intel or universal build, see the VAD note
   under [`rt-core`](#rt-core--platform-independent-logic)). It is signed with a Developer ID Application certificate and
   notarized, with the ticket stapled to the `.app` and to the `.dmg`, so Gatekeeper opens it without extra steps.

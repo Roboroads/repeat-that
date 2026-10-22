@@ -53,6 +53,8 @@ mod unsupported;
 use unsupported as os;
 
 pub use icon::{IconImage, app_icon};
+#[cfg(target_os = "linux")]
+pub use linux::in_flatpak;
 pub use mock::MockSource;
 
 /// An application that is currently (or was recently) producing audio.

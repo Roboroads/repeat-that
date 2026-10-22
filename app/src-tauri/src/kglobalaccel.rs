@@ -5,8 +5,9 @@
 //! name to the app ID every time a session starts: `loadActions` registers the shortcuts it already has with
 //! `componentDisplayName` set to the component name, and the later `BindShortcuts` reuses those registered actions, so
 //! the name from the desktop file it looks up there never reaches kglobalaccel. The page then lists the shortcuts under
-//! `me.roboroads.repeat-that`. Plasma 6.4 reads the name from the desktop file in both places (xdg-desktop-portal-kde
-//! commit 2fd2d093, "Improve the global shortcuts workflow").
+//! `me.roboroads.repeat-that` (`me.roboroads.RepeatThat` in a Flatpak, see `portal::kde_component`). Plasma 6.4 reads
+//! the name from the desktop file in both places (xdg-desktop-portal-kde commit 2fd2d093, "Improve the global
+//! shortcuts workflow").
 //!
 //! So after the first bind of each session the app gives the component its name back through kglobalaccel's own
 //! `doRegister`, which updates the display name of an action that exists. It only touches a component that has actions,
