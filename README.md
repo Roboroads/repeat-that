@@ -13,8 +13,8 @@ connections, accents, background noise, or just a moment of distraction.
 
 > **Status:** version 0.1 for Windows is feature-complete and has been tested on real Windows hardware. The first
 > release is `v0.1.0`. macOS support is built but **hasn't been tested on a real Mac yet**, see
-> [Install (macOS)](#install-macos). Linux (PipeWire) is new in the releases after `v0.1.0`, as a `.deb`, an `.rpm` and
-> an AppImage, see [Install (Linux)](#install-linux).
+> [Install (macOS)](#install-macos). Linux (PipeWire) is new in the releases after `v0.1.0`, as a `.deb`, an `.rpm`, an
+> AppImage and a Flatpak, see [Install (Linux)](#install-linux).
 
 ## System requirements
 
