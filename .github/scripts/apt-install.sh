@@ -63,22 +63,14 @@ incomplete_pattern='^[WE]: (Failed to fetch|Some index files failed|Hash Sum mis
 sudo=()
 if [[ $(id -u) -ne 0 ]]; then sudo=(sudo); fi
 
-# limited SECONDS COMMAND...: the command as root, stopped after SECONDS and killed for good 10 seconds later. `timeout`
-# stops the command's whole process group, so a dpkg or a download helper under apt-get doesn't outlive it. (`env`,
-# because sudo drops DEBIAN_FRONTEND.)
+# limited SECONDS COMMAND...: the command as root, stopped after SECONDS and killed for good $kill_after seconds later.
+# `timeout` stops the command's whole process group, so a dpkg or a download helper under apt-get doesn't outlive it.
+# (`env`, because sudo drops DEBIAN_FRONTEND.)
+kill_after=${APT_KILL_AFTER:-10}
 limited() {
   local seconds=$1
   shift
-  "${sudo[@]}" env DEBIAN_FRONTEND=noninteractive timeout --kill-after=10 "$seconds" "$@"
-}
-
-# Why a command failed: `timeout` exits 124 when it stopped the command and 137 when it had to kill it.
-describe() {
-  local name=$1 status=$2 seconds=$3
-  case $status in
-    124 | 137) echo "$name timed out after ${seconds}s" ;;
-    *) echo "$name exited with status $status" ;;
-  esac
+  "${sudo[@]}" env DEBIAN_FRONTEND=noninteractive timeout --kill-after="$kill_after" "$seconds" "$@"
 }
 
 failure=""
@@ -96,8 +88,12 @@ trap 'rm -f "$log"' EXIT
 # and to $log. On failure, `failure` says what went wrong, with the last error line apt printed, and `permanent` is
 # true for a package that doesn't exist or can't be installed: asking again gets the same answer, so there is no retry.
 # Not after an update that lost an index, though: then the package may only be missing from the lists.
+#
+# `timeout` exits 124 when it stopped the command, and 137 when the command ignored that and had to be killed. But 137
+# is also what a command killed by the system (the out-of-memory killer) leaves, and that one has not been running for
+# the whole time it was given: a kill after a timeout comes later than that. So 137 counts as a timeout only then.
 apt_call() {
-  local name=$1 seconds=$2 deadline remaining status detail
+  local name=$1 seconds=$2 deadline remaining started microseconds status detail
   shift 2
   deadline=$((SECONDS + seconds))
   while :; do
@@ -106,24 +102,32 @@ apt_call() {
       failure="$name could not get the apt lock within ${seconds}s"
       return 1
     fi
+    started=${EPOCHREALTIME/[.,]/}
     set +e
     limited "$remaining" apt-get "${apt_options[@]}" "${quiet[@]}" "$@" 2>&1 | tee "$log"
     status=${PIPESTATUS[0]}
     set -e
+    microseconds=$((${EPOCHREALTIME/[.,]/} - started))
     if ((status == 0)); then
       return 0
     fi
-    if ((status != 124 && status != 137)) && grep -qE "$lock_pattern" "$log"; then
+    if ((status == 124 || (status == 137 && microseconds >= remaining * 1000000))); then
+      failure="$name timed out after ${seconds}s"
+      return 1
+    fi
+    if grep -qE "$lock_pattern" "$log"; then
       sleep "$lock_poll"
       continue
     fi
-    failure=$(describe "$name" "$status" "$seconds")
-    if ((status != 124 && status != 137)); then
-      detail=$(grep -E '^E: ' "$log" | tail -n 1 || true)
-      if [[ -n $detail ]]; then failure="$failure ($detail)"; fi
-      if [[ $update_incomplete == false ]] && grep -qE "$permanent_pattern" "$log"; then
-        permanent=true
-      fi
+    if ((status == 137)); then
+      failure="$name was killed (exit status 137, probably out of memory)"
+    else
+      failure="$name exited with status $status"
+    fi
+    detail=$(grep -E '^E: ' "$log" | tail -n 1 || true)
+    if [[ -n $detail ]]; then failure="$failure ($detail)"; fi
+    if [[ $update_incomplete == false ]] && grep -qE "$permanent_pattern" "$log"; then
+      permanent=true
     fi
     return 1
   done

@@ -3,8 +3,9 @@
 The script runs against fake `apt-get`, `dpkg` and `sudo` commands on a PATH of its own, so nothing is installed and the
 network is never touched. A fake apt-get acts out a plan per subcommand (`update`, `install`, and `-f install` as
 `fix`), one word per call, the last one repeating: `ok`, `fail`, `lock` (another apt holds the lock), `permanent` (a
-package that doesn't exist), `warn` (a warning, exit 0) or `hang`. Timeouts are shrunk to a second so a hung call costs
-the test no more.
+package that doesn't exist), `warn` (a warning, exit 0), `hang`, `stubborn` (a hang that ignores SIGTERM, so it needs
+the KILL after the grace period) or `killed` (killed by the system, as the out-of-memory killer does). Timeouts and the
+grace period are shrunk to a second so a hung call costs the test no more.
 """
 
 import os
@@ -38,6 +39,8 @@ case $step in
   permanent) echo "E: Unable to locate package no-such-package" >&2; exit 100 ;;
   warn) echo "W: Some index files failed to download. They have been ignored, or old ones used instead." >&2; exit 0 ;;
   hang) sleep 60; exit 0 ;;
+  stubborn) trap '' TERM; sleep 60; exit 0 ;;
+  killed) kill -KILL $$ ;;
 esac
 """
 FAKE_DPKG = '#!/usr/bin/env bash\necho "dpkg $*" >> "$FAKE_DIR/calls"\nexit "${FAKE_DPKG_STATUS:-0}"\n'
@@ -69,6 +72,7 @@ class AptInstallTest(unittest.TestCase):
             "APT_INSTALL_TIMEOUT": "1",
             "APT_RETRY_PAUSE": "0",
             "APT_LOCK_POLL": "0",
+            "APT_KILL_AFTER": "1",
             **env,
         }
         start = time.monotonic()
@@ -225,6 +229,20 @@ class AptInstallTest(unittest.TestCase):
         done, _ = self.run_script("--step", STEP, *PACKAGES, install="fail", APT_ATTEMPTS="1")
         errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
         self.assertIn("E: Failed to fetch http://mirror.invalid/pool/x.deb", errors[0])
+
+    def test_a_hang_that_ignores_sigterm_is_killed_and_still_reported_as_a_timeout(self):
+        done, took = self.run_script("--step", STEP, *PACKAGES, install="stubborn ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertLess(took, 30)
+        self.assertIn("apt-get install timed out after 1s", done.stdout)
+
+    def test_an_install_killed_by_the_system_is_not_reported_as_a_timeout(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="killed", APT_ATTEMPTS="1")
+        self.assertEqual(done.returncode, 1)
+        errors = [line for line in done.stdout.splitlines() if line.startswith("::error::")]
+        self.assertNotIn("timed out", errors[0])
+        self.assertIn("apt-get install was killed (exit status 137", errors[0])
+        self.assertIn("out of memory", errors[0])
 
     def test_gives_up_on_an_update_that_always_hangs(self):
         done, took = self.run_script("--step", STEP, *PACKAGES, update="hang")
