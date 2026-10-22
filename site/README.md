@@ -63,3 +63,4 @@ optipng -o7 -strip all public/og.png
 
 The picture uses whatever sans-serif font the machine has. The icon in it is `app/src-tauri/icons/svg/app.svg`, see
 `public/LICENSE.md`.
+
