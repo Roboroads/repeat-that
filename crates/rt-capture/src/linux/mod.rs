@@ -291,6 +291,12 @@ impl Drop for PipeWireCapture {
     }
 }
 
+/// The file name of `path`, an executable or the program of an `Exec` line, or "" if it has none or it isn't UTF-8.
+/// The app list and the `.desktop` lookup both name programs with it, so a program has the same name in both.
+fn file_name(path: &Path) -> &str {
+    path.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -380,5 +386,15 @@ mod tests {
     #[test]
     fn this_os_has_a_backend_and_a_guard_and_case_sensitive_paths() {
         const { assert!(HAS_BACKEND && HAS_DUCK_GUARD && !EXE_PATHS_IGNORE_CASE) };
+    }
+
+    #[test]
+    fn programs_are_named_by_their_file_name() {
+        assert_eq!(file_name(Path::new("/usr/lib/firefox/firefox")), "firefox");
+        assert_eq!(file_name(Path::new("firefox")), "firefox");
+        // A trailing slash, as an `Exec` line could have it, names the same program.
+        assert_eq!(file_name(Path::new("/opt/app/")), "app");
+        assert_eq!(file_name(Path::new("/")), "");
+        assert_eq!(file_name(Path::new("")), "");
     }
 }

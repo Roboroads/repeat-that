@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::file_name;
 use crate::IconImage;
 use crate::icon::resized;
 
@@ -144,16 +145,16 @@ fn parse(id: &str, text: &str) -> Option<DesktopEntry> {
 fn program_of(exec: &str) -> Option<String> {
     let words = exec_words(exec);
     let mut words = words.as_slice();
-    if words.first().is_some_and(|w| file_name(w) == "env") {
+    if words.first().is_some_and(|w| file_name(Path::new(w)) == "env") {
         words = &words[1..];
         while words.first().is_some_and(|w| w.contains('=') && !w.starts_with('-')) {
             words = &words[1..];
         }
     }
-    let program = file_name(words.first()?);
+    let program = file_name(Path::new(words.first()?));
     if program == "flatpak" {
         let command = words.iter().find_map(|w| w.strip_prefix("--command="));
-        return command.map(|c| file_name(c).to_owned());
+        return command.map(|c| file_name(Path::new(c)).to_owned());
     }
     Some(program.to_owned()).filter(|p| !p.is_empty())
 }
@@ -183,10 +184,6 @@ fn exec_words(exec: &str) -> Vec<String> {
         words.push(word);
     }
     words
-}
-
-fn file_name(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// Where `.desktop` files and icons are: `$XDG_DATA_HOME` (`~/.local/share`), then `$XDG_DATA_DIRS`
@@ -228,8 +225,7 @@ pub(super) fn desktop_name(program: &str) -> Option<String> {
 
 /// The icon of the app whose executable is `exe`, at `size`×`size` pixels.
 pub(super) fn icon(exe: &Path, size: u32) -> Option<IconImage> {
-    let program = exe.file_name()?.to_str()?;
-    let entry_icon = index().find(program)?.icon.clone()?;
+    let entry_icon = index().find(file_name(exe))?.icon.clone()?;
     let dirs = data_dirs();
     let theme = current_theme();
     load(&find_icon(&entry_icon, &dirs, theme.as_deref(), size)?, size)

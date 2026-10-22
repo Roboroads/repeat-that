@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use super::file_name;
 use crate::AudioApp;
 use crate::process_tree::{Process, ProcessTable};
 
@@ -240,13 +241,10 @@ pub(super) fn find<'a>(groups: &'a [AppGroup], app: &AudioApp) -> Option<&'a App
         .or_else(|| groups.iter().find(|g| g.app.name == app.name))
 }
 
-fn file_name(path: &Path) -> &str {
-    path.file_name().and_then(|n| n.to_str()).unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::path::Path;
 
     use super::*;
 
