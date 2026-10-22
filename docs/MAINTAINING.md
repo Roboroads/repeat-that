@@ -377,15 +377,19 @@ new file name, which `release_assets.py` would have to know.
 ### Late macOS attach
 
 macOS is optional, so a macOS build or notarization that fails doesn't hold back the required platforms. The late attach
-adds the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. It is the
-`late-attach` mode of `publish-release.yml`, and it takes the `.dmg` from a macOS build run, in two steps:
+adds the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. With an
+[update key](#update-signing-key) it adds the macOS update files too (the `.app.tar.gz`, its `.sig` and
+`latest-darwin-aarch64.json`), and `SHA256SUMS` gains a line for each. It is the `late-attach` mode of
+`publish-release.yml`, and it takes the files from a macOS build run, in two steps:
 
 1. Actions → Build macOS installers → Run workflow on `main`, with the release `tag` (for a draft, also its commit as
    `sha`). It builds, signs and notarizes the `.dmg`, uploads `release-macos-*` and adds the "untested" paragraph to
-   the release notes.
-2. Once that run has succeeded: Actions → Publish release → Run workflow, with `mode` `late-attach`, the `tag`,
-   `platform` `macos` and `artifacts_run_id` set to the number in the URL of the macOS build run
-   (`.../actions/runs/<number>`). The build run's summary prints the matching `gh workflow run` command.
+   the release notes. While the repository variable `TAURI_UPDATER_PUBKEY` is set it also packs the update bundle, the
+   `.app.tar.gz`, which is an artifact of its own.
+2. Once that run has succeeded: Actions → Publish release → Run workflow on `main`, with `mode` `late-attach`, the
+   `tag`, `platform` `macos` and `artifacts_run_id` set to the number in the URL of the macOS build run
+   (`.../actions/runs/<number>`). The build run's summary prints the matching `gh workflow run` command. With the
+   variable set the job uses the `updater-signing` Environment, which only `main` may use.
 
 The build can't call `publish-release.yml` itself: that one calls the build for a release, and GitHub refuses workflows
 that call each other in a loop. Artifacts are kept for 30 days, so after that the build has to run again. The build
@@ -397,19 +401,25 @@ What it does, in order, stopping at the first problem:
 
 1. The release must exist (published or draft) and `platform` must be an optional platform. With `artifacts_run_id`,
    the earlier run is checked as described above.
-2. The downloaded files must all belong to that platform, and their names must carry the tag's version
-   (`Repeat-That_0.2.0_aarch64.dmg` for `v0.2.0`). A file of another platform or another version fails.
-3. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
+2. With the variable set, it signs the `.app.tar.gz` and writes `latest-darwin-aarch64.json`, the way `Publish` does
+   (see [Update signing key](#update-signing-key)). If the build run made no `.app.tar.gz`, because its `.dmg` was built
+   before the variable was set, the job stops here with "no update file ... build the platform again". Run Build macOS
+   installers again on `main` and use the number of that run. Without the variable the late attach adds the `.dmg`
+   only, and says so in a notice.
+3. The downloaded files must all belong to that platform, and their names must carry the tag's version
+   (`Repeat-That_0.2.0_aarch64.dmg` for `v0.2.0`). A file of another platform or another version fails. With the
+   variable set, the platform's update files must all be there.
+4. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
    missing from the release. Without `replace`, the release must not have a file for that platform yet.
-4. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new line, and every line
+5. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new lines, and every line
    must hold for the file next to it, so it extends a consistent base. Lines already in it never change; the job fails
    otherwise.
-5. With `replace`, every file of the platform on the release is replaced or, when its name differs from the new
+6. With `replace`, every file of the platform on the release is replaced or, when its name differs from the new
    file's, deleted, so the release never carries two `.dmg` files. Only their lines change or go.
-6. The `.dmg` is uploaded first, then `SHA256SUMS` (replacing the old one), then the files that leave the release are
-   deleted, so `SHA256SUMS` never lists a file that isn't there yet. `SHA256SUMS` is the only file the late attach may
-   replace on a published release. Right before replacing it, the job checks that nobody changed it since it was
-   read; if so, it stops instead of dropping that change.
+7. The new files are uploaded first (the `.dmg` and the update files), then `SHA256SUMS` (replacing the old one), then
+   the files that leave the release are deleted, so `SHA256SUMS` never lists a file that isn't there yet. `SHA256SUMS`
+   is the only file the late attach may replace on a published release. Right before replacing it, the job checks that
+   nobody changed it since it was read; if so, it stops instead of dropping that change.
 
 **If the job stops half way.** The most likely case is a `.dmg` that is uploaded while `SHA256SUMS` is not. Run the
 failed job again (`gh run rerun <run id> --failed`; the log prints the command and the new `SHA256SUMS`). A `.dmg`
@@ -417,6 +427,11 @@ that is on the release but not in `SHA256SUMS`, and identical to the one just bu
 stop: it isn't uploaded again, and the job finishes by replacing `SHA256SUMS`. A `.dmg` that differs has to be deleted
 first (`gh release delete-asset <tag> <name>`) or replaced by running again with `replace` ticked. The same rerun
 finishes a `replace` that stopped before the old file was deleted.
+
+The update files are the exception. The `.app.tar.gz` is the same file in a rerun, but a rerun signs it again, and a
+signature carries a timestamp, so the new `.sig` and `latest-darwin-aarch64.json` differ from the ones the stopped
+attach left on the release. The rerun refuses them. Delete those two with `gh release delete-asset`, or run again with
+`replace` ticked.
 
 A late attach runs in a concurrency group of its own, so it is never queued behind another run or dropped when
 another one is waiting (GitHub keeps only one waiting run per group). That also means it doesn't wait for a full run
