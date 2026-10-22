@@ -69,7 +69,7 @@ PLATFORMS = (
     Platform("windows", "Windows", True, ("*-setup.exe",), build=True, workflow="build-windows.yml"),
     Platform("linux", "Linux", True, ("*.deb", "*.rpm", "*.AppImage"), workflow="build-linux.yml"),
     Platform("flatpak", "Flatpak", True, ("*.flatpak",), workflow="build-flatpak.yml"),
-    Platform("macos", "macOS", False, ("*.dmg",), workflow="build-macos.yml"),
+    Platform("macos", "macOS", False, ("*.dmg",), build=True, workflow="build-macos.yml"),
 )
 
 
@@ -220,7 +220,7 @@ def _names(paths):
 
 def check_versions(files, tag):
     """Fails for a file whose name does not carry the version of `tag` (v0.2.0 -> 0.2.0, between _ or - on both
-    sides: Repeat-That_0.2.0_universal.dmg, Repeat-That-0.2.0-1.x86_64.rpm)."""
+    sides: Repeat-That_0.2.0_aarch64.dmg, Repeat-That-0.2.0-1.x86_64.rpm)."""
     if not TAG.match(tag):
         raise ReleaseError(f"tag must look like v0.1.0, got {tag!r}")
     version = re.escape(tag[1:])
