@@ -598,10 +598,10 @@ mod tests {
 
         #[test]
         fn a_server_that_cannot_be_reached_says_so() {
-            let free = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = free.local_addr().unwrap().port();
-            drop(free);
-            let (_app, source) = source(port);
+            // Port 0 is never listened on: connecting to it fails on every system. A port that was only just freed
+            // would not do, since the `serve` of a test running at the same time can be handed it and answer 404, and
+            // that reads as "no update".
+            let (_app, source) = source(0);
             assert_eq!(source.check(), Err(CHECK_UNREACHABLE.to_string()));
         }
 
