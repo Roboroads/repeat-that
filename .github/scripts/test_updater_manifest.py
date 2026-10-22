@@ -248,7 +248,9 @@ class ErrorTests(unittest.TestCase):
     def test_a_bad_pub_date_fails(self):
         bad = (
             "", "yesterday", "2026-10-21", "2026-10-21 13:50:34", "2026-13-40T00:00:00Z", "2026-10-21T13:50:34",
-            "2026-10-21T13:50:34+25:00", "2026-10-21T13:50:34+02:61",
+            "2026-10-21T13:50:34+25:00", "2026-10-21T13:50:34+02:61", "2026-02-30T00:00:00Z", "2026-10-21T24:00:00Z",
+            # Forms Python reads but the app's RFC 3339 parser doesn't.
+            "2026-10-21T13:50:34+02", "20261021T135034Z", "2026-10-21T13:50Z", "2026-10-21t13:50:34z",
         )  # fmt: skip
         for date in bad:
             errors = errors_of(pub_date=date)

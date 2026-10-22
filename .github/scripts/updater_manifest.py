@@ -4,7 +4,7 @@
 The app checks https://github.com/OWNER/NAME/releases/latest/download/latest-<target>-<arch>.json for a newer version
 (Tauri's static update format). publish-release.yml signs a platform's update file and calls this to write that
 platform's manifest. It works offline from files and stdlib only. Like site_release.py it imports the modules next to
-it, so run it as a script, not with `python3 -I`. Unit tests: test_updater_manifest.py.
+it, so run it as a script, not with `python3 -I`. Needs Python 3.11 or newer. Unit tests: test_updater_manifest.py.
 
 Usage:
   updater_manifest.py --tag TAG --platform windows|macos|linux --payload FILE --sig FILE --notes FILE
@@ -65,9 +65,10 @@ COMMENT_OR_CODE = re.compile(r"(?P<code>```.*?(?:```|\Z)|`[^`\n]*`)|<!--.*?-->",
 # Every control character (category Cc) except tab and newline.
 CONTROL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 BLANK_LINES = re.compile(r"\n{3,}")
-PUB_DATE = re.compile(
-    r"(?P<stamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-](?P<hours>\d{2}):(?P<minutes>\d{2}))"
-)
+# The shape of an RFC 3339 timestamp with a time zone, which is what the app parses (and fails the whole manifest on).
+# datetime.fromisoformat takes more forms than that (a date alone, +02, 20261021T135034Z), so it only checks the
+# calendar and the clock.
+PUB_DATE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -149,14 +150,13 @@ def read_signature(text, name):
 
 def check_pub_date(value):
     """True for an RFC 3339 timestamp with a time zone, such as 2026-10-21T13:50:34Z."""
-    found = PUB_DATE.fullmatch(value)
-    if not found:
+    if not PUB_DATE.fullmatch(value):
         return False
     try:
-        datetime.datetime.strptime(found["stamp"], "%Y-%m-%dT%H:%M:%S")
+        datetime.datetime.fromisoformat(value)
     except ValueError:
         return False
-    return found["hours"] is None or (int(found["hours"]) <= 23 and int(found["minutes"]) <= 59)
+    return True
 
 
 def build_manifest(*, tag, platform, payload, signature, notes, repo, pub_date):
