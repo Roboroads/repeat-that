@@ -531,6 +531,48 @@ fn a_stream_the_app_opens_while_ducked_is_ducked_and_captured() {
 
 #[test]
 #[ignore = "needs PipeWire"]
+fn a_stream_that_closes_while_ducked_leaves_no_duck_behind() {
+    let _turn = take_turn();
+    let source = PipeWireSource::new().expect("PipeWire runs");
+    let player = PlayerProcess::start("RT Closing Call");
+    player.open(TONE_HZ);
+    let app = find_app(&source, "RT Closing Call");
+    let at = |level: f32, streams: usize| {
+        wait_for(Duration::from_secs(3), || {
+            close(&volumes("RT Closing Call"), &vec![vec![level; 2]; streams], 1e-4).then_some(())
+        })
+    };
+
+    // A call ends and a new one starts during the duck: the new stream gets the ducked volume WirePlumber remembers,
+    // joins the duck, and comes back with it.
+    source.set_app_volume(&app, 0.25).unwrap();
+    at(0.25, 1).expect("ducked");
+    player.close(TONE_HZ);
+    at(0.25, 0).expect("the call ends");
+    player.open(440.0);
+    at(0.25, 1).expect("the next call joins the duck");
+    thread::sleep(Duration::from_millis(300));
+    source.set_app_volume(&app, 1.0).unwrap();
+    assert!(
+        at(1.0, 1).is_some(),
+        "restored with the duck: {:?}",
+        volumes("RT Closing Call")
+    );
+
+    // The call ends during the duck, and the next one starts after it.
+    source.set_app_volume(&app, 0.25).unwrap();
+    at(0.25, 1).expect("ducked again");
+    player.close(440.0);
+    at(0.25, 0).expect("the call ends");
+    let _ = source.set_app_volume(&app, 1.0);
+    player.open(TONE_HZ);
+    let restored = at(1.0, 1);
+    println!("after a call that ended while ducked: {:?}", volumes("RT Closing Call"));
+    assert!(restored.is_some(), "the next call plays at full volume");
+}
+
+#[test]
+#[ignore = "needs PipeWire"]
 fn a_volume_changed_by_hand_during_a_duck_is_left_alone() {
     let _turn = take_turn();
     let source = PipeWireSource::new().expect("PipeWire runs");
@@ -811,6 +853,11 @@ impl PlayerProcess {
     fn open(&self, hz: f64) {
         writeln!(self.stdin.borrow_mut(), "{hz}").expect("the player runs");
     }
+
+    /// Closes the stream that plays `hz`: a call that ends, say.
+    fn close(&self, hz: f64) {
+        writeln!(self.stdin.borrow_mut(), "-{hz}").expect("the player runs");
+    }
 }
 
 impl Drop for PlayerProcess {
@@ -827,9 +874,10 @@ fn player_process() {
     println!("player pid {}", std::process::id());
     let player = InProcessPlayer::start(&name);
     for line in std::io::stdin().lines() {
-        match line.ok().and_then(|l| l.trim().parse().ok()) {
-            Some(hz) => player.open(hz),
-            None => break,
+        match line.ok().and_then(|l| l.trim().parse::<f64>().ok()) {
+            Some(hz) if hz > 0.0 => player.open(hz),
+            Some(hz) if hz < 0.0 => player.close(-hz),
+            _ => break,
         }
     }
 }
@@ -857,6 +905,11 @@ impl InProcessPlayer {
     fn open(&self, hz: f64) {
         let _ = self.commands.send(hz);
     }
+
+    /// Closes the stream that plays `hz`.
+    fn close(&self, hz: f64) {
+        let _ = self.commands.send(-hz);
+    }
 }
 
 impl Drop for InProcessPlayer {
@@ -868,7 +921,8 @@ impl Drop for InProcessPlayer {
     }
 }
 
-/// The PipeWire thread of an [`InProcessPlayer`]: opens a stream for every frequency it gets, and ends at 0.
+/// The PipeWire thread of an [`InProcessPlayer`]: opens a stream for every frequency it gets, closes the one of a
+/// negative frequency, and ends at 0.
 fn play(name: &str, commands: pw::channel::Receiver<f64>, ready: mpsc::Sender<()>) {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).unwrap();
@@ -938,14 +992,22 @@ fn play(name: &str, commands: pw::channel::Receiver<f64>, ready: mpsc::Sender<()
                     &mut [pw::spa::pod::Pod::from_bytes(&format).unwrap()],
                 )
                 .unwrap();
-            streams.borrow_mut().push((listener, stream));
+            streams.borrow_mut().push((hz, listener, stream));
         }
     };
     let _commands = commands.attach(mainloop.loop_(), {
         let mainloop = mainloop.downgrade();
+        let streams = Rc::clone(&streams);
         move |hz| {
             if hz > 0.0 {
                 open(hz);
+            } else if hz < 0.0 {
+                let mut streams = streams.borrow_mut();
+                if let Some(i) = streams.iter().position(|(playing, ..)| *playing == -hz) {
+                    let (_, listener, stream) = streams.remove(i);
+                    let _ = stream.disconnect();
+                    drop(listener);
+                }
             } else if let Some(mainloop) = mainloop.upgrade() {
                 mainloop.quit();
             }
@@ -953,7 +1015,7 @@ fn play(name: &str, commands: pw::channel::Receiver<f64>, ready: mpsc::Sender<()
     });
     let _ = ready.send(());
     mainloop.run();
-    for (listener, stream) in streams.borrow_mut().drain(..) {
+    for (_, listener, stream) in streams.borrow_mut().drain(..) {
         let _ = stream.disconnect();
         drop(listener);
     }

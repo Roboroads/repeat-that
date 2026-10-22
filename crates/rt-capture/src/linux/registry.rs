@@ -367,12 +367,15 @@ struct Capture {
 struct Ducking {
     before_duck: BeforeDuck,
     journal: Option<PathBuf>,
-    /// Entries from an earlier run's journal that no stream has matched yet.
+    /// Ducks no stream holds any more: entries from an earlier run's journal that no stream has matched yet, and those
+    /// of streams that closed while ducked. WirePlumber gives their volume to the next stream with their identifier.
     pending: Vec<JournalEntry>,
     /// What the journal holds, to skip writes that change nothing.
     written: Option<String>,
     /// The level new streams of a ducked app join at.
     join: HashMap<AppKey, f32>,
+    /// The apps being ducked, so a fade still finds an app whose streams all closed meanwhile.
+    apps: Vec<(AudioApp, AppKey)>,
 }
 
 impl Ducking {
@@ -562,7 +565,15 @@ impl State {
     fn removed(&mut self, id: u32) {
         self.clients.remove(&id);
         self.ports.remove(&id);
-        if self.nodes.remove(&id).is_some() {
+        if let Some(node) = self.nodes.remove(&id) {
+            // A stream that closes while ducked leaves its volume with WirePlumber, for the next stream of the app: that
+            // one joins the duck, or once the duck is over gets the volume back as after a crash.
+            if let Some(stream) = &node.stream
+                && let Some(entry) = self.ducking.before_duck.take(&stream.serial)
+            {
+                self.ducking.pending.push(entry);
+                self.ducking.save();
+            }
             // Captures whose own node went (it failed), or whose app is gone: no streams left, and no process either.
             let nodes = &self.nodes;
             let ended: Vec<u64> = self
@@ -765,10 +776,18 @@ impl State {
         duck_level: &DuckLevel,
     ) -> Result<()> {
         let groups = self.fade_groups();
-        let key = apps::find(&groups, app)
-            .ok_or(CaptureError::AppNotFound(app.pid))?
-            .key
-            .clone();
+        let found = apps::find(&groups, app).map(|group| group.key.clone());
+        // An app whose streams all closed during the duck isn't listed, but its duck still ends.
+        let ducked = self
+            .ducking
+            .apps
+            .iter()
+            .find(|(a, _)| a == app)
+            .map(|(_, key)| key.clone());
+        let Some(key) = found.or(ducked) else {
+            duck_level.set(1.0, capture::now());
+            return Err(CaptureError::AppNotFound(app.pid));
+        };
         let State { nodes, ducking, .. } = self;
         let streams: Vec<&Stream> = nodes
             .values()
@@ -785,11 +804,15 @@ impl State {
                 }
             }
         }
-        adopt(&mut ducking.before_duck, &streams);
+        adopt(&mut ducking.before_duck, &ducking.pending, &streams);
         let sessions: Vec<NodeSession<'_>> = streams.iter().filter_map(|s| session(s)).collect();
         ramp::apply(&sessions, level, duck_new, &mut ducking.before_duck);
         // Captures switch their compensation for audio played from the next cycle on.
         duck_level.set(level, capture::now() + capture::VOLUME_DELAY);
+        ducking.apps.retain(|(a, _)| a != app);
+        if level < 1.0 {
+            ducking.apps.push((app.clone(), key.clone()));
+        }
         if duck_new && level < 1.0 {
             ducking.join.insert(key, level);
         } else {
@@ -810,6 +833,7 @@ impl State {
             }
         }
         ducking.join.clear();
+        ducking.apps.clear();
         ducking.save();
     }
 
@@ -828,7 +852,7 @@ impl State {
         let Some(stream) = nodes.get(&id).and_then(|n| n.stream.as_ref()) else {
             return;
         };
-        if adopt(&mut ducking.before_duck, &[stream]) {
+        if adopt(&mut ducking.before_duck, &ducking.pending, &[stream]) {
             ducking.save();
         }
         if first
@@ -847,11 +871,12 @@ impl State {
             return;
         }
         let State { nodes, ducking, .. } = self;
-        // Streams this run ducked aren't the earlier run's.
+        // Streams this run ducked aren't the earlier run's, and those of an app being ducked join that duck instead.
         let streams: Vec<&Stream> = nodes
             .values()
             .filter_map(|n| n.stream.as_ref())
             .filter(|s| !ducking.before_duck.contains(&s.serial))
+            .filter(|s| !s.placement.as_ref().is_some_and(|p| ducking.join.contains_key(&p.key)))
             .collect();
         let known: Vec<(&Stream, String, f32, bool)> = streams
             .iter()
@@ -905,9 +930,9 @@ impl Stream {
 
 /// Takes streams that aren't ducked by us but sit at the ducked volume of another of ours with the same identifier as
 /// ducked from that one's volume, and says whether there were any. WirePlumber gives a new stream the volume it
-/// remembers for its identifier, which is the ducked one while we duck a stream with that identifier; ducking it from
-/// there would duck it twice, and restoring would leave it ducked.
-fn adopt(before_duck: &mut BeforeDuck, streams: &[&Stream]) -> bool {
+/// remembers for its identifier, which is the ducked one while we duck a stream with that identifier, or did until it
+/// closed (`pending`); ducking it from there would duck it twice, and restoring would leave it ducked.
+fn adopt(before_duck: &mut BeforeDuck, pending: &[JournalEntry], streams: &[&Stream]) -> bool {
     let mut adopted = false;
     for stream in streams {
         let (Some(identifier), Some(level)) = (&stream.identifier, stream.volume.borrow().level()) else {
@@ -918,6 +943,7 @@ fn adopt(before_duck: &mut BeforeDuck, streams: &[&Stream]) -> bool {
         }
         let sibling = before_duck
             .entries()
+            .chain(pending)
             .find(|e| e.identifier == *identifier && duck_journal::should_restore(e, level))
             .map(|e| e.original);
         if let Some(original) = sibling {
