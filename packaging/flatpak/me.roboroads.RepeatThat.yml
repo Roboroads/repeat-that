@@ -26,6 +26,12 @@ finish-args:
   - --filesystem=xdg-run/pipewire-0
   # The tray icon: the app tells the desktop's tray (StatusNotifier) about its icon and menu.
   - --talk-name=org.kde.StatusNotifierWatcher
+  # KDE's shortcut daemon, for one call: Plasma 6.3's GlobalShortcuts portal lists the app's shortcuts under the Flatpak ID
+  # ("me.roboroads.RepeatThat") instead of "Repeat That", and the app gives them their name through kglobalaccel
+  # (`allActionsForComponent` and `doRegister` for its own component only). Without this permission the sandbox hides the
+  # name, so the call can't be made. Plasma 6.4 and later get the name from the desktop file, and the permission can go
+  # when 6.3 is out of use. It is not asked for anything else.
+  - --talk-name=org.kde.kglobalaccel
   # No network and no home folder: the app needs neither, and audio never leaves memory.
 
 build-options:

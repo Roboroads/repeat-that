@@ -5,8 +5,9 @@
 #
 #   * the file is named Repeat-That_<version>_x86_64.flatpak, as people download it (no spaces);
 #   * the bundle installs, as a user installation;
-#   * the permissions are exactly the ones the manifest asks for: the display, the GPU, the PipeWire socket and the tray's
-#     D-Bus name, and nothing more (no network, no PulseAudio, no home folder, no other bus names);
+#   * the permissions are exactly the ones the manifest asks for: the display, the GPU, the PipeWire socket and the D-Bus
+#     names of the tray and of KDE's shortcut daemon, and nothing more (no network, no PulseAudio, no home folder, no
+#     other bus names);
 #   * everything the desktop needs is exported: the desktop entry, the metainfo and the icons, under the Flatpak's ID;
 #   * the binary has every library it links (ldd) and so has the tray library the app opens at run time;
 #   * the self-check (`--rt-self-check`) reports Silero with the version of the bundle, which also proves that the
@@ -99,7 +100,7 @@ wanted = {
         "shared": {"ipc"},
         "sockets": {"wayland", "fallback-x11"},  # and `x11`, which an older Flatpak reads instead of fallback-x11
     },
-    "Session Bus Policy": {"org.kde.StatusNotifierWatcher": {"talk"}},
+    "Session Bus Policy": {"org.kde.StatusNotifierWatcher": {"talk"}, "org.kde.kglobalaccel": {"talk"}},
 }
 problems = []
 for name in found.keys() | wanted.keys():
@@ -114,7 +115,7 @@ print("\n".join(problems))
 sys.exit(1 if problems else 0)
 PY
 ); then
-  ok "the permissions are the display, the GPU, the PipeWire socket and the tray's bus name, and nothing else"
+  ok "the permissions are the display, the GPU, the PipeWire socket and the tray and shortcut daemon bus names, and nothing else"
 else
   fail "the permissions are not what the manifest asks for:"
   indent <<<"$out"
