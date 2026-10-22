@@ -104,6 +104,16 @@ describe("checkDist", () => {
     expect(checkDist(build({ "index.html": html }))).toHaveLength(1);
   });
 
+  it("reports a link with a stray percent sign instead of crashing on it", () => {
+    const errors = checkDist(build({ "index.html": `<a href="/100%/">x</a><a href="/verify/#100%">y</a>` }));
+    expect(errors).toHaveLength(2);
+    expect(errors.join("\n")).toMatch(/100%/);
+  });
+
+  it("reads percent escapes in links and anchors", () => {
+    expect(checkDist(build({ "index.html": `<a href="/verify/#win%64ows">x</a><a href="/gu%69de/">y</a>` }))).toEqual([]);
+  });
+
   it("catches a script, a stylesheet, an image, an iframe and a video from another origin", () => {
     const html = [
       `<script src="https://cdn.example.com/a.js"></script>`,

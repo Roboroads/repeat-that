@@ -42,6 +42,15 @@ function listFiles(dir) {
 /** @param {string} value */
 const decode = (value) => value.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'");
 
+/** Undoes %-escapes. A stray % is a broken link, not a reason to crash. @param {string} value @returns {string | undefined} */
+function decodePercent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
+}
+
 /** @param {string} value */
 const isExternal = (value) => /^(https?:)?\/\//i.test(value.trim());
 
@@ -130,7 +139,9 @@ export function checkDist(distDir) {
 
   /** The file a path in the build is served from, or undefined. @param {string} pathname */
   const fileFor = (pathname) => {
-    const clean = decodeURIComponent(pathname).replace(/^\//, "");
+    const decoded = decodePercent(pathname);
+    if (decoded === undefined) return undefined;
+    const clean = decoded.replace(/^\//, "");
     const candidates = clean === "" || clean.endsWith("/") ? [`${clean}index.html`] : [clean, `${clean}/index.html`];
     return candidates.find((candidate) => existsSync(join(root, candidate)) && statSync(join(root, candidate)).isFile());
   };
@@ -169,7 +180,7 @@ export function checkDist(distDir) {
             errors.push(`${page}: <${name} ${attribute}="${href}"> points at nothing (${url.pathname})`);
             continue;
           }
-          const fragment = decodeURIComponent(url.hash.slice(1));
+          const fragment = decodePercent(url.hash.slice(1)) ?? url.hash.slice(1);
           if (fragment && fragment !== "top" && target.endsWith(".html") && !anchorsOf(target).has(fragment)) {
             errors.push(`${page}: <${name} ${attribute}="${href}"> points at #${fragment}, which ${target} does not have`);
           }
