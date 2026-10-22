@@ -957,7 +957,8 @@ Only the maintainer does these, in this order. Steps 1 to 3 are done.
      -f name=main -f type=branch
    ```
 
-3. Store the secrets. The second command asks for the password:
+3. Store the secrets. The second command asks for the password. It is only for a key that has one, which this key does:
+   a key made without a password needs the first secret only.
 
    ```sh
    gh secret set TAURI_SIGNING_PRIVATE_KEY --env updater-signing --repo Roboroads/repeat-that < ~/.tauri/repeat-that-updater.key
@@ -970,10 +971,12 @@ Only the maintainer does these, in this order. Steps 1 to 3 are done.
    gh variable set TAURI_UPDATER_PUBKEY --repo Roboroads/repeat-that < ~/.tauri/repeat-that-updater.key.pub
    ```
 
-5. Check it. Run Actions → Publish release → Run workflow on `main` without a tag. The job summary lists the `.sig`
-   and `latest-*.json` files, signed with the throwaway key: a dry run never uses the real one. The real key is used
-   for the first time by the first release. If its password is wrong, or it doesn't match the variable, `Publish`
-   fails before it uploads anything and the draft stays: fix the secret and run the failed job again.
+5. Check it. Run Actions → Publish release → Run workflow on `main` without a tag. The builds now have the public key
+   compiled in, and the Linux and macOS self-checks must say `"updater":true`. The job summary lists the `.sig` and
+   `latest-*.json` files, signed with the throwaway key: a dry run never uses the real one or the Environment. The real
+   key is used for the first time by the first release. `Check release` then fails the run before any build if the
+   variable or the private key isn't a key file, and `Publish` fails before it uploads anything, leaving the draft, if
+   the password is wrong or the key doesn't match the variable. Fix the secret and run the failed job again.
 
 The first release made after step 4 carries the updater. The first update anyone receives is the release after that,
 because v0.1.0 has no updater.
