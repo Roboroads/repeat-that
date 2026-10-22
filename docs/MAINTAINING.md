@@ -403,8 +403,8 @@ latest release into the pages when it is built, so a visitor's browser contacts 
 - every finished run of `release-please` or `Publish release` on `main`. A release can't start a workflow
   (`publish-release.yml` publishes it with `GITHUB_TOKEN`), so this is how a new release gets onto the site, and how the
   `.dmg` of a [late attach](#late-macos-attach) does. `release-please` runs on every push to `main`, so most of these
-  runs rebuild the page that is already there
-- a schedule, every day at 04:17 UTC
+  runs find nothing new and stop early, see below
+- a schedule, every day at 04:17 UTC, which also stops early when there is nothing new
 - `gh workflow run site.yml`, for example after uploading the demo video
 
 Every pull request gets the `Site plan` job, which looks at what the PR changes. When it touches those paths, `Site build`
@@ -414,10 +414,19 @@ passed. Both are required checks in [`.github/rulesets/main.json`](../.github/ru
 filter on pull requests for the same reason `ci.yml` has none: a required check that doesn't run leaves the PR waiting.
 Like the rest of the ruleset, the two checks count once it is applied (see [Branch protection](#branch-protection)).
 
-A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`. It
-fetches the demo video if there is one, then runs the type check, the unit tests, the build, `npm run check:dist` and the
-browser tests. It uploads `site/dist`, checks that the upload kept the hidden files (`.nojekyll` and
-`.well-known/security.txt`), deploys, and asks the live site for its front page and `security.txt`.
+A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`
+(the `Site plan` job). It fetches the demo video if there is one, then runs the type check, the unit tests, the build,
+`npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
+(`.nojekyll` and `.well-known/security.txt`), deploys, and asks the live site for its front page, `security.txt` and
+`build-info.txt`.
+
+**Stopping early.** The build puts `build-info.txt` in the root of the site: a hash of the files the site is built from,
+a hash of the download data, a hash of the files on the `site-media` release, and the build date. A run started by
+`release-please`, `Publish release` or the schedule fetches the live file first. When it says the same as this run would
+build and is less than 60 days old, the run ends after the plan job with a note in its summary, and nothing is built or
+deployed. So a new release (or a `.dmg` from a late attach), a changed demo video and a change under the site paths get
+built, and the rest of the pushes to `main` and most of the daily runs don't create a Pages deployment. A push that
+touches the site paths and `gh workflow run site.yml` always build. While the site isn't live yet, every run builds.
 
 When the release data doesn't add up (an asset without a line in `SHA256SUMS`, a line for a file that isn't on the
 release, a malformed line), the build fails with an error that names the problem and the previous deploy stays up. The
@@ -489,7 +498,7 @@ the build if a hidden file is missing.
 
 The build writes `.well-known/security.txt` (RFC 9116) itself. `Contact` is private vulnerability reporting, `Policy` is
 the security policy, `Canonical` is the file's own address and `Expires` is the build date plus 180 days. The daily run
-keeps it current. GitHub switches scheduled workflows off after 60 days without activity in the repository, and then the
+builds again once the live site is 60 days old, which keeps it current. GitHub switches scheduled workflows off after 60 days without activity in the repository, and then the
 file runs out 180 days after the last build. `gh workflow enable site.yml` and `gh workflow run site.yml` fix that.
 
 ### Flathub and this site

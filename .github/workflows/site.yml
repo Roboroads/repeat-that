@@ -77,7 +77,7 @@ jobs:
         .github/scripts/release_assets.py
         .github/workflows/site.yml
     outputs:
-      build: ${{ steps.scope.outputs.build }}
+      build: ${{ steps.decide.outputs.build }}
       tag: ${{ steps.release.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
@@ -127,12 +127,84 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Building the site for release ${tag}." >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Hand the release data to the build
+      # The build puts this file on the site as build-info.txt. `inputs` is a hash of the files the site is built from,
+      # `release-data` of the download data and `media` of the files on the site-media release; `built` is when
+      # security.txt was last renewed and `commit` is only there to read.
+      - name: Describe this build
         if: steps.scope.outputs.build == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          data="$RUNNER_TEMP/site-data"
+          mapfile -t paths <<< "$SITE_PATHS"
+          inputs=$(git ls-files -s -- "${paths[@]}" | sha256sum | cut -d' ' -f1)
+          release_data=$(sha256sum "$data/release.json" | cut -d' ' -f1)
+          if media_assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/site-media" --jq '[.assets[] | "\(.name) \(.size) \(.updated_at)"] | sort | join("\n")' 2> "$data/media.err"); then
+            media=$(printf '%s' "$media_assets" | sha256sum | cut -d' ' -f1)
+          elif grep -q 'HTTP 404' "$data/media.err"; then
+            media=none
+          else
+            cat "$data/media.err" >&2
+            echo "::error::Could not read the site-media release"
+            exit 1
+          fi
+          {
+            echo "inputs=$inputs"
+            echo "release-data=$release_data"
+            echo "media=$media"
+            echo "release=${TAG:-none}"
+            echo "commit=$GITHUB_SHA"
+            echo "built=$(date -u +%F)"
+          } > "$data/build-info.txt"
+          cat "$data/build-info.txt"
+
+      # release-please.yml runs on every push to main, so most workflow_run runs and every daily run find the site as it
+      # is. They stop here when the live build-info.txt says the same about the inputs, the release and the media, and
+      # when security.txt was renewed less than 60 days ago (it is good for 180). A site that doesn't answer, or has no
+      # build-info.txt yet, counts as out of date. The other triggers (a push to the site, a manual run) always build.
+      - name: Check whether the live site is current
+        id: current
+        if: steps.scope.outputs.build == 'true' && (github.event_name == 'workflow_run' || github.event_name == 'schedule')
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          data="$RUNNER_TEMP/site-data"
+          domain=$(tr -d '[:space:]' < site/public/CNAME)
+          pick() { grep -E '^(inputs|release-data|media)=' "$1" | sort; }
+          if ! curl --fail --silent --show-error --location --max-time 20 "https://$domain/build-info.txt?check=$GITHUB_RUN_ID" > "$data/live-info.txt" 2> "$data/live.err"; then
+            echo "The live site has no build-info.txt, so it gets built."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          elif [ "$(pick "$data/live-info.txt")" != "$(pick "$data/build-info.txt")" ]; then
+            echo "The live site is out of date, so it gets built. Live on the left, this build on the right:"
+            diff <(pick "$data/live-info.txt") <(pick "$data/build-info.txt") || true
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            built=$(sed -n 's/^built=//p' "$data/live-info.txt")
+            if built_at=$(date -u -d "$built" +%s) && [ $(( $(date -u +%s) - built_at )) -le $(( 60 * 86400 )) ]; then
+              echo "The live site is current (release ${TAG:-none}, built $built), so there is nothing to build or deploy."
+              echo "The live site is current (release ${TAG:-none}, built $built), so nothing was built or deployed." >> "$GITHUB_STEP_SUMMARY"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "The live site was built on ${built:-an unknown date}, so security.txt gets renewed."
+              echo "build=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Decide
+        id: decide
+        env:
+          SCOPE: ${{ steps.scope.outputs.build }}
+          CURRENT: ${{ steps.current.outputs.build }}
+        run: echo "build=${CURRENT:-$SCOPE}" >> "$GITHUB_OUTPUT"
+
+      - name: Hand the release data to the build
+        if: steps.decide.outputs.build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: site-inputs
-          path: ${{ runner.temp }}/site-data/release.json
+          path: |
+            ${{ runner.temp }}/site-data/release.json
+            ${{ runner.temp }}/site-data/build-info.txt
           retention-days: 1
           if-no-files-found: error
 
@@ -194,6 +266,9 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
 
+      - name: Add build-info.txt
+        run: cp "$RUNNER_TEMP/site-data/build-info.txt" dist/build-info.txt
+
       - name: Read the domain
         id: domain
         run: echo "domain=$(tr -d '[:space:]' < dist/CNAME)" >> "$GITHUB_OUTPUT"
@@ -214,7 +289,7 @@ jobs:
           tar -tf "$RUNNER_TEMP/artifact.tar" > "$RUNNER_TEMP/site-data/artifact-files.txt"
           echo "$(wc -l < "$RUNNER_TEMP/site-data/artifact-files.txt") entries in the artifact"
           missing=0
-          for file in ./index.html ./CNAME ./.nojekyll ./.well-known/security.txt; do
+          for file in ./index.html ./CNAME ./.nojekyll ./build-info.txt ./.well-known/security.txt; do
             if ! grep -qxF "$file" "$RUNNER_TEMP/site-data/artifact-files.txt"; then
               echo "::error::The uploaded site has no $file"
               missing=1
@@ -268,12 +343,12 @@ jobs:
         if: steps.pages.outputs.enabled == 'true'
         uses: actions/deploy-pages@v5
 
-      # The page has to answer with the release it was built for, and security.txt has to be served from .well-known.
-      # The release is found by its link, which the page has whenever there is a release (also when no file of it is
-      # listed) and ends in a quote, so v0.1.1 doesn't match a stale page of v0.1.10. A new deploy can take a few
-      # seconds to reach the CDN, hence the retries and the query string, which makes the request miss a copy that was
-      # cached before the deploy. The base path of the site is "/", which only works on the custom domain, so on the
-      # github.io address of the repository this check is skipped.
+      # The page has to answer with the release it was built for, and security.txt and build-info.txt (which the next
+      # scheduled run compares itself with) have to be served. The release is found by its link, which the page has
+      # whenever there is a release (also when no file of it is listed) and ends in a quote, so v0.1.1 doesn't match a
+      # stale page of v0.1.10. A new deploy can take a few seconds to reach the CDN, hence the retries and the query
+      # string, which makes the request miss a copy that was cached before the deploy. The base path of the site is "/",
+      # which only works on the custom domain, so on the github.io address of the repository this check is skipped.
       - name: Check the live site
         if: steps.deployment.outcome == 'success'
         env:
@@ -293,11 +368,11 @@ jobs:
             curl --fail --silent --show-error --location --max-time 20 "$1?check=$GITHUB_RUN_ID-$attempt"
           }
           for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
-            if page=$(fetch "$base/") && { [ -z "$TAG" ] || grep -qF "/releases/tag/$TAG\"" <<< "$page"; } && fetch "$base/.well-known/security.txt" > /dev/null; then
+            if page=$(fetch "$base/") && { [ -z "$TAG" ] || grep -qF "/releases/tag/$TAG\"" <<< "$page"; } && fetch "$base/.well-known/security.txt" > /dev/null && fetch "$base/build-info.txt" > /dev/null; then
               echo "The live site answers with release ${TAG:-none}"
               exit 0
             fi
             sleep 10
           done
-          echo "::error::$base/ didn't answer with release ${TAG:-none} and a security.txt within two minutes"
+          echo "::error::$base/ didn't answer with release ${TAG:-none}, a security.txt and a build-info.txt within two minutes"
           exit 1
