@@ -191,8 +191,10 @@ export const config: WebdriverIO.Config = {
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     session = { root, bus, driver };
-    // For the specs, which run in this process: they look in it for what the app left behind.
+    // For the specs, which run in this process: they look in it for what the app left behind, and check that the app was
+    // given the update source they expect (an empty value is none).
     process.env.E2E_APP_HOME = root;
+    process.env.E2E_UPDATE_MOCK = env.REPEAT_THAT_MOCK_UPDATE ?? '';
     // A session that fails to start never reaches `afterSession`, and must not leave a driver behind.
     process.once('exit', () => session && killNow(session));
     await waitFor('dbus-daemon', async () => existsSync(busSocket), bus);

@@ -26,17 +26,25 @@ export interface BackendUpdateStatus {
 export const backendUpdateStatus = () => invoke<BackendUpdateStatus>('get_update_status');
 
 /**
- * Fails with a clear message when the app wasn't started the way the spec needs. Without it every test would fail
- * without saying why. `mock` is the value of `REPEAT_THAT_MOCK_UPDATE`, or `null` for an app with no update source.
+ * Fails with a clear message when the app wasn't started the way the spec needs. Without it a wrong entry in `SPEC_ENV`
+ * would show up as timeouts that say nothing about the cause. `mock` is the value of `REPEAT_THAT_MOCK_UPDATE` the spec
+ * is written for, or `null` for an app with no update source.
  */
 export async function requireUpdateSource(mock: string | null): Promise<void> {
+  // What wdio.conf.ts gave the app. Every mock makes the app an install that can replace itself, so the app's own
+  // answer can only tell a mock from none, and the kind has to come from here.
+  const given = process.env.E2E_UPDATE_MOCK || null;
+  if (given !== mock) {
+    throw new Error(
+      `this spec needs REPEAT_THAT_MOCK_UPDATE=${mock ?? '(not set)'}, but the app was started with ${given ?? '(it not set)'} (SPEC_ENV in e2e/wdio.conf.ts)`,
+    );
+  }
   const { mode } = await backendUpdateStatus();
-  // A mock makes the app act as an install that can replace itself; no mock in a debug build is no updater at all.
   if (mode === (mock === null ? 'off' : 'install')) return;
   throw new Error(
     mock === null
-      ? `the app has an updater (mode "${mode}"), but this spec needs none: REPEAT_THAT_MOCK_UPDATE must not be set (SPEC_ENV in e2e/wdio.conf.ts)`
-      : `the app wasn't started with REPEAT_THAT_MOCK_UPDATE=${mock} (SPEC_ENV in e2e/wdio.conf.ts), its update mode is "${mode}"`,
+      ? `the app has an updater (mode "${mode}"), but this spec needs none: REPEAT_THAT_MOCK_UPDATE must not be set`
+      : `the app wasn't started with REPEAT_THAT_MOCK_UPDATE=${mock}: its update mode is "${mode}"`,
   );
 }
 
