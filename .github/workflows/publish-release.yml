@@ -136,9 +136,9 @@ jobs:
     name: Check release
     if: ${{ inputs.mode != 'late-attach' && inputs.tag != '' }}
     runs-on: ubuntu-latest
-    # Only main may use the Environment, so a release from another branch stops here. The job only looks at the
-    # secrets (the step below), it signs nothing.
-    environment: updater-signing
+    # The Environment is only there for the secrets, which the step below only looks at (this job signs nothing), so
+    # it is used once the key exists. Without one, its rules (only main may use it) must not hold up a release.
+    environment: ${{ vars.TAURI_UPDATER_PUBKEY != '' && 'updater-signing' || '' }}
     permissions:
       contents: write # drafts are only visible with write access; this job only reads
     steps:
