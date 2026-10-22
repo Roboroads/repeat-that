@@ -14,25 +14,12 @@ use std::path::{Path, PathBuf};
 
 use crate::session::{Env, ProcessEnv};
 
-/// The file Flatpak puts at the root of every sandbox.
-const FLATPAK_INFO: &str = "/.flatpak-info";
-
-/// Whether the app runs inside a Flatpak sandbox: Flatpak sets `FLATPAK_ID` in the environment of the app, and
-/// `/.flatpak-info` is in the sandbox whatever the environment (a program started with `env -i`, say).
-pub fn in_flatpak() -> bool {
-    in_flatpak_with(&ProcessEnv, Path::new(FLATPAK_INFO))
-}
-
-fn in_flatpak_with(env: &dyn Env, info: &Path) -> bool {
-    env.var("FLATPAK_ID").is_some() || info.exists()
-}
-
 /// Where the tray library should write the icon files, or `None` for its own choice. The desktop's tray (a separate
 /// process outside the sandbox) opens the file by its path, and the library's default, `$XDG_RUNTIME_DIR/tray-icon`,
 /// is inside the sandbox, so the tray would show a blank icon. Flatpak shares `$XDG_RUNTIME_DIR/app/$FLATPAK_ID`
 /// between the sandbox and the host at the same path, which is where the icon goes.
 pub fn tray_icon_dir() -> Option<PathBuf> {
-    tray_icon_dir_in(&ProcessEnv, in_flatpak())
+    tray_icon_dir_in(&ProcessEnv, rt_capture::in_flatpak())
 }
 
 fn tray_icon_dir_in(env: &dyn Env, sandboxed: bool) -> Option<PathBuf> {
@@ -55,7 +42,7 @@ pub enum AutostartKind {
 
 /// How this install starts with the system: through the portal in a Flatpak, the plugin everywhere else.
 pub fn autostart_kind() -> AutostartKind {
-    autostart_kind_for(in_flatpak())
+    autostart_kind_for(rt_capture::in_flatpak())
 }
 
 fn autostart_kind_for(sandboxed: bool) -> AutostartKind {
@@ -87,72 +74,6 @@ mod tests {
                 .filter(|value| !value.is_empty())
                 .map(|value| value.to_string())
         }
-    }
-
-    /// A folder standing in for the root of the file system, with or without `.flatpak-info` in it.
-    fn root(with_info: bool) -> (scratch::Dir, PathBuf) {
-        let dir = scratch::Dir::new();
-        let info = dir.path().join(".flatpak-info");
-        if with_info {
-            std::fs::write(&info, "[Application]\nname=me.roboroads.RepeatThat\n").unwrap();
-        }
-        (dir, info)
-    }
-
-    /// A scratch folder that is removed when it goes out of scope.
-    mod scratch {
-        use std::path::{Path, PathBuf};
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        pub struct Dir(PathBuf);
-
-        impl Dir {
-            pub fn new() -> Self {
-                static COUNT: AtomicUsize = AtomicUsize::new(0);
-                let path = std::env::temp_dir().join(format!(
-                    "repeat-that-sandbox-{}-{}",
-                    std::process::id(),
-                    COUNT.fetch_add(1, Ordering::SeqCst)
-                ));
-                std::fs::create_dir_all(&path).unwrap();
-                Dir(path)
-            }
-
-            pub fn path(&self) -> &Path {
-                &self.0
-            }
-        }
-
-        impl Drop for Dir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-    }
-
-    #[test]
-    fn the_flatpak_id_in_the_environment_means_a_flatpak() {
-        let (_dir, info) = root(false);
-        let env = FakeEnv::with(&[("FLATPAK_ID", "me.roboroads.RepeatThat")]);
-        assert!(in_flatpak_with(&env, &info));
-    }
-
-    #[test]
-    fn the_flatpak_info_file_means_a_flatpak_whatever_the_environment_says() {
-        let (_dir, info) = root(true);
-        assert!(in_flatpak_with(&FakeEnv::with(&[]), &info));
-    }
-
-    #[test]
-    fn neither_means_no_flatpak() {
-        let (_dir, info) = root(false);
-        assert!(!in_flatpak_with(&FakeEnv::with(&[("HOME", "/home/me")]), &info));
-    }
-
-    #[test]
-    fn an_empty_flatpak_id_is_not_one() {
-        let (_dir, info) = root(false);
-        assert!(!in_flatpak_with(&FakeEnv::with(&[("FLATPAK_ID", "")]), &info));
     }
 
     #[test]

@@ -633,7 +633,7 @@ mod worker {
         // Portals know apps by their ID. A packaged app is told apart by its desktop file, an unpackaged one has to say
         // who it is. Older portals don't have the call; they find the app by other means. A Flatpak is known by its
         // Flatpak ID, which the portal reads from the sandbox, and the call is for apps outside one.
-        if !crate::sandbox::in_flatpak() {
+        if !rt_capture::in_flatpak() {
             match AppID::try_from(HOST_APP_ID) {
                 Ok(id) => {
                     if let Err(err) = ashpd::register_host_app_with_connection(connection.clone(), id).await {
@@ -726,7 +726,7 @@ mod worker {
     fn name_for_kde(connection: &zbus::Connection) {
         // A Flatpak is known to the portal by its Flatpak ID, not `HOST_APP_ID`, and the desktop finds its name and icon
         // in the desktop file the Flatpak exports. kglobalaccel isn't reachable from the sandbox either.
-        if crate::sandbox::in_flatpak() {
+        if rt_capture::in_flatpak() {
             return;
         }
         let connection = connection.clone();
