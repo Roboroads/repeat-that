@@ -58,7 +58,7 @@ export const offerBanner = () => $(`aside*=${MOCK_VERSION}`);
 export interface OfferSnapshot {
   /** Everything the banner says; empty without a banner. */
   text: string;
-  /** The value of its progress bar, 0 to 1; `null` without a bar. */
+  /** The value of its progress bar, 0 to 1; `null` without a bar, or with one that has no value. */
   progress: number | null;
 }
 
@@ -67,7 +67,8 @@ export async function offerSnapshot(): Promise<OfferSnapshot> {
   return browser.execute((version: string) => {
     const banner = [...document.querySelectorAll('aside')].find((aside) => aside.textContent?.includes(version));
     const bar = banner?.querySelector('progress');
-    return { text: banner?.textContent ?? '', progress: bar ? bar.value : null };
+    // A bar without a value is indeterminate (the size of the download is unknown), and reads as 0.
+    return { text: banner?.textContent ?? '', progress: bar?.hasAttribute('value') ? bar.value : null };
   }, MOCK_VERSION);
 }
 

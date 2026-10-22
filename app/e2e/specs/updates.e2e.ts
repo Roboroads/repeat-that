@@ -112,8 +112,8 @@ describe('updates, with a version on offer', () => {
       },
       { interval: 50, timeoutMsg: 'the banner never said "Installing"' },
     );
-    expect(seen.some((s) => s.text.includes(`Downloading version ${MOCK_VERSION}`) && s.progress !== null)).toBe(true);
-    // Part of the way: neither at the start nor done.
+    expect(seen.some((s) => s.text.includes(`Downloading version ${MOCK_VERSION}`))).toBe(true);
+    // A bar that knows how far the download is, and shows it part of the way: neither at the start nor done.
     expect(seen.some((s) => s.progress !== null && s.progress > 0 && s.progress < 1)).toBe(true);
 
     await expect(offerBanner()).toHaveText(expect.stringContaining("Repeat That restarts when it's done."));
