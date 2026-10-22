@@ -524,6 +524,8 @@ mod tests {
 
         fn source(port: u16) -> (tauri::App<MockRuntime>, PluginSource<MockRuntime>) {
             let mut context = mock_context(noop_assets());
+            // The mock app would otherwise report a version of its own, not the one this crate is released as.
+            context.package_info_mut().version = env!("CARGO_PKG_VERSION").parse().unwrap();
             let endpoint = format!("http://127.0.0.1:{port}/latest-{{{{target}}}}-{{{{arch}}}}.json");
             context.config_mut().plugins.0.insert(
                 "updater".into(),
@@ -562,13 +564,7 @@ mod tests {
 
         #[test]
         fn the_running_version_is_no_update() {
-            // The mock app reports tauri's own fixed version, not this crate's: ask it, so a release bump
-            // can't break this test.
-            let running = mock_context::<MockRuntime, _>(noop_assets())
-                .package_info()
-                .version
-                .to_string();
-            let (_app, source) = with_release(&running, SIGNATURE, b"test");
+            let (_app, source) = with_release(env!("CARGO_PKG_VERSION"), SIGNATURE, b"test");
             assert_eq!(source.check(), Ok(None));
         }
 
