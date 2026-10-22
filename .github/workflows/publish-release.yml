@@ -32,6 +32,20 @@ name: Publish release
 #
 # To add a platform: add a job named like the platform in release_assets.py that `uses:` its build workflow, add it to
 # the `needs` of `publish`, and set `build=True` in release_assets.py. `gate` fails when the three are out of step.
+#
+# Update signing. The app's updater (off until the repository variable TAURI_UPDATER_PUBKEY, the public key, is set; the
+# build workflows compile it into the app) only installs files signed with the matching private key, which lives in the
+# updater-signing Environment, only main may use. This workflow is the one place that holds it: after the build jobs have
+# made the installers it signs the update payload of each platform (the NSIS .exe, the macOS .app.tar.gz, the
+# AppImage; .sig files), checks every signature against the public key with minisign and writes the platform's manifest
+# (latest-<target>-<arch>.json) with .github/scripts/sign-updates.sh. The files are release files like the others: in
+# SHA256SUMS, and kept or attached late with the macOS ones. What each run does is decided by `mode` of its
+# `Pick the update key` step:
+#   * release (a tag, and TAURI_UPDATER_PUBKEY is set): signs with the Environment's key. `check-release` has failed the
+#     run before the builds when the variable is set but a secret is missing.
+#   * throwaway (no tag, a dry run): signs with a key made in the job, so the whole path runs on every pull request. No
+#     Environment, so the real key is never at hand.
+#   * none (a tag, and no variable): no update files, with a notice. That is every release until the key exists.
 
 on:
   workflow_call:
@@ -95,6 +109,7 @@ on:
       - .github/workflows/build-*.yml
       - .github/scripts/release_assets.py
       - .github/scripts/test_release_assets.py
+      - .github/scripts/sign-updates.sh
       - .github/scripts/site_release.py
       - .github/scripts/test_site_release.py
       - .github/scripts/updater_manifest.py
@@ -114,12 +129,16 @@ concurrency:
 
 jobs:
   # Fails in seconds, before the long builds, when there is no release to attach to, when it is public and already has
-  # its files (replacing those would change files people may have downloaded and verified), or when it holds a file no
-  # build here produces.
+  # its files (replacing those would change files people may have downloaded and verified), when it holds a file no
+  # build here produces, or when the update key is half there: the public key is set, so the builds have an updater,
+  # but the Environment lacks a secret to sign its updates with.
   check-release:
     name: Check release
     if: ${{ inputs.mode != 'late-attach' && inputs.tag != '' }}
     runs-on: ubuntu-latest
+    # The Environment is only there for the secrets, which the step below only looks at (this job signs nothing), so
+    # it is used once the key exists. Without one, its rules (only main may use it) must not hold up a release.
+    environment: ${{ vars.TAURI_UPDATER_PUBKEY != '' && 'updater-signing' || '' }}
     permissions:
       contents: write # drafts are only visible with write access; this job only reads
     steps:
@@ -142,6 +161,14 @@ jobs:
           if [[ "$REPLACE" == true ]]; then flags+=(--replace); fi
           python3 .github/scripts/release_assets.py check-release --tag "$TAG" --mode full \
             --release-json release.json "${flags[@]}"
+
+      # The three values only reach this one step, and the script says which are set, never what they are.
+      - name: Check the update key
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: python3 .github/scripts/release_assets.py check-updater-keys --summary "$GITHUB_STEP_SUMMARY"
 
   # One job per platform, named like the platform in release_assets.py, each calling that platform's build workflow.
   # They upload `release-<platform>-*` artifacts and check that the version they built matches the tag.
@@ -197,6 +224,9 @@ jobs:
     if: ${{ !cancelled() && inputs.mode != 'late-attach' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The Environment with the private update key, for a release that has the public key. A dry run has none: it signs
+    # with a throwaway key, and without the Environment its secrets are empty.
+    environment: ${{ inputs.tag != '' && vars.TAURI_UPDATER_PUBKEY != '' && 'updater-signing' || '' }}
     permissions:
       contents: write
       actions: read # lists the artifacts of this run
@@ -205,9 +235,15 @@ jobs:
       TAG: ${{ inputs.tag }}
       REPLACE: ${{ inputs.replace }}
     steps:
+      # The two files of app/ that `npm ci` reads, to install the Tauri CLI that signs the updates at the version of its
+      # lock file. Patterns of files need the non-cone mode.
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            /.github/scripts/
+            /app/package.json
+            /app/package-lock.json
+          sparse-checkout-cone-mode: false
 
       - name: Test the release script
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
@@ -241,10 +277,100 @@ jobs:
           merge-multiple: true
           path: assets
 
+      # The update files, see the top of this file. In `none` mode nothing below runs and the release has the installers
+      # only. The variable is set when it is not empty, like the `!= ''` of the Environment and the build workflows;
+      # check-release has refused a value that is no key.
+      - name: Pick the update key
+        id: updater
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAG" ]]; then
+            mode=throwaway
+          elif [[ -n "$PUBKEY" ]]; then
+            mode=release
+          else
+            mode=none
+            echo "::notice::TAURI_UPDATER_PUBKEY is not set, so this release has no update files (and its apps no updater)."
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Update files: $mode"
+
+      - uses: actions/setup-node@v7
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        with:
+          node-version: '22.19' # same as the build workflows
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # --ignore-scripts: nothing from the lock file needs to run, and this job may hold the private key.
+      - name: Install the Tauri CLI and minisign
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        run: |
+          set -euo pipefail
+          (cd app && npm ci --ignore-scripts --no-audit --no-fund)
+          app/node_modules/.bin/tauri --version
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          minisign -v
+
+      # The private key is in the environment of this step only, and only a release has it.
+      - name: Sign the update files
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        env:
+          MODE: ${{ steps.updater.outputs.mode }}
+          DIR: assets
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          notes=$RUNNER_TEMP/release-notes.txt
+          pubkey=$RUNNER_TEMP/update-key.pub
+          pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          if [[ "$MODE" == throwaway ]]; then
+            # A key of its own for this run: not secret, not the release key, gone with the job.
+            key=$RUNNER_TEMP/throwaway.key
+            app/node_modules/.bin/tauri signer generate --ci -w "$key" > /dev/null
+            TAURI_SIGNING_PRIVATE_KEY=$(cat "$key")
+            export TAURI_SIGNING_PRIVATE_KEY
+            export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+            cp "$key.pub" "$pubkey"
+            echo "Dry run of the release workflow: no release notes." > "$notes"
+          else
+            printf '%s\n' "$PUBKEY" > "$pubkey"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$notes"
+          fi
+          tag=()
+          if [[ -n "$TAG" ]]; then tag=(--tag "$TAG"); fi
+          .github/scripts/sign-updates.sh --dir "$DIR" --repo "$GITHUB_REPOSITORY" --notes "$notes" \
+            --pub-date "$pub_date" --pubkey "$pubkey" "${tag[@]}"
+
+          {
+            echo "### Update files"
+            echo
+            if [[ "$MODE" == throwaway ]]; then
+              echo "Signed with a throwaway key made for this dry run. Every signature was checked with minisign against its public key."
+            else
+              echo "Signed with the update key of the updater-signing Environment. Every signature was checked with minisign against TAURI_UPDATER_PUBKEY."
+            fi
+            for manifest in "$DIR"/latest-*.json; do
+              echo
+              echo "\`${manifest##*/}\`:"
+              echo
+              echo '```json'
+              cat "$manifest"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # SHA256SUMS lists what this run produced, plus the files it keeps from the release: an optional platform's
       # file attached late earlier, which this run did not rebuild. Its line is carried over from the release's current
       # SHA256SUMS and checked against the downloaded file below, before anything is uploaded.
       - name: Write and check SHA256SUMS
+        env:
+          UPDATER_MODE: ${{ steps.updater.outputs.mode }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -257,7 +383,11 @@ jobs:
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > release.json
             release=(--release-json release.json)
           fi
-          kept_names=$(python3 "$script" check-assets --mode full "${release[@]}" --produced assets/*)
+          # With an update key every platform that was built must have its update files, which `check-assets` names when
+          # one is missing; without one a release has none, or all of them.
+          updater=()
+          if [[ "$UPDATER_MODE" != none ]]; then updater=(--updater); fi
+          kept_names=$(python3 "$script" check-assets --mode full "${release[@]}" --produced assets/* "${updater[@]}")
           kept=()
           if [[ -n "$kept_names" ]]; then mapfile -t kept <<<"$kept_names"; fi
           : > kept.txt
@@ -340,6 +470,9 @@ jobs:
     if: ${{ inputs.mode == 'late-attach' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The Environment with the private update key, once the public key is set: the macOS update bundle is signed here,
+    # and its manifest is written. Without the variable the release has no update files.
+    environment: ${{ vars.TAURI_UPDATER_PUBKEY != '' && 'updater-signing' || '' }}
     permissions:
       contents: write
       actions: read # the files of another run (artifacts_run_id)
@@ -349,9 +482,14 @@ jobs:
       PLATFORM: ${{ inputs.platform }}
       REPLACE: ${{ inputs.replace }}
     steps:
+      # See the checkout of the publish job.
       - uses: actions/checkout@v7
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            /.github/scripts/
+            /app/package.json
+            /app/package-lock.json
+          sparse-checkout-cone-mode: false
 
       - name: Look at the release
         run: |
@@ -410,9 +548,78 @@ jobs:
           run-id: ${{ inputs.artifacts_run_id }}
           github-token: ${{ github.token }}
 
+      # The update files of the platform, see the top of this file: signed here with the key of the Environment, because
+      # the build job only builds. In `none` mode nothing below runs.
+      - name: Pick the update key
+        id: updater
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$PUBKEY" ]]; then
+            mode=release
+          else
+            mode=none
+            echo "::notice::TAURI_UPDATER_PUBKEY is not set, so $PLATFORM gets no update files (and its app no updater)."
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Update files: $mode"
+
+      - uses: actions/setup-node@v7
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        with:
+          node-version: '22.19' # same as the build workflows
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # --ignore-scripts: nothing from the lock file needs to run, and this job may hold the private key.
+      - name: Install the Tauri CLI and minisign
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        run: |
+          set -euo pipefail
+          (cd app && npm ci --ignore-scripts --no-audit --no-fund)
+          app/node_modules/.bin/tauri --version
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          minisign -v
+
+      # The private key is in the environment of this step only, and only a release has it.
+      - name: Sign the update files
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        env:
+          DIR: new
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          notes=$RUNNER_TEMP/release-notes.txt
+          pubkey=$RUNNER_TEMP/update-key.pub
+          pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          printf '%s\n' "$PUBKEY" > "$pubkey"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > "$notes"
+          .github/scripts/sign-updates.sh --dir "$DIR" --repo "$GITHUB_REPOSITORY" --notes "$notes" \
+            --pub-date "$pub_date" --pubkey "$pubkey" --tag "$TAG"
+
+          {
+            echo "### Update files"
+            echo
+            echo "Signed with the update key of the updater-signing Environment. Every signature was checked with minisign against TAURI_UPDATER_PUBKEY."
+            for manifest in "$DIR"/latest-*.json; do
+              echo
+              echo "\`${manifest##*/}\`:"
+              echo
+              echo '```json'
+              cat "$manifest"
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # What is to be done is in plan.txt: `pending` files (uploaded by an attach that stopped before SHA256SUMS),
       # and with replace the files of the platform that are `overwrite`n or `remove`d.
       - name: Check the files against the release
+        env:
+          UPDATER_MODE: ${{ steps.updater.outputs.mode }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -427,6 +634,7 @@ jobs:
           fi
           flags=()
           if [[ "$REPLACE" == true ]]; then flags+=(--replace); fi
+          if [[ "$UPDATER_MODE" != none ]]; then flags+=(--updater); fi
           python3 "$script" check-assets --mode late --release-json release.json --produced new/* \
             --platform "$PLATFORM" --sums sums/SHA256SUMS --tag "$TAG" "${flags[@]}" > plan.txt
           cat plan.txt

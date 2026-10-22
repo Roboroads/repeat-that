@@ -28,8 +28,20 @@ APPIMAGE = "Repeat-That_0.2.0_amd64.AppImage"
 DEB = "Repeat-That_0.2.0_amd64.deb"
 RPM = "Repeat-That-0.2.0-1.x86_64.rpm"
 FLATPAK = "Repeat-That_0.2.0_x86_64.flatpak"
+# What a release with an update key has besides: for the app's updater, not for people.
+APP = "Repeat-That_0.2.0_aarch64.app.tar.gz"
+UPDATE_FILES = [
+    f"{EXE}.sig",
+    "latest-windows-x86_64.json",
+    f"{APPIMAGE}.sig",
+    "latest-linux-x86_64.json",
+    APP,
+    f"{APP}.sig",
+    "latest-darwin-aarch64.json",
+]
 
 SIZES = {EXE: 9500925, DMG: 8123456, APPIMAGE: 71000111, DEB: 6100222, RPM: 6100333, FLATPAK: 12000444}
+SIZES.update({name: 4000 + index for index, name in enumerate(UPDATE_FILES)})
 HASHES = {name: format(index, "x") * 64 for index, name in enumerate(SIZES, 1)}
 
 
@@ -294,6 +306,35 @@ class ReleaseStateTests(unittest.TestCase):
         for repo in ("repeat-that", "a/b/c", "", "a b/c"):
             errors = failure(self, release(EXE), sums_text(EXE), repo)
             self.assertIn("OWNER/NAME", errors[0], repo)
+
+
+class UpdateFileTests(unittest.TestCase):
+    """A release made with an update key has files that no download card is for."""
+
+    ALL = (EXE, DMG, APPIMAGE, DEB, RPM, FLATPAK)
+
+    def test_the_update_files_are_left_out_without_a_warning_or_an_error(self):
+        data, warnings = build(*self.ALL, *UPDATE_FILES)
+        self.assertEqual(warnings, [])
+        self.assertEqual(data, build(*self.ALL)[0])
+
+    def test_the_update_files_alone_are_a_release_with_nothing_to_download(self):
+        data, warnings = build(*UPDATE_FILES)
+        self.assertEqual(data["release"]["platforms"], [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("no file to download", warnings[0])
+
+    def test_an_update_file_still_needs_a_line_in_sha256sums(self):
+        errors = failure(self, release(EXE, *UPDATE_FILES), sums_text(EXE), REPO)
+        self.assertEqual(len(errors), len(UPDATE_FILES))
+        self.assertIn(UPDATE_FILES[0], errors[0])
+
+    def test_the_update_patterns_of_the_platform_table_are_left_out_and_the_download_patterns_are_not(self):
+        for platform in ra.PLATFORMS:
+            for pattern in platform.update_patterns:
+                self.assertTrue(ra.is_update_file(pattern.replace("*", "Repeat-That_0.2.0_x")), pattern)
+            for pattern in platform.patterns:
+                self.assertFalse(ra.is_update_file(pattern.replace("*", "Repeat-That_0.2.0_x")), pattern)
 
 
 class UnknownAssetTests(unittest.TestCase):

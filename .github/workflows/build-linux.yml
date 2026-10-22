@@ -133,8 +133,14 @@ jobs:
       # builds, and the files are staged and uploaded below so the release assets have predictable names. The bundle
       # targets, dependencies and desktop files come from app/src-tauri/tauri.linux.conf.json. The AppImage is made by
       # linuxdeploy, itself an AppImage, which runs without FUSE here because Tauri sets APPIMAGE_EXTRACT_AND_RUN.
+      # REPEAT_THAT_UPDATER_PUBKEY compiles the update public key into the app (updater.rs reads it with option_env!). The
+      # repository variable is empty until the key exists, and then the app has no updater: builds work either way.
+      # publish-release.yml signs the AppImage afterwards: it is the update payload of Linux (the .deb and .rpm only
+      # announce a new version).
       - name: Build packages
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        env:
+          REPEAT_THAT_UPDATER_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         with:
           projectPath: app
 
@@ -269,13 +275,16 @@ jobs:
           merge-multiple: true
           path: packages
 
+      # The self-check says whether the build has an update key, so it must say so exactly when the variable is set.
       - name: Install and start
         if: ${{ !matrix.refused }}
         env:
           ARCHIVE: ${{ matrix.archive }}
+          UPDATER: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
         run: |
           flags=()
           if [[ "$ARCHIVE" == true ]]; then flags+=(--archive); fi
+          if [[ "$UPDATER" == true ]]; then flags+=(--updater); fi
           bash .github/scripts/smoke-linux-package.sh "${flags[@]}" packages
       - name: Install is refused
         if: ${{ matrix.refused }}
