@@ -155,8 +155,9 @@ summary shows its checksum. The workflow checks that the app version matches the
 ### Linux packages
 
 [`build-linux.yml`](../.github/workflows/build-linux.yml) builds the x64 `.deb`, `.rpm` and AppImage with tauri-action
-in a `debian:12` container, the oldest supported system, so the binary needs no newer glibc than Debian 12's and the
-AppImage carries Debian 12's libraries. The settings are in
+in an `ubuntu:24.04` container. Its glibc (2.39) is the oldest of the supported systems (Fedora 40 has the same,
+Debian 13 a newer one), so the binary needs nothing newer, and the AppImage carries Ubuntu 24.04's libraries. The
+settings are in
 [`tauri.linux.conf.json`](../app/src-tauri/tauri.linux.conf.json): the three targets, the dependencies, the desktop
 entry and the icons. The files are staged as `Repeat-That_<version>_amd64.deb`, `Repeat-That-<version>-1.x86_64.rpm` and
 `Repeat-That_<version>_amd64.AppImage` and uploaded as one `release-linux-<file>` artifact each. Install instructions
@@ -167,13 +168,15 @@ Two jobs check them, and a failure in either fails the `linux` job of a release,
 
 - `Packages (Linux x64)` runs [`check-linux-packages.sh`](../.github/scripts/check-linux-packages.sh) on the staged
   files: names and versions, the dependencies, the files both packages install, the desktop entries
-  (`desktop-file-validate`, the hidden one included), the binary's glibc needs (at most 2.36), and that the AppImage has
+  (`desktop-file-validate`, the hidden one included), the binary's glibc and libstdc++ needs against what the
+  packages ask for (`glibc_max` and `glibcxx_max`), and that the AppImage has
   the real desktop entry at its root and no `libpipewire-0.3` or `libspa-0.2` inside. The job summary shows the result
   and the checksums.
 - `Install on <system>` runs [`smoke-linux-package.sh`](../.github/scripts/smoke-linux-package.sh) as root in a fresh
-  `debian:12`, `debian:13`, `ubuntu:24.04` and `fedora:40` container: it installs the `.deb` or the `.rpm` without
-  recommended packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays
-  nothing), validates the installed desktop entries, runs the AppImage's self-check, and uninstalls.
+  `debian:13`, `ubuntu:24.04` and `fedora:40` container: it installs the `.deb` or the `.rpm` without recommended
+  packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays nothing),
+  validates the installed desktop entries, runs the AppImage's self-check, and uninstalls. In `debian:12` it checks
+  that apt refuses the `.deb` for its glibc or libstdc++.
 
 On a pull request the packages are workflow artifacts (kept for 30 days), so they can be tried on a real desktop
 before the change merges. Artifacts lose the executable bit, so `chmod +x` the AppImage after unzipping it.
@@ -184,9 +187,17 @@ the binary links on top of that: PipeWire's and ALSA's client libraries. Debian 
 the `.rpm` names sonames (`libpipewire-0.3.so.0()(64bit)`), like Tauri does for its own. When the binary starts linking
 another system library, `ldd` in the install jobs fails on the system that lacks it: add the library to both lists.
 
-**Raising the minimum** (for example to Debian 13): change the build container, `glibc_max` in
-`check-linux-packages.sh`, the install matrix and the systems named in `install-linux.md`, the README and
-`ARCHITECTURE.md`. To test another distribution, add it to the matrix of the `install` job; the script needs `apt-get`
+**glibc and libstdc++.** The prebuilt ONNX Runtime that `ort` links in statically is built against glibc 2.38 and GCC
+13's libstdc++ (it needs `__isoc23_strtol` and GLIBCXX_3.4.31), so both packages ask for those (`libc6 (>= 2.38)` and
+`libstdc++6 (>= 13)` on the `.deb`, the matching versioned sonames on the `.rpm`) and Debian 12 can't run the app.
+When an `ort` bump needs newer ones, `check-linux-packages.sh` fails with the version the binary needs: raise the
+dependencies in `tauri.linux.conf.json`, `glibc_max`/`glibcxx_max` in the script and the test in
+`linux_package_tests.rs`, and check that every supported system still has them. Getting Debian 12 back would mean an
+ONNX Runtime built for its glibc: Microsoft's own shared library (built on an older glibc), shipped with the packages
+and loaded at run time, or one built from source in a `debian:12` container.
+
+**Raising the minimum** (for example to Ubuntu 26.04): change the build container, the install matrix and the systems
+named in `install-linux.md`, the README and `ARCHITECTURE.md`. To test another distribution, add it to the matrix of the `install` job; the script needs `apt-get`
 or `dnf`.
 
 ### macOS installer

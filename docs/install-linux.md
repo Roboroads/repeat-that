@@ -1,10 +1,14 @@
 # Installing on Linux
 
 Repeat That runs on 64-bit x86 (x86_64) Linux with PipeWire. The oldest systems it is built and tested for are
-Debian 12, Ubuntu 24.04 and Fedora 40; newer releases of those work too. Arm computers aren't supported yet.
+Debian 13, Ubuntu 24.04 and Fedora 40; newer releases of those work too. Arm computers aren't supported yet.
 
-Capture, ducking and replay all go through PipeWire, with WirePlumber as its session manager. Ubuntu 24.04 and Fedora
-40 use both by default, and so does GNOME on Debian 12. On a system that still runs PulseAudio, Repeat That starts but
+Debian 12 and other systems with a glibc older than 2.38 can't run it: the speech detector (ONNX Runtime, built into
+the app) needs glibc 2.38 and the C++ library of GCC 13. The `.deb` and the `.rpm` say so, so apt or dnf refuses to
+install them there, and the AppImage stops at once with a "GLIBC_2.38 not found" message.
+
+Capture, ducking and replay all go through PipeWire, with WirePlumber as its session manager. Ubuntu 24.04, Fedora 40
+and GNOME on Debian 13 use both by default. On a system that still runs PulseAudio, Repeat That starts but
 the status reads "Capture needs PipeWire, and it isn't running". Your distribution's documentation says how to switch,
 for Debian see [wiki.debian.org/PipeWire](https://wiki.debian.org/PipeWire). `wpctl status` lists your sound devices
 when PipeWire and WirePlumber are running.
@@ -48,7 +52,7 @@ chmod +x Repeat-That_<version>_amd64.AppImage
 ./Repeat-That_<version>_amd64.AppImage
 ```
 
-The AppImage carries its own copy of WebKitGTK, GTK and most other libraries, built on Debian 12. It takes PipeWire's
+The AppImage carries its own copy of WebKitGTK, GTK and most other libraries, from Ubuntu 24.04. It takes PipeWire's
 and ALSA's client libraries from your system on purpose: a PipeWire client must match the PipeWire that runs on your
 desktop. Every system with PipeWire has them.
 
@@ -106,7 +110,7 @@ To uninstall:
 
 ## Build from source
 
-The packages come from CI, but you can build your own on Debian 12 or later, or Ubuntu 24.04 or later. Install the
+The packages come from CI, but you can build your own on Debian 13 or later, or Ubuntu 24.04 or later. Install the
 system packages listed under Building from source in the [README](../README.md#building-from-source), plus
 [Rust](https://rustup.rs) and Node.js 22.19 or later, then:
 
@@ -119,4 +123,4 @@ npm run tauri build
 
 The packages end up in `target/release/bundle/deb/`, `target/release/bundle/rpm/` and `target/release/bundle/appimage/`.
 A build runs on systems with the same or a newer glibc than the one it was built on, which is why the release packages
-are built on Debian 12.
+are built on Ubuntu 24.04, whose glibc (2.39) is the oldest of the supported systems.
