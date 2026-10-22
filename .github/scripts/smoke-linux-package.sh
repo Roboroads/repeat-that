@@ -60,10 +60,13 @@ if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   install_packages() { apt-get install -y -qq --no-install-recommends "$@"; }
+  # Without -qq, so a refusal names the dependency it can't meet.
+  try_install() { apt-get install -y --no-install-recommends "$@"; }
   uninstall() { apt-get remove -y -qq repeat-that; }
 elif command -v dnf >/dev/null; then
   kind=rpm
   install_packages() { dnf install -y -q --setopt=install_weak_deps=False "$@"; }
+  try_install() { dnf install -y --setopt=install_weak_deps=False "$@"; }
   uninstall() { dnf remove -y -q repeat-that; }
 else
   echo "FAIL: neither apt-get nor dnf on this system" >&2
@@ -87,7 +90,7 @@ check_self_check() {
 echo
 echo "Installing $(basename "$package")"
 if [[ $refused == true ]]; then
-  if out=$(install_packages "$package" 2>&1); then
+  if out=$(try_install "$package" 2>&1); then
     fail "$(basename "$package") installs, but this system is too old to run it"
   elif grep -qE 'libc6|libstdc\+\+6|GLIBC_|GLIBCXX_' <<<"$out"; then
     ok "$(basename "$package") is refused for the glibc or libstdc++ it needs"
