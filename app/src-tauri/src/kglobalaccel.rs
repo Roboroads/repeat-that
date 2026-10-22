@@ -77,7 +77,7 @@ mod tests {
     use super::*;
     use crate::private_bus::PrivateBus;
 
-    const ID: &str = "me.roboroads.repeat-that";
+    const ID: &str = crate::portal::HOST_APP_ID;
 
     /// Each action with its display name.
     type Actions = Vec<(String, String)>;
