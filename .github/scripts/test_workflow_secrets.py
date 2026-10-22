@@ -5,8 +5,9 @@ apple-signing Environment on its job, yet without `secrets: inherit` in the call
 with no error from GitHub (the macOS build of Publish release on main failed that way). Secrets also go only one hop:
 for release-please.yml -> publish-release.yml -> build-macos.yml, each call must pass them on.
 
-The workflow files are read as plain text, so the tests need nothing beyond the standard library. That is enough for the
-shape they all have: jobs two spaces in under `jobs:`, their keys four spaces in.
+The workflow files are read line by line, so the tests need only the standard library, which is all the runner's
+python3 is sure to have. The reader knows block-style YAML: keys by their indentation, comments, and block scalars
+(`run: |`), whose lines are text, not keys. Flow style (`jobs: {build: {uses: ...}}`) isn't read.
 """
 
 import re
@@ -15,34 +16,80 @@ from pathlib import Path
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / "workflows"
 
-JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
-USES = re.compile(r"^    uses:\s*\./\.github/workflows/([^\s#]+)")
-INHERIT = re.compile(r"^    secrets:\s*inherit\s*(#.*)?$")
 # secrets.GITHUB_TOKEN is there without being passed.
 SECRET = re.compile(r"\bsecrets\.(?!GITHUB_TOKEN\b)([A-Za-z_][A-Za-z0-9_]*)")
+# A key whose value is a block scalar: `run: |`, `script: >-`, `- run: |2`.
+BLOCK = re.compile(r":\s*[|>][-+0-9]*$")
+CALLED = "./.github/workflows/"
+
+
+def cut_comment(line):
+    """The line without its comment: a # at the start or after a space, outside quotes."""
+    quote = None
+    for i, char in enumerate(line):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"" and (i == 0 or line[i - 1] in " :[{,"):
+            quote = char
+        elif char == "#" and (i == 0 or line[i - 1] in " \t"):
+            return line[:i]
+    return line
+
+
+def lines(text):
+    """The lines that hold YAML, as (indent, text, in a block scalar). Comments are cut and empty lines left out, except
+    in a block scalar, whose lines are kept whole: a # there is part of the text (a shell comment in `run:`)."""
+    block = None  # the indent of the key that opened a block scalar
+    for raw in text.splitlines():
+        indent = len(raw) - len(raw.lstrip(" "))
+        if block is not None:
+            if not raw.strip() or indent > block:
+                yield indent, raw.strip(), True
+                continue
+            block = None
+        line = cut_comment(raw).strip()
+        if not line:
+            continue
+        yield indent, line, False
+        if BLOCK.search(line):
+            block = indent
 
 
 def calls(text):
     """Each job that calls a workflow of this repository, as (job id, called file name, passes `secrets: inherit`)."""
     found = []
     in_jobs = False
+    job_indent = key_indent = None
     job = None
-    for line in text.splitlines():
-        if line.strip().startswith("#") or not line.strip():
+    for indent, line, in_block in lines(text):
+        if in_block:
             continue
-        if not line.startswith(" "):
-            in_jobs = line.rstrip() == "jobs:"
-            job = None
+        if indent == 0:
+            in_jobs = line == "jobs:"
+            job_indent = job = None
             continue
         if not in_jobs:
             continue
-        if match := JOB.match(line):
-            job = [match[1], None, False]
+        key, _, value = line.partition(":")
+        key, value = key.strip(), value.strip()
+        if job_indent is None:
+            job_indent = indent
+        if indent == job_indent:
+            job = [key, None, False]
             found.append(job)
-        elif job and (match := USES.match(line)):
-            job[1] = match[1]
-        elif job and INHERIT.match(line):
-            job[2] = True
+            key_indent = None
+            continue
+        if job is None:
+            continue
+        if key_indent is None:
+            key_indent = indent
+        if indent != key_indent:
+            continue
+        if key == "uses" and value.startswith(CALLED):
+            job[1] = value.removeprefix(CALLED)
+        elif key == "secrets":
+            job[2] = value == "inherit"
     return [tuple(job) for job in found if job[1]]
 
 
@@ -177,6 +224,35 @@ class ProblemsTest(unittest.TestCase):
     def test_missing_workflow_is_reported(self):
         found = problems({"caller.yml": CALLER.format(secrets="")})
         self.assertEqual(found, ["caller.yml: job first calls build.yml, which doesn't exist"])
+
+    def test_comments_after_keys(self):
+        text = """\
+jobs: # the jobs
+  build:
+    runs-on: ubuntu-latest
+  macos: # optional
+    uses: ./.github/workflows/build.yml # the build
+    secrets: inherit # all of them
+"""
+        self.assertEqual(calls(text), [("macos", "build.yml", True)])
+
+    def test_any_indentation(self):
+        text = "jobs:\n    macos:\n        uses: ./.github/workflows/build.yml\n        secrets: inherit\n"
+        self.assertEqual(calls(text), [("macos", "build.yml", True)])
+
+    def test_block_scalars_are_text(self):
+        text = """\
+jobs:
+  first:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          # shell, not YAML
+          uses: ./.github/workflows/build.yml
+  second:
+    uses: ./.github/workflows/other.yml
+"""
+        self.assertEqual(calls(text), [("second", "other.yml", False)])
 
     def test_keys_outside_jobs_are_not_jobs(self):
         text = "on:\n  workflow_call:\n    uses: ./.github/workflows/build.yml\njobs:\n  a:\n    runs-on: x\n"
