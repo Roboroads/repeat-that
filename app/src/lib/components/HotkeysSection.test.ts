@@ -326,6 +326,16 @@ describe('hotkeys the desktop assigns (the portal)', () => {
     expect(where).toHaveTextContent('Settings → Keyboard → View and Customize Shortcuts → Apps');
   });
 
+  it('says why an action may have no key: another shortcut can already use it, another install of the app too', async () => {
+    await renderApp({ ...portal(), configureOutcome: 'unsupported' });
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Change in system settings' }));
+
+    const why = await screen.findByText(/another shortcut may already use/);
+    expect(why).toHaveTextContent('another install of Repeat That');
+    expect(why).toHaveTextContent('reset the action to its default');
+  });
+
   it('offers to set the shortcuts up when no action has a key, which is how a closed dialog is asked for again', async () => {
     const { backend } = await renderApp(
       portal({ hotkeyTriggers: { replay: null, stop: null, catchUp: null } }),

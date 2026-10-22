@@ -13,9 +13,10 @@ The files it lists:
 | Debian, Ubuntu | `Repeat-That_<version>_amd64.deb` |
 | Fedora | `Repeat-That-<version>-1.x86_64.rpm` |
 | Other Linux | `Repeat-That_<version>_amd64.AppImage` |
+| Any Linux with Flatpak | `Repeat-That_<version>_x86_64.flatpak` |
 | macOS | `Repeat-That_<version>_aarch64.dmg` |
 
-The Linux files are on releases after v0.1.0.
+The Linux files, the Flatpak included, are on releases after v0.1.0.
 
 The macOS `.dmg` (`Repeat-That_<version>_aarch64.dmg`) can arrive on the release some time after the other files,
 because the macOS build is not allowed to hold up the release. When it does, `SHA256SUMS` is replaced by a copy with
@@ -44,7 +45,7 @@ shasum -a 256 ~/Downloads/Repeat-That_<version>_aarch64.dmg
 Linux:
 
 ```sh
-sha256sum ~/Downloads/<file>     # the .deb, the .rpm or the AppImage
+sha256sum ~/Downloads/<file>     # the .deb, the .rpm, the AppImage or the .flatpak
 ```
 
 On macOS and Linux the tool can also do the comparison. Save `SHA256SUMS` in the same folder as the download, then run

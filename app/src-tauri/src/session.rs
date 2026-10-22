@@ -297,19 +297,19 @@ mod linux {
     }
 }
 
+/// An [`Env`] for tests, which the tests of the other modules that look at the environment use too.
 #[cfg(test)]
-mod tests {
+pub mod fake {
     use std::collections::HashMap;
-    use std::sync::Mutex;
-    use std::sync::atomic::AtomicUsize;
 
-    use super::*;
+    use super::Env;
 
+    /// An environment of the variables it is given; an empty value counts as unset, as in [`ProcessEnv`](super::ProcessEnv).
     #[derive(Default)]
-    struct FakeEnv(HashMap<&'static str, &'static str>);
+    pub struct FakeEnv(HashMap<&'static str, &'static str>);
 
     impl FakeEnv {
-        fn with(vars: &[(&'static str, &'static str)]) -> Self {
+        pub fn with(vars: &[(&'static str, &'static str)]) -> Self {
             FakeEnv(vars.iter().copied().collect())
         }
     }
@@ -322,6 +322,15 @@ mod tests {
                 .map(|v| v.to_string())
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+
+    use super::fake::FakeEnv;
+    use super::*;
 
     #[derive(Default)]
     struct FakeBus {

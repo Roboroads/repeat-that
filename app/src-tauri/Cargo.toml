@@ -37,7 +37,7 @@ tauri-plugin-updater = "2"
 # MIT. `zbus` is in the tree already (single-instance, opener) and runs on async-io; ashpd follows it instead of
 # starting a second async runtime.
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13", default-features = false, features = ["async-io", "global_shortcuts"] }
+ashpd = { version = "0.13", default-features = false, features = ["async-io", "background", "global_shortcuts"] }
 futures-util = "0.3"
 zbus = "5"
 # The openers it tries for a link (xdg-open, gio open, ...), started from an AppImage with the host's environment

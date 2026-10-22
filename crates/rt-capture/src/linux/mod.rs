@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+pub use guard::in_flatpak;
 use registry::{Client, Command, Connection};
 
 use crate::{
@@ -39,7 +40,7 @@ pub(crate) fn source(options: PlatformOptions) -> Result<Box<dyn AppAudioSource>
     Ok(Box::new(match options.duck_journal {
         Some(journal) => {
             let source = source.with_duck_journal(journal);
-            if guard::sandboxed() {
+            if guard::in_flatpak() {
                 source
             } else {
                 source.with_duck_guard()

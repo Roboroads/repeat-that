@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 Robbin Schepers. This file is CC0-1.0, like AppStream asks of metadata. -->
+<component type="desktop-application">
+  <id>me.roboroads.RepeatThat</id>
+
+  <name>Repeat That</name>
+  <summary>Replay what was just said on a call</summary>
+  <developer id="me.roboroads">
+    <name>Robbin Schepers</name>
+  </developer>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Missed what someone just said on a call? Press a key and hear it again. Repeat That keeps a short rolling buffer
+      of the audio from one app you pick, such as Discord, Teams, Zoom or your browser, leaves out the silence, and
+      replays the last thing that was said whenever you press a hotkey.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Replays the last sentence, and steps back one more with each extra press</li>
+      <li>Catch-up speeds the replay up from where it is and stops when it reaches live</li>
+      <li>Lowers the app's volume while it replays, so you hear the replay</li>
+      <li>Global hotkeys on X11, and through the GlobalShortcuts portal on KDE Plasma and GNOME 48 or later</li>
+    </ul>
+    <p>
+      The audio stays in memory and is never written to disk. Nothing is uploaded, there is no telemetry and no
+      account, and only the app you pick is captured, never your microphone.
+    </p>
+    <p>
+      In this Flatpak, Repeat That reaches PipeWire through its socket, which it needs to list the apps that play sound,
+      capture the one you pick and lower its volume. It needs PipeWire with WirePlumber, which current desktops use by
+      default.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">me.roboroads.RepeatThat.desktop</launchable>
+  <provides>
+    <binary>repeat-that</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/Roboroads/repeat-that</url>
+  <url type="bugtracker">https://github.com/Roboroads/repeat-that/issues</url>
+  <url type="vcs-browser">https://github.com/Roboroads/repeat-that</url>
+
+  <content_rating type="oars-1.1" />
+
+  <branding>
+    <color type="primary" scheme_preference="light">#a5b4fc</color>
+    <color type="primary" scheme_preference="dark">#4338ca</color>
+  </branding>
+
+  <requires>
+    <display_length compare="ge">400</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <!-- Flathub fetches the picture when it builds the app, and keeps its own copy. Retake it when the window changes:
+       docs/MAINTAINING.md (Flathub). -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>Capturing an app, with the replay controls and the buffer</caption>
+      <image type="source" width="480" height="720">https://raw.githubusercontent.com/Roboroads/repeat-that/main/packaging/flatpak/screenshots/settings.png</image>
+    </screenshot>
+  </screenshots>
+
+  <!-- Filled in by packaging/flatpak/metainfo_releases.py from CHANGELOG.md, when the Flatpak is built. -->
+  <releases />
+</component>

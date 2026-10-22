@@ -69,7 +69,7 @@ class Platform:
 PLATFORMS = (
     Platform("windows", "Windows", True, ("*-setup.exe",), build=True, workflow="build-windows.yml"),
     Platform("linux", "Linux", True, ("*.deb", "*.rpm", "*.AppImage"), build=True, workflow="build-linux.yml"),
-    Platform("flatpak", "Flatpak", True, ("*.flatpak",), workflow="build-flatpak.yml"),
+    Platform("flatpak", "Flatpak", True, ("*.flatpak",), build=True, workflow="build-flatpak.yml"),
     Platform("macos", "macOS", False, ("*.dmg",), build=True, workflow="build-macos.yml"),
 )
 
