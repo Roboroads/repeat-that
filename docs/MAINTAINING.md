@@ -332,6 +332,12 @@ so it can't be tried locally without one. The `Notarize and staple the .dmg` ste
 isn't `Accepted` it also prints `notarytool log`, which says what Apple objected to. If the secrets are missing, the
 `Check the signing secrets` step names the ones that are empty.
 
+While the repository variable `TAURI_UPDATER_PUBKEY` is set, and in every dry run, the build also packs the `.app` of the
+`.dmg` as `Repeat-That_<version>_aarch64.app.tar.gz` (the update bundle), checks it with `check-macos-bundle.sh
+--update-bundle` and uploads it as `release-macos-<file>`. It doesn't sign it: `publish-release.yml` does, see
+[Update signing key](#update-signing-key). The check of the `.dmg` expects `"updater":true` in the self-check exactly
+when the variable is set.
+
 **The release note.** In release mode a `Release note` job runs after a successful build and adds a paragraph to the
 release notes: macOS hasn't been tested on a real Mac, plus a link to the macOS issue form. It starts with the marker
 `<!-- macos-untested -->` and is added once, so running it again, or the late attach after a full run, changes nothing.
