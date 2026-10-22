@@ -55,6 +55,12 @@
             "context": "E2E (Linux)"
           },
           {
+            "context": "Site plan"
+          },
+          {
+            "context": "Site build"
+          },
+          {
             "context": "Conventional Commit title"
           }
         ]
