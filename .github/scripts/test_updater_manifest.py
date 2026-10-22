@@ -10,6 +10,7 @@ import errno
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 import unittest.mock
@@ -617,6 +618,17 @@ class CommandLineTests(unittest.TestCase):
             code, _, _ = self.run_main(*self.args(folder, paths, "flatpak"))
             self.assertEqual(code, 2)
             self.assertFalse((Path(folder) / "out").exists())
+
+
+class SignUpdatesTableTests(unittest.TestCase):
+    def test_sign_updates_looks_for_the_payloads_of_the_targets_table(self):
+        # sign-updates.sh repeats the platforms and patterns of TARGETS in a shell loop; a platform added to only one
+        # of them would be left unsigned, or written with no signature.
+        script = Path(__file__).with_name("sign-updates.sh").read_text(encoding="utf-8")
+        loop = re.search(r"^for entry in (?P<entries>(?:\"[a-z]+:[^\"]+\" ?)+); do$", script, re.MULTILINE)
+        self.assertIsNotNone(loop, "the platform loop of sign-updates.sh was not found")
+        entries = [entry.strip('"').split(":", 1) for entry in loop["entries"].split()]
+        self.assertEqual(entries, [[target.platform, target.pattern] for target in um.TARGETS])
 
 
 if __name__ == "__main__":
