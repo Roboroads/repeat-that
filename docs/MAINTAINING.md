@@ -405,7 +405,7 @@ latest release into the pages when it is built, so a visitor's browser contacts 
   `.dmg` of a [late attach](#late-macos-attach) does. `release-please` runs on every push to `main`, so most of these
   runs find nothing new and stop early, see below
 - a schedule, every day at 04:17 UTC, which also stops early when there is nothing new
-- `gh workflow run site.yml`, for example after uploading the demo video
+- `gh workflow run site.yml`, for example after uploading the introduction video
 
 Every pull request gets the `Site plan` job, which looks at what the PR changes. When it touches those paths, `Site build`
 runs the build and the tests, and nothing is deployed. When it doesn't, the build is skipped, and a skipped job counts as
@@ -415,8 +415,8 @@ filter on pull requests for the same reason `ci.yml` has none: a required check 
 Like the rest of the ruleset, the two checks count once it is applied (see [Branch protection](#branch-protection)).
 
 A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`
-(the `Site plan` job). It fetches the demo video if there is one, then runs the type check, the unit tests, the build,
-`npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
+(the `Site plan` job). It fetches the introduction video if there is one, then runs the type check, the unit tests, the
+build, `npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
 (`.nojekyll` and `.well-known/security.txt`), deploys, and asks the live site for its front page, `security.txt` and
 `build-info.txt`.
 
@@ -424,9 +424,10 @@ A run reads the latest release and its `SHA256SUMS` and turns them into the down
 a hash of the download data, a hash of the files on the `site-media` release, and the build date. A run started by
 `release-please`, `Publish release` or the schedule fetches the live file first. When it says the same as this run would
 build and is less than 60 days old, the run ends after the plan job with a note in its summary, and nothing is built or
-deployed. So a new release (or a `.dmg` from a late attach), a changed demo video and a change under the site paths get
-built, and the rest of the pushes to `main` and most of the daily runs don't create a Pages deployment. A push that
-touches the site paths and `gh workflow run site.yml` always build. While the site isn't live yet, every run builds.
+deployed. So a new release (or a `.dmg` from a late attach), a changed introduction video and a change under the site
+paths get built, and the rest of the pushes to `main` and most of the daily runs don't create a Pages deployment. A push
+that touches the site paths and `gh workflow run site.yml` always build. While the site isn't live yet, every run
+builds.
 
 When the release data doesn't add up (an asset without a line in `SHA256SUMS`, a line for a file that isn't on the
 release, a malformed line), the build fails with an error that names the problem and the previous deploy stays up. The
@@ -468,13 +469,14 @@ gh repo edit Roboroads/repeat-that --homepage https://repeat-that.roboroads.me \
 The social preview has no API. Upload `site/public/og.png` (1280 by 640) under Settings → General → Social preview.
 `site/README.md` says how that picture is made.
 
-### Demo video
+### Introduction video
 
-The video is played from the site's own domain. Its files sit on a prerelease called `site-media`, and the deploy copies
-them into the site. They can't be on a version release, because `publish-release.yml` refuses files it didn't build.
-release-please ignores the `site-media` tag: it only reads tags that look like `X.Y.Z`, and `check-release-config.py
---tags` only looks up `v<release-as>`. A prerelease is never the "latest" release either, so the download data doesn't
-change.
+The site shows this video under the heading "Watch the introduction". The files keep the names `demo.mp4`,
+`demo-poster.jpg` and `demo.vtt`. The video is played from the site's own domain. Its files sit on a prerelease called
+`site-media`, and the deploy copies them into the site. They can't be on a version release, because
+`publish-release.yml` refuses files it didn't build. release-please ignores the `site-media` tag: it only reads tags
+that look like `X.Y.Z`, and `check-release-config.py --tags` only looks up `v<release-as>`. A prerelease is never the
+"latest" release either, so the download data doesn't change.
 
 ```sh
 gh release create site-media --prerelease --title "Website media (not a release)" \

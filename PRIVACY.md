@@ -34,7 +34,8 @@ IP address of visitors to a Pages site, as described in
 The site itself sets no cookies, runs no analytics and loads nothing from other websites: no fonts, scripts, images or
 embeds. The home page reads your browser's user agent to highlight the download for your operating system. That happens
 in your browser and the result isn't sent anywhere. The download links go to GitHub, which sees the request when you
-follow one. The demo video, when there is one, comes from the site itself and isn't requested until you press play.
+follow one. The introduction video, when there is one, comes from the site itself and isn't requested until you press
+play.
 
 ## A note on recording laws
 

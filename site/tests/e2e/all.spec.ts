@@ -113,9 +113,10 @@ test("the video is there but loads nothing until play is pressed", async ({ page
   await page.goto("/", { waitUntil: "networkidle" });
 
   const video = page.locator("#demo video");
+  await expect(page.locator("#demo").getByRole("heading", { name: "Watch the introduction" })).toBeVisible();
   await expect(video).toHaveAttribute("preload", "none");
   await expect(video.locator("track")).toHaveAttribute("src", "/media/demo.vtt");
-  await expect(page.locator("#demo figcaption")).toHaveText("Staged demo with synthetic speech. The app never records to disk.");
+  await expect(page.locator("#demo figcaption")).toHaveText("A short introduction to Repeat That. The app never records to disk.");
   expect(videoRequests, "requests for the video before play").toEqual([]);
 
   const asked = page.waitForRequest((r) => r.url().endsWith("/media/demo.mp4"));
