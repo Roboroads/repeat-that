@@ -7,8 +7,7 @@ import { MOCK_HOW_TO_ALLOW, type MockBackendInit, scenarioInit } from '../mock-i
 
 const MACOS_15: PermissionHelp = { canOpenSettings: true, canAskAgain: true };
 const MACOS_14: PermissionHelp = { canOpenSettings: false, canAskAgain: true };
-const STEPS_15 =
-  "Open System Settings, Privacy & Security, Screen & System Audio Recording, turn on Repeat That, then quit and reopen Repeat That if capturing doesn't resume.";
+const REOPEN = "If capturing doesn't resume once it's turned on, quit and reopen Repeat That.";
 
 const help = () => screen.queryByRole('group', { name: 'Allow audio capture' });
 const button = (name: string) => screen.queryByRole('button', { name });
@@ -28,31 +27,32 @@ describe('help for a capture that is not allowed', () => {
     expect(help()).not.toBeInTheDocument();
   });
 
-  it('shows the steps for macOS 15 and later, with both buttons', async () => {
+  it("says how to allow it in the backend's words, with both buttons on macOS 15 and later", async () => {
     const { backend } = await notAllowed(MACOS_15);
+    const bar = screen.getByRole('region', { name: 'Status' });
 
+    expect(within(bar).getByText(MOCK_HOW_TO_ALLOW)).toBeInTheDocument();
     const group = await screen.findByRole('group', { name: 'Allow audio capture' });
-    expect(await within(group).findByText(STEPS_15)).toBeInTheDocument();
-    expect(within(group).getByRole('button', { name: 'Open System Settings' })).toBeEnabled();
+    expect(await within(group).findByRole('button', { name: 'Open System Settings' })).toBeEnabled();
     expect(within(group).getByRole('button', { name: 'Ask again' })).toBeEnabled();
-    // The steps take the place of the backend's sentence, which says the same.
-    expect(screen.queryByText(MOCK_HOW_TO_ALLOW)).not.toBeInTheDocument();
+    expect(within(group).getByText(REOPEN)).toBeInTheDocument();
     expect(argsOf(backend, 'capture_permission_help')).toHaveLength(1);
   });
 
-  it('shows the steps for macOS 14, where asking again is the only way', async () => {
+  it('has only Ask again on macOS 14', async () => {
     await notAllowed(MACOS_14);
 
-    expect(await screen.findByText('Click Ask again and choose Allow.')).toBeInTheDocument();
-    expect(button('Ask again')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Ask again' })).toBeInTheDocument();
     expect(button('Open System Settings')).not.toBeInTheDocument();
+    expect(screen.queryByText(REOPEN)).not.toBeInTheDocument();
   });
 
-  it("shows the backend's sentence and no buttons where there is nothing to do from here", async () => {
-    await notAllowed({ canOpenSettings: false, canAskAgain: false });
+  it("has no buttons where there is nothing to do from here, only the backend's sentence", async () => {
+    const { backend } = await notAllowed({ canOpenSettings: false, canAskAgain: false });
 
-    await waitFor(() => expect(within(help()!).getByText(MOCK_HOW_TO_ALLOW)).toBeInTheDocument());
+    await waitFor(() => expect(argsOf(backend, 'capture_permission_help')).toHaveLength(1));
     expect(within(help()!).queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByText(MOCK_HOW_TO_ALLOW)).toBeInTheDocument();
   });
 
   it('asks again, and goes away once capturing resumes', async () => {
@@ -87,7 +87,7 @@ describe('help for a capture that is not allowed', () => {
     expect(button('Ask again')).toBeEnabled();
   });
 
-  it("says why it can't tell what to do, and shows the backend's sentence instead", async () => {
+  it("says why it can't tell which buttons there are, under the backend's sentence", async () => {
     await renderApp(scenarioInit('not-allowed'), (backend) => {
       backend.overrides.capture_permission_help = () => {
         throw { kind: 'backend', message: 'The audio service is not running' };
@@ -96,8 +96,8 @@ describe('help for a capture that is not allowed', () => {
 
     const group = await screen.findByRole('group', { name: 'Allow audio capture' });
     expect(await within(group).findByRole('alert')).toHaveTextContent('The audio service is not running');
-    expect(within(group).getByText(MOCK_HOW_TO_ALLOW)).toBeInTheDocument();
     expect(within(group).queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByText(MOCK_HOW_TO_ALLOW)).toBeInTheDocument();
   });
 
   it('comes back when the permission is taken back while capturing, and asks for the help again', async () => {

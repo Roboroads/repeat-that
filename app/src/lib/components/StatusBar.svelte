@@ -27,13 +27,13 @@
   <!-- The chosen app, with its icon, is in the app selector below. -->
   <div class="lines">
     <p class="headline {text.tone}" aria-live="polite">{text.headline}</p>
-    <!-- While capture isn't allowed, the help below says how to allow it, in place of the backend's sentence. -->
-    {#if text.detail && state !== 'notAllowed'}<p class="muted">{text.detail}</p>{/if}
+    <!-- While capture isn't allowed: the backend's sentence on how to allow it; the help below has the buttons. -->
+    {#if text.detail}<p class="muted">{text.detail}</p>{/if}
     {#if text.playback}<p class="playback">{text.playback}</p>{/if}
   </div>
 
   {#if state === 'notAllowed'}
-    <PermissionHelp message={text.detail} />
+    <PermissionHelp />
   {/if}
 
   <div class="buttons">

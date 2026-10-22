@@ -9,6 +9,7 @@ import {
   pauseButton,
   playbackLine,
   replayButton,
+  statusBar,
   stopButton,
   waitForBufferedSpeech,
   waitForPage,
@@ -29,10 +30,10 @@ describe('capture that is not allowed', () => {
     await chosenApp(FAKE_APP).waitForDisplayed();
   });
 
-  it('says so, with the steps and both buttons', async () => {
+  it('says so, how to allow it, and has both buttons', async () => {
     await expect(headline()).toHaveText(NOT_ALLOWED);
+    await expect(statusBar()).toHaveText(expect.stringContaining('Screen & System Audio Recording'));
     await help().waitForDisplayed({ timeoutMsg: 'no help to allow capture' });
-    await expect(help()).toHaveText(expect.stringContaining('Screen & System Audio Recording'));
     await expect(help().$('button=Open System Settings')).toBeEnabled();
     await expect(help().$('button=Ask again')).toBeEnabled();
     expect((await backendStatus()).capture.state).toBe('notAllowed');

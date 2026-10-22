@@ -8,14 +8,9 @@
     type PermissionHelp,
   } from '../api';
 
-  interface Props {
-    /** What the backend says about allowing capture; shown until the steps for this OS are known, or without them. */
-    message: string | null;
-  }
-
-  let { message }: Props = $props();
-
-  // What the OS lets the user do from here (macOS: 15 and later can open the settings, 14.x can only ask again).
+  // How to allow capture is the backend's sentence, in the status bar above. This has what it doesn't say: the buttons
+  // the OS has (macOS 15 and later can open the settings, 14.x can only ask again), and what to do if a switch turned
+  // on in the settings isn't picked up.
   let help = $state<PermissionHelp | null>(null);
   let busy = $state(false);
   let failure = $state<string | null>(null);
@@ -27,14 +22,6 @@
       failure = toApiError(raw).message;
     }
   });
-
-  const steps = $derived(
-    help?.canOpenSettings
-      ? "Open System Settings, Privacy & Security, Screen & System Audio Recording, turn on Repeat That, then quit and reopen Repeat That if capturing doesn't resume."
-      : help?.canAskAgain
-        ? 'Click Ask again and choose Allow.'
-        : message,
-  );
 
   async function run(command: () => Promise<void>) {
     busy = true;
@@ -51,7 +38,6 @@
 
 <!-- Capture is tried again every 2 s, so it starts by itself once the user has allowed it; this goes away then. -->
 <div class="permission" role="group" aria-label="Allow audio capture">
-  {#if steps}<p class="steps">{steps}</p>{/if}
   {#if help?.canOpenSettings || help?.canAskAgain}
     <div class="buttons">
       {#if help.canOpenSettings}
@@ -64,7 +50,10 @@
       {/if}
     </div>
   {/if}
-  {#if failure}<p class="problem" role="alert">{failure}</p>{/if}
+  {#if help?.canOpenSettings}
+    <p class="note muted">If capturing doesn't resume once it's turned on, quit and reopen Repeat That.</p>
+  {/if}
+  {#if failure}<p class="note problem" role="alert">{failure}</p>{/if}
 </div>
 
 <style>
@@ -74,8 +63,8 @@
     gap: 0.5rem;
   }
 
-  .steps {
-    line-height: 1.35;
+  .permission:empty {
+    display: none;
   }
 
   .buttons {
@@ -84,8 +73,11 @@
     gap: 0.5rem;
   }
 
-  .problem {
+  .note {
     font-size: 0.85rem;
+  }
+
+  .problem {
     color: var(--warn);
   }
 </style>
