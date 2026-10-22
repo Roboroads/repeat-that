@@ -63,7 +63,6 @@ function linksToInstall(node: RootContent): boolean {
  */
 export async function parseRequirements(readme: string, routes: ReadonlyMap<string, string>): Promise<Requirements | null> {
   const tree = unified().use(remarkParse).use(remarkGfm).parse(readme) as Root;
-  await unified().use(remarkDocLinks, { from: "README.md", routes }).run(tree);
 
   const nodes = tree.children;
   const start = nodes.findIndex((n) => n.type === "heading" && n.depth === 2 && toString(n).trim().toLowerCase() === SECTION);
@@ -71,6 +70,10 @@ export async function parseRequirements(readme: string, routes: ReadonlyMap<stri
   let end = nodes.findIndex((n, i) => i > start && n.type === "heading" && n.depth <= 2);
   if (end === -1) end = nodes.length;
   const section = nodes.slice(start + 1, end);
+
+  // Only the section is rewritten. The logo and the badges at the top of the README are images, and the link plugin
+  // stops the build for an image from the repository, so they must not go through it. They are never rendered here.
+  await unified().use(remarkDocLinks, { from: "README.md", routes }).run({ type: "root", children: section });
 
   const groups: { heading: Heading; body: RootContent[] }[] = [];
   for (const node of section) {
