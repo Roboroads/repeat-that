@@ -89,12 +89,17 @@ workflows, such as [`build-windows.yml`](../.github/workflows/build-windows.yml)
 and makes the decisions. Its unit tests (`test_release_assets.py`) run in every full run of the workflow, and by hand
 with `python3 -m unittest discover -s .github/scripts`.
 
-| Platform | Required | Files | Build job in `publish-release.yml` |
-|---|---|---|---|
-| `windows` | yes | `*-setup.exe` | `windows`, calls `build-windows.yml` |
-| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | `linux`, calls `build-linux.yml` |
-| `flatpak` | yes | `*.flatpak` | `flatpak`, calls `build-flatpak.yml` |
-| `macos` | **no** | `*.dmg` | `macos`, calls `build-macos.yml` |
+| Platform | Required | Files | Update files (only with an [update key](#update-signing-key)) | Build job in `publish-release.yml` |
+|---|---|---|---|---|
+| `windows` | yes | `*-setup.exe` | `*-setup.exe.sig`, `latest-windows-x86_64.json` | `windows`, calls `build-windows.yml` |
+| `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | `*.AppImage.sig`, `latest-linux-x86_64.json` | `linux`, calls `build-linux.yml` |
+| `flatpak` | yes | `*.flatpak` | none | `flatpak`, calls `build-flatpak.yml` |
+| `macos` | **no** | `*.dmg` | `*.app.tar.gz`, `*.app.tar.gz.sig`, `latest-darwin-aarch64.json` | `macos`, calls `build-macos.yml` |
+
+The update files are what the app's updater reads. A platform doesn't have to produce them to count as built: they exist
+only when an update key is set, so a release without a key has none and is still complete. With a key, the check that
+a platform is complete also wants its update files, see [Update signing key](#update-signing-key). A platform never
+has some of them: it has all of its update files or none.
 
 A required platform must build before a release is published: if one fails, nothing is published and the draft stays.
 An optional platform (macOS) that fails or is skipped only warns, in the job summary and as a `::warning::`; the
@@ -104,9 +109,10 @@ build job and decides itself. To add a platform: add a job named like the platfo
 it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it fails the run when the three disagree).
 
 - **Pull requests.** Each build workflow runs its own dry run when a PR touches the app, the crates or the Cargo files.
-  A PR that touches the publishing itself (`publish-release.yml`, a build workflow, `release_assets.py` or its tests)
-  also runs `publish-release.yml` as a dry run: it builds every platform, runs the script's unit tests and the same
-  checks as a release, and uploads the combined `SHA256SUMS` as a workflow artifact. No release is touched.
+  A PR that touches the publishing itself (`publish-release.yml`, a build workflow, or `release_assets.py`,
+  `sign-updates.sh`, `updater_manifest.py`, `site_release.py` and their tests) also runs `publish-release.yml` as a dry
+  run: it builds every platform, runs the script's unit tests and the same checks as a release, and uploads the
+  combined `SHA256SUMS` as a workflow artifact. No release is touched.
 - **Releases.** release-please creates its GitHub release as a draft. `release-please.yml` calls
   `publish-release.yml` itself when its run created a release, rather than relying on an `on: release` trigger: that
   would fire only once the release is public, and a release that a workflow publishes with `GITHUB_TOKEN` doesn't
@@ -132,6 +138,12 @@ it to the `needs` of `Publish`, and set `build=True` in `release_assets.py` (it 
 - **Only successful platforms count.** The files of a platform whose job did not succeed are left out, even if its
   build uploaded them before a later step failed. For an optional platform that means a warning and a release without
   it.
+- **Update files.** With an update key, the `Publish` job signs the update file of each platform that built (the
+  Windows installer, the AppImage, and for macOS a `.app.tar.gz` of the stapled app that `build-macos.yml` makes, not
+  the `.dmg`), checks every signature against the public key, and writes one `latest-<target>-<arch>.json` per platform
+  from the release notes. Each of them is written once and never changes, so `SHA256SUMS` only gains lines. The late attach
+  does the same for macOS, which adds its own `.app.tar.gz`, `.sig` and manifest. What the job checks, and what a
+  release does with and without the key, is under [Update signing key](#update-signing-key).
 - **Checked before upload.** `SHA256SUMS` is written over the produced and kept files and verified with
   `sha256sum --check`. The files are uploaded first and `SHA256SUMS` last, in calls of their own, so an upload that
   stops half way never leaves a `SHA256SUMS` that lists files that aren't there. After the upload the release must
@@ -322,6 +334,12 @@ so it can't be tried locally without one. The `Notarize and staple the .dmg` ste
 isn't `Accepted` it also prints `notarytool log`, which says what Apple objected to. If the secrets are missing, the
 `Check the signing secrets` step names the ones that are empty.
 
+While the repository variable `TAURI_UPDATER_PUBKEY` is set, and in every dry run, the build also packs the `.app` of the
+`.dmg` as `Repeat-That_<version>_aarch64.app.tar.gz` (the update bundle), checks it with `check-macos-bundle.sh
+--update-bundle` and uploads it as `release-macos-<file>`. It doesn't sign it: `publish-release.yml` does, see
+[Update signing key](#update-signing-key). The check of the `.dmg` expects `"updater":true` in the self-check exactly
+when the variable is set.
+
 **The release note.** In release mode a `Release note` job runs after a successful build and adds a paragraph to the
 release notes: macOS hasn't been tested on a real Mac, plus a link to the macOS issue form. It starts with the marker
 `<!-- macos-untested -->` and is added once, so running it again, or the late attach after a full run, changes nothing.
@@ -367,15 +385,19 @@ new file name, which `release_assets.py` would have to know.
 ### Late macOS attach
 
 macOS is optional, so a macOS build or notarization that fails doesn't hold back the required platforms. The late attach
-adds the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. It is the
-`late-attach` mode of `publish-release.yml`, and it takes the `.dmg` from a macOS build run, in two steps:
+adds the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. With an
+[update key](#update-signing-key) it adds the macOS update files too (the `.app.tar.gz`, its `.sig` and
+`latest-darwin-aarch64.json`), and `SHA256SUMS` gains a line for each. It is the `late-attach` mode of
+`publish-release.yml`, and it takes the files from a macOS build run, in two steps:
 
 1. Actions → Build macOS installers → Run workflow on `main`, with the release `tag` (for a draft, also its commit as
    `sha`). It builds, signs and notarizes the `.dmg`, uploads `release-macos-*` and adds the "untested" paragraph to
-   the release notes.
-2. Once that run has succeeded: Actions → Publish release → Run workflow, with `mode` `late-attach`, the `tag`,
-   `platform` `macos` and `artifacts_run_id` set to the number in the URL of the macOS build run
-   (`.../actions/runs/<number>`). The build run's summary prints the matching `gh workflow run` command.
+   the release notes. While the repository variable `TAURI_UPDATER_PUBKEY` is set it also packs the update bundle, the
+   `.app.tar.gz`, which is an artifact of its own.
+2. Once that run has succeeded: Actions → Publish release → Run workflow on `main`, with `mode` `late-attach`, the
+   `tag`, `platform` `macos` and `artifacts_run_id` set to the number in the URL of the macOS build run
+   (`.../actions/runs/<number>`). The build run's summary prints the matching `gh workflow run` command. With the
+   variable set the job uses the `updater-signing` Environment, which only `main` may use.
 
 The build can't call `publish-release.yml` itself: that one calls the build for a release, and GitHub refuses workflows
 that call each other in a loop. Artifacts are kept for 30 days, so after that the build has to run again. The build
@@ -387,19 +409,25 @@ What it does, in order, stopping at the first problem:
 
 1. The release must exist (published or draft) and `platform` must be an optional platform. With `artifacts_run_id`,
    the earlier run is checked as described above.
-2. The downloaded files must all belong to that platform, and their names must carry the tag's version
-   (`Repeat-That_0.2.0_aarch64.dmg` for `v0.2.0`). A file of another platform or another version fails.
-3. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
+2. With the variable set, it signs the `.app.tar.gz` and writes `latest-darwin-aarch64.json`, the way `Publish` does
+   (see [Update signing key](#update-signing-key)). If the build run made no `.app.tar.gz`, because its `.dmg` was built
+   before the variable was set, the job stops here with "no update file ... build the platform again". Run Build macOS
+   installers again on `main` and use the number of that run. Without the variable the late attach adds the `.dmg`
+   only, and says so in a notice.
+3. The downloaded files must all belong to that platform, and their names must carry the tag's version
+   (`Repeat-That_0.2.0_aarch64.dmg` for `v0.2.0`). A file of another platform or another version fails. With the
+   variable set, the platform's update files must all be there.
+4. Every file on the release must be listed in its current `SHA256SUMS`, and `SHA256SUMS` must list nothing that is
    missing from the release. Without `replace`, the release must not have a file for that platform yet.
-4. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new line, and every line
+5. All files on the release are downloaded. The new `SHA256SUMS` is the old one plus the new lines, and every line
    must hold for the file next to it, so it extends a consistent base. Lines already in it never change; the job fails
    otherwise.
-5. With `replace`, every file of the platform on the release is replaced or, when its name differs from the new
+6. With `replace`, every file of the platform on the release is replaced or, when its name differs from the new
    file's, deleted, so the release never carries two `.dmg` files. Only their lines change or go.
-6. The `.dmg` is uploaded first, then `SHA256SUMS` (replacing the old one), then the files that leave the release are
-   deleted, so `SHA256SUMS` never lists a file that isn't there yet. `SHA256SUMS` is the only file the late attach may
-   replace on a published release. Right before replacing it, the job checks that nobody changed it since it was
-   read; if so, it stops instead of dropping that change.
+7. The new files are uploaded first (the `.dmg` and the update files), then `SHA256SUMS` (replacing the old one), then
+   the files that leave the release are deleted, so `SHA256SUMS` never lists a file that isn't there yet. `SHA256SUMS`
+   is the only file the late attach may replace on a published release. Right before replacing it, the job checks that
+   nobody changed it since it was read; if so, it stops instead of dropping that change.
 
 **If the job stops half way.** The most likely case is a `.dmg` that is uploaded while `SHA256SUMS` is not. Run the
 failed job again (`gh run rerun <run id> --failed`; the log prints the command and the new `SHA256SUMS`). A `.dmg`
@@ -407,6 +435,11 @@ that is on the release but not in `SHA256SUMS`, and identical to the one just bu
 stop: it isn't uploaded again, and the job finishes by replacing `SHA256SUMS`. A `.dmg` that differs has to be deleted
 first (`gh release delete-asset <tag> <name>`) or replaced by running again with `replace` ticked. The same rerun
 finishes a `replace` that stopped before the old file was deleted.
+
+The update files are the exception. The `.app.tar.gz` is the same file in a rerun, but a rerun signs it again, and a
+signature carries a timestamp, so the new `.sig` and `latest-darwin-aarch64.json` differ from the ones the stopped
+attach left on the release. The rerun refuses them. Delete those two with `gh release delete-asset`, or run again with
+`replace` ticked.
 
 A late attach runs in a concurrency group of its own, so it is never queued behind another run or dropped when
 another one is waiting (GitHub keeps only one waiting run per group). That also means it doesn't wait for a full run
@@ -460,8 +493,9 @@ rejects any other `release-as`, and the release workflows reject other tags.
 
 The Windows installer isn't code-signed, so SmartScreen warns on first run (the install guide explains the
 click-through). Signing through SignPath is on the checklist below. The macOS `.dmg` is signed and notarized, see
-[macOS signing and notarization](#macos-signing-and-notarization). There's no auto-updater, so there is no update
-signing key to look after.
+[macOS signing and notarization](#macos-signing-and-notarization). The files the app's updater downloads are signed
+with a key of their own, the update signing key. It has nothing to do with the Apple certificate or with SignPath: see
+[Update signing key](#update-signing-key).
 
 ## Website
 
@@ -491,8 +525,12 @@ filter on pull requests for the same reason `ci.yml` has none: a required check 
 Like the rest of the ruleset, the two checks count once it is applied (see [Branch protection](#branch-protection)).
 
 A run reads the latest release and its `SHA256SUMS` and turns them into the download data with `site_release.py`
-(the `Site plan` job). It fetches the introduction video if there is one, then runs the type check, the unit tests, the
-build, `npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
+(the `Site plan` job). The update files of a release (the `.sig` files, the `latest-*.json` manifests and the macOS
+`.app.tar.gz`) have lines in `SHA256SUMS` like the installers, but the script leaves them out of the download data
+without a warning: they are for the app's updater, not for people.
+
+The run then fetches the introduction video if there is one, and runs the type check, the unit tests, the build,
+`npm run check:dist` and the browser tests. It uploads `site/dist`, checks that the upload kept the hidden files
 (`.nojekyll` and `.well-known/security.txt`), deploys, and asks the live site for its front page, `security.txt` and
 `build-info.txt`.
 
@@ -849,3 +887,228 @@ are saved. A signed dry run on `main` (see [macOS installer](#macos-installer)) 
   `APPLE_API_KEY_CONTENT`. Check that `APPLE_API_ISSUER` still matches the Issuer ID above the keys table. Run a
   notarization, then revoke the old key under Users and Access → Integrations. Revoke last, since notarization fails
   while the secrets point at a revoked key.
+
+## Update signing key
+
+The app can update itself, and [PRIVACY.md](../PRIVACY.md#update-checks) says what that sends. It installs a downloaded
+file only if the file is signed with the update signing key, so whoever holds the private half of that key decides what
+every installed copy accepts. The key is a minisign key pair made by `tauri signer generate`. It is separate from the
+Apple certificate and from any Windows code signing: those make the operating system trust a file, this one makes the
+app trust an update.
+
+Where things stand on 2026-10-22: the key pair exists, the Environment `updater-signing` holds both secrets, and the
+repository variable `TAURI_UPDATER_PUBKEY` isn't set yet (step 4 below), so no build has an updater. Delete this
+paragraph once step 4 is done.
+
+### Where the parts live
+
+- The private key and its password are the secrets `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` of the Environment `updater-signing`, which only `main` may use. Only the
+  private key is required. GitHub can't store an empty secret, so a key made without a password has no password secret.
+  The jobs of `publish-release.yml` that run for a tag (`Check release`, `Publish` and the late attach) use the
+  Environment once the variable below is set, and not before, so its rule that only `main` may use it can't hold up a
+  release that has no update key. `Check release` looks at the secrets, and `Publish` and the late attach sign with
+  them. A dry run doesn't use the Environment. GitHub doesn't show a secret again after it is saved, so the secrets are
+  not a backup: keep the key file and the password in a password manager.
+- The public key is the repository variable `TAURI_UPDATER_PUBKEY`, set to the contents of the `.pub` file. It isn't
+  secret. The three build workflows pass it to the build as `REPEAT_THAT_UPDATER_PUBKEY`, and
+  [`updater.rs`](../app/src-tauri/src/updater.rs) compiles it into the app.
+- Without the variable, a build has no updater: the plugin isn't registered, the window asks nothing, the tray has no
+  update item, nothing contacts the network, and `--rt-self-check` prints `"updater":false`. Builds from source are
+  like that. With the variable it prints `"updater":true`, which the Linux and macOS builds check.
+
+### What a release does with it
+
+| `TAURI_UPDATER_PUBKEY` | `TAURI_SIGNING_PRIVATE_KEY` | What happens |
+|---|---|---|
+| set | set | The update files are signed and attached. |
+| set | missing | `Check release` fails the release before any build, and the error points here. |
+| not set | any | No update files, and a notice. This is the state today. |
+
+`Check release` also fails the release when the variable or the private key isn't what `tauri signer generate` wrote:
+one line of base64, the contents of the file and not its path. A variable of blanks counts as set (the workflows test it
+with `!= ''`), so it fails there as "not a key". The password secret is never required. While the variable isn't set,
+`Check release` doesn't use the Environment and can't see its secrets, so it only prints the notice. Set the variable
+last, once the secrets are in.
+
+With the key, `Publish` (and the late attach, for macOS) does this after it downloads the builds. Steps 2 to 5 are
+[`sign-updates.sh`](../.github/scripts/sign-updates.sh):
+
+1. It installs the Tauri CLI at the version locked in `app/package-lock.json` with `npm ci --ignore-scripts` (this job
+   may hold the private key, so no install script runs), and `minisign`.
+2. It signs each update file with `tauri signer sign`: the `*-setup.exe`, the `*.AppImage` and the `*.app.tar.gz`.
+3. It checks every `.sig` with `minisign -V` against the public key. A private key that doesn't match the variable
+   stops the job here, before anything is uploaded. A `.sig` that isn't base64 stops it too, and the error names the
+   file.
+4. It writes one `latest-<target>-<arch>.json` per platform with
+   [`updater_manifest.py`](../.github/scripts/updater_manifest.py), taking the notes from the release body.
+5. It runs `release_assets.py check-manifests` over the folder, which fails when a manifest's `version` isn't the tag,
+   when a `url` in it isn't a file of this release among the files, or when its `signature` isn't the content of that
+   file's `.sig`.
+6. Before it writes `SHA256SUMS`, `release_assets.py check-assets --updater` fails if a platform that was built lacks
+   one of its update files.
+
+A dry run, which is a run without a tag (and so every pull request that touches the publishing), makes a throwaway key
+with `tauri signer generate --ci` and goes through the same steps, so this path runs before a release does. Its
+signatures are checked against the public key of the throwaway key, not against the variable. Nothing is attached, and
+the only file the run keeps is `SHA256SUMS`, as a workflow artifact. The job summary shows the manifests and lists the
+files.
+
+The app reads `https://github.com/Roboroads/repeat-that/releases/latest/download/latest-<target>-<arch>.json`, which
+follows whichever release GitHub calls the latest. There is one manifest per platform (`latest-windows-x86_64.json`,
+`latest-linux-x86_64.json`, `latest-darwin-aarch64.json`) and no single `latest.json`: each is written once and never
+changes, and the macOS late attach adds its own without touching the others. A 404 counts as "up to date", which is
+what an app sees until the macOS manifest is there. A manifest is in Tauri's static format: `version` (the tag without
+the `v`), `notes`, `pub_date`, and `platforms`, whose entries have the `url` of the update file on the release and its
+`signature`. The app shows `notes` as plain text, with HTML comments taken out and cut at 4000 characters.
+
+The app only offers a version higher than its own, and it never goes back. To undo a bad release, publish a higher one.
+
+### Setting it up
+
+Only the maintainer does these, in this order. Steps 1 to 3 are done.
+
+1. Make the key on your own machine, not in CI. Pick a strong password when it asks. Run this in the `app` folder of a
+   checkout, after `npm ci`:
+
+   ```sh
+   npx tauri signer generate -w ~/.tauri/repeat-that-updater.key
+   ```
+
+   It writes `~/.tauri/repeat-that-updater.key` (the private key) and `~/.tauri/repeat-that-updater.key.pub`. Put both,
+   and the password, in a password manager. If they are lost, see [below](#rotating-or-losing-the-key).
+2. Make the Environment, limited to `main`:
+
+   ```sh
+   gh api -X PUT repos/Roboroads/repeat-that/environments/updater-signing \
+     -F 'deployment_branch_policy[protected_branches]=false' -F 'deployment_branch_policy[custom_branch_policies]=true'
+   gh api -X POST repos/Roboroads/repeat-that/environments/updater-signing/deployment-branch-policies \
+     -f name=main -f type=branch
+   ```
+
+3. Store the secrets. The second command asks for the password. It is only for a key that has one, which this key does:
+   a key made without a password needs the first secret only.
+
+   ```sh
+   gh secret set TAURI_SIGNING_PRIVATE_KEY --env updater-signing --repo Roboroads/repeat-that < ~/.tauri/repeat-that-updater.key
+   gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env updater-signing --repo Roboroads/repeat-that
+   ```
+
+4. Switch the updater on. Do this last, because from then on every build has the updater compiled in:
+
+   ```sh
+   gh variable set TAURI_UPDATER_PUBKEY --repo Roboroads/repeat-that < ~/.tauri/repeat-that-updater.key.pub
+   ```
+
+5. Check it. Run Actions → Publish release → Run workflow on `main` without a tag. The builds now have the public key
+   compiled in, and the Linux and macOS self-checks must say `"updater":true`. The job summary lists the `.sig` and
+   `latest-*.json` files, signed with the throwaway key: a dry run never uses the real one or the Environment. The real
+   key is used for the first time by the first release. `Check release` then fails the run before any build if the
+   variable or the private key isn't a key file, and `Publish` fails before it uploads anything, leaving the draft, if
+   the password is wrong or the key doesn't match the variable. Fix the secret and run the failed job again.
+
+The first release made after step 4 carries the updater. The first update anyone receives is the release after that,
+because v0.1.0 has no updater.
+
+### Trying the updater locally
+
+This runs the whole path on one Linux machine, with a throwaway key and a server on `127.0.0.1`, without touching a
+release. It needs what a [build from source](install-linux.md#build-from-source) needs. The endpoint can be changed at
+build time only (`REPEAT_THAT_UPDATER_ENDPOINT`), and only to `https` or to `http` on `127.0.0.1` or `localhost`.
+
+1. Make the throwaway key and build two AppImages, 0.0.1 and 0.0.2, that trust it and look at the local server. Run
+   this in the `app` folder:
+
+   ```sh
+   npx tauri signer generate --ci -w ~/.tauri/trial.key
+   export REPEAT_THAT_UPDATER_PUBKEY="$(cat ~/.tauri/trial.key.pub)"
+   export REPEAT_THAT_UPDATER_ENDPOINT=http://127.0.0.1:8765/latest-linux-x86_64.json
+   mkdir -p ~/updater-trial/old ~/updater-trial/serve
+   npm run tauri build -- --bundles appimage --config '{"version":"0.0.1"}'
+   cp "../target/release/bundle/appimage/Repeat That_0.0.1_amd64.AppImage" ~/updater-trial/old/Repeat-That_0.0.1_amd64.AppImage
+   npm run tauri build -- --bundles appimage --config '{"version":"0.0.2"}'
+   cp "../target/release/bundle/appimage/Repeat That_0.0.2_amd64.AppImage" ~/updater-trial/serve/Repeat-That_0.0.2_amd64.AppImage
+   ```
+
+2. Sign 0.0.2 and write its manifest by hand. `updater_manifest.py` would point the `url` at GitHub, and here it has to
+   point at the local server:
+
+   ```sh
+   npx tauri signer sign -f ~/.tauri/trial.key ~/updater-trial/serve/Repeat-That_0.0.2_amd64.AppImage
+   cat > ~/updater-trial/serve/latest-linux-x86_64.json <<MANIFEST
+   {
+     "version": "0.0.2",
+     "notes": "Local trial.",
+     "pub_date": "2026-10-22T12:00:00Z",
+     "platforms": {
+       "linux-x86_64-appimage": {
+         "url": "http://127.0.0.1:8765/Repeat-That_0.0.2_amd64.AppImage",
+         "signature": "$(cat ~/updater-trial/serve/Repeat-That_0.0.2_amd64.AppImage.sig)"
+       }
+     }
+   }
+   MANIFEST
+   ```
+
+3. Keep a copy of 0.0.1, because the update replaces the file, and serve the folder:
+
+   ```sh
+   cp ~/updater-trial/old/Repeat-That_0.0.1_amd64.AppImage ~/updater-trial/Repeat-That_0.0.1_amd64.AppImage.orig
+   cd ~/updater-trial/serve && python3 -m http.server 8765 --bind 127.0.0.1
+   ```
+
+4. In another terminal, run 0.0.1 (`chmod +x` it first). In the settings window, under General, click **Check now**.
+   The banner says version 0.0.2 is available. Click **Install and restart**. The app comes back as 0.0.2: General
+   shows the version, and there is exactly one tray icon.
+5. Put the copy of 0.0.1 back, change one byte of the served 0.0.2 file, and repeat step 4:
+
+   ```sh
+   cp ~/updater-trial/Repeat-That_0.0.1_amd64.AppImage.orig ~/updater-trial/old/Repeat-That_0.0.1_amd64.AppImage
+   printf '\0' | dd of=~/updater-trial/serve/Repeat-That_0.0.2_amd64.AppImage bs=1 seek=100000 conv=notrunc
+   ```
+
+   The window now says "Couldn't install version 0.0.2" and links to the release page, and the app stays on 0.0.1.
+
+A debug build has a shorter way that needs no key, build or server: start it with `REPEAT_THAT_MOCK_UPDATE` set to
+`available`, `none`, `fail-check` or `fail-download`, and the window gets that answer as if it came from GitHub. The
+version on offer is 99.0.0, and nothing is installed.
+
+### Rotating or losing the key
+
+An installed app trusts the public key it was built with and no other. A new key therefore reaches an app only through
+a build that has it, and an old app can't be told to switch. The pipeline has no way to bridge that, with a version
+signed by the old key that carries the new public key: the build and the signing take the same key pair, and the
+`minisign -V` check insists on it. Whatever the reason for the change, the steps are the same:
+
+1. Make a new key pair (step 1 above, with another file name), replace the secrets (step 3) and set the variable to
+   the new `.pub` file (step 4). Do all three before the next release. If the new key has no password, delete the old
+   password secret. `Check release` fails a release that has the variable but no private key, or a value that isn't a
+   key file, and the `minisign -V` check fails one where the two keys don't match.
+2. Make a release. It is signed with the new key and has the new public key inside.
+3. An app from before the change finds the new version, downloads it and refuses it, because the signature isn't from
+   the key it has. It says "Couldn't install" and links to the release page, and the user installs the new version by
+   hand. From then on the app has the new key.
+
+If the private key or its password is lost, nothing leaks and nothing needs revoking, but no update can be signed:
+`Publish` fails at the signing step and the draft stays. Follow the steps above. To ship a release in the meantime,
+delete the variable (see below). That release has no updater, and its users update by hand until a release with a key
+reaches them.
+
+If the private key leaks, follow the same steps at once and say so in the release notes. The old key can't be taken out
+of the apps that have it. A thief would also need a way to hand a file to those apps, and they read their manifest from
+this repository's releases over HTTPS, so the key alone isn't enough: a break into the GitHub account or the release
+would be. [SECURITY.md](../SECURITY.md) says the same to people who report a problem.
+
+The key has no expiry, so there is no date to put in a calendar.
+
+### Turning the updater off
+
+Delete the variable:
+
+```sh
+gh variable delete TAURI_UPDATER_PUBKEY --repo Roboroads/repeat-that
+```
+
+Builds after that have no updater, and releases carry no update files (the summary says so). Apps that already have the
+updater and whose user agreed keep checking, find no manifest on the latest release, and take that as up to date. The
+only way to stop them is a release without the updater reaching them by hand.

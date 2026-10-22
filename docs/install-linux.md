@@ -143,9 +143,15 @@ Your file must show `OK`. More in [verify-downloads.md](verify-downloads.md).
 
 ## Updating and uninstalling
 
-There's no automatic updater yet. To update, download the newer package and install it the same way: apt and dnf
-replace the old version. For the AppImage, replace the file, then turn **Start at login** off and on again if the new
-file has another name (the name carries the version). For the Flatpak, install the newer file with
+The AppImage can check for updates itself once you allow it: the settings window asks the first time, and General
+has the switch and a **Check now** button. **Install and restart** replaces the AppImage file in place, which works
+when you can write to the file and its folder. The `.deb` and `.rpm` check too, but a package can't replace itself: the
+banner says a newer version is out, and **Download page** opens the release page in your browser. The Flatpak never
+checks. What a check sends is in [PRIVACY.md](../PRIVACY.md#update-checks).
+
+To update by hand, or from a version without the updater, download the newer package and install it the same way: apt
+and dnf replace the old version. For the AppImage, replace the file, then turn **Start at login** off and on again if
+the new file has another name (the name carries the version). For the Flatpak, install the newer file with
 `flatpak install --reinstall ./Repeat-That_<version>_x86_64.flatpak`. Your settings are kept in each case.
 
 To uninstall:

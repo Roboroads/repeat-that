@@ -145,6 +145,7 @@ there the volume comes back the next time Repeat That starts.
 | Detection | The three buttons | Low, Normal or High | Normal |
 | Ducking | Volume during replay | 5% to 100% (0% to 100% on macOS) | 20% |
 | General | Start at login | on or off | off |
+| General | Check for updates automatically | on or off | off until you answer the question |
 
 Settings apply at once, except the volume and the output device, which apply from the next replay.
 
@@ -168,6 +169,13 @@ Start at login is called Start with Windows on Windows. The entry it adds passes
 the tray without opening the window. If you move or rename an AppImage, turn the switch off and on again, see
 [install-linux.md](install-linux.md#run-the-appimage).
 
+Check for updates automatically is asked once, in a banner the first time you open the settings window. Until you
+answer, Repeat That makes no network connection. With it on, the app asks GitHub whether a new version is out a minute
+after it starts and then once a day, and **Check now** asks at once. A banner then offers the new version with
+**Install and restart**, or, for a `.deb`, an `.rpm` and an AppImage in a folder you can't write to, a **Download
+page** button that opens the release page. Nothing is downloaded until you click. A Flatpak, and a build that has no
+update key, don't check, and General says so. [PRIVACY.md](../PRIVACY.md#update-checks) lists what a check sends.
+
 ## Privacy in short
 
 - Audio only ever lives in memory. It is never written to disk and never sent anywhere.
@@ -177,7 +185,8 @@ the tray without opening the window. If you move or rename an AppImage, turn the
   on Windows and Linux a journal of the volumes that were lowered, so they can be restored after a crash, and, while
   Start at login is on, the entry that starts the app (a Run key on Windows, a launch agent on macOS, a `.desktop` file
   on Linux).
-- There is no account and no telemetry.
+- There is no account and no telemetry. If you allow it, the app asks GitHub once a day whether a new version is out,
+  which is the only network connection it makes.
 
 The details are in [PRIVACY.md](../PRIVACY.md), which also has
 [a note on recording laws](../PRIVACY.md#a-note-on-recording-laws): the laws on recording conversations differ between

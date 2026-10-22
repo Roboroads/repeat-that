@@ -36,8 +36,13 @@ Compare your download with the release's `SHA256SUMS` before you run it (see [ve
 
 ## Updating and uninstalling
 
-There's no automatic updater yet. To update, download the newer installer and run it over the old version; your settings
-are kept.
+Repeat That can check for updates itself once you allow it: the settings window asks the first time, and General has
+the switch and a **Check now** button. When a newer version is out, a banner offers **Install and restart**, which
+downloads the new installer, closes the app, installs it and starts the new version. Your settings are kept. What a
+check sends is in [PRIVACY.md](../PRIVACY.md#update-checks).
+
+To update by hand, or from a version without the updater, download the newer installer and run it over the old
+version; your settings are kept.
 
 To uninstall, use **Settings > Apps > Installed apps > Repeat That**. The uninstaller offers to delete the app's data.
 The data is in `%APPDATA%\me.roboroads.repeat-that` and holds your settings and the chosen app's name and path, never

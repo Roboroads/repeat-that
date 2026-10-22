@@ -20,8 +20,9 @@ The Linux files, the Flatpak included, are on releases after v0.1.0.
 
 The macOS `.dmg` (`Repeat-That_<version>_aarch64.dmg`) can arrive on the release some time after the other files,
 because the macOS build is not allowed to hold up the release. When it does, `SHA256SUMS` is replaced by a copy with
-one extra line for the `.dmg`. The existing lines never change, so a check you made earlier against the old
-`SHA256SUMS` stays valid. If the `SHA256SUMS` you downloaded has no line for the `.dmg`, download it again.
+one extra line for the `.dmg` (and one for each macOS update file, see [Update files](#update-files)). The existing
+lines never change, so a check you made earlier against the old `SHA256SUMS` stays valid. If the `SHA256SUMS` you
+downloaded has no line for the `.dmg`, download it again.
 
 Windows (PowerShell):
 
@@ -80,3 +81,21 @@ spctl -a -t exec -vv "/Applications/Repeat That.app"
 Each command must say `accepted` and `source=Notarized Developer ID`. The second one also prints an `origin=` line with
 the name and team of the certificate that signed the app, which should be the maintainer's. Opening the app from
 Applications does the same check, so this is only for people who want to see it.
+
+## Update files
+
+A release made with the app's updater switched on has more files, and `SHA256SUMS` lists them like the installers.
+You don't need any of them to install Repeat That.
+
+| File | What it is |
+|---|---|
+| `Repeat-That_<version>_x64-setup.exe.sig` | The signature of the Windows installer |
+| `Repeat-That_<version>_amd64.AppImage.sig` | The signature of the AppImage |
+| `Repeat-That_<version>_aarch64.app.tar.gz` and its `.sig` | The macOS app packed for the updater, and its signature |
+| `latest-windows-x86_64.json`, `latest-linux-x86_64.json`, `latest-darwin-aarch64.json` | Which version is newest for that system, and where to download it |
+
+A `.sig` is made with the project's update key. The app checks it against the public key built into it before it
+installs anything, and refuses a file that doesn't match. So these files are for the app, not a second way for you to
+check an installer: for that, use `SHA256SUMS`, or on macOS the signature check above. The macOS files arrive with
+the `.dmg` when it comes late. What the app sends when it looks for an update is in
+[PRIVACY.md](../PRIVACY.md#update-checks).
