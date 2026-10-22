@@ -9,6 +9,8 @@ mod fake_portal;
 mod hotkeys;
 mod icons;
 mod ipc;
+#[cfg(target_os = "linux")]
+mod kglobalaccel;
 #[cfg(test)]
 mod linux_package_tests;
 mod locking;
