@@ -1,8 +1,9 @@
 """Tests for apt-install.sh. Run with: python3 -m unittest discover -s .github/scripts
 
 The script runs against fake `apt-get`, `dpkg` and `sudo` commands on a PATH of its own, so nothing is installed and the
-network is never touched. A fake apt-get acts out a plan per subcommand (`update`, `install`): `ok`, `fail` or `hang`,
-one word per call, the last one repeating. Timeouts are shrunk to a second so a hung call costs the test no more.
+network is never touched. A fake apt-get acts out a plan per subcommand (`update`, `install`): `ok`, `fail`, `lock`
+(another apt holds the lock) or `hang`, one word per call, the last one repeating. Timeouts are shrunk to a second so a
+hung call costs the test no more.
 """
 
 import os
@@ -30,6 +31,7 @@ step=${steps[$((count < ${#steps[@]} ? count : ${#steps[@]} - 1))]}
 case $step in
   ok) exit 0 ;;
   fail) echo "E: Failed to fetch http://mirror.invalid/pool/x.deb" >&2; exit 100 ;;
+  lock) echo "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 42 (apt.systemd.dai)" >&2; exit 100 ;;
   hang) sleep 60; exit 0 ;;
 esac
 """
@@ -60,6 +62,7 @@ class AptInstallTest(unittest.TestCase):
             "APT_UPDATE_TIMEOUT": "1",
             "APT_INSTALL_TIMEOUT": "1",
             "APT_RETRY_PAUSE": "0",
+            "APT_LOCK_POLL": "0",
             **env,
         }
         start = time.monotonic()
@@ -108,6 +111,28 @@ class AptInstallTest(unittest.TestCase):
         self.assertIn(f"::warning::{STEP}", done.stdout)
         self.assertIn("attempt 2 of 3", done.stdout)
         self.assertNotIn("::error::", done.stdout)
+
+    def test_a_held_lock_is_waited_for_inside_the_call_not_counted_as_a_failed_attempt(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, update="lock lock ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        calls = self.calls("apt-get")
+        self.assertEqual([c.endswith(" update") for c in calls], [True, True, True, False])
+        self.assertNotIn("::warning::", done.stdout)
+        self.assertEqual(self.calls("dpkg"), [])
+
+    def test_a_lock_held_during_the_install_is_waited_for_too(self):
+        done, _ = self.run_script("--step", STEP, *PACKAGES, install="lock ok")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(len(self.calls("apt-get")), 3, "update, install (lock), install")
+        self.assertNotIn("::warning::", done.stdout)
+
+    def test_a_lock_that_stays_held_fails_the_call_when_its_time_is_up(self):
+        done, took = self.run_script("--step", STEP, *PACKAGES, update="lock", APT_ATTEMPTS="1", APT_LOCK_POLL="1")
+        self.assertEqual(done.returncode, 1)
+        self.assertGreaterEqual(took, 1)
+        self.assertLess(took, 20)
+        self.assertIn("::error::", done.stdout)
+        self.assertIn("apt-get update could not get the apt lock within 1s", done.stdout)
 
     def test_a_retry_first_finishes_what_a_killed_dpkg_left_behind(self):
         self.run_script("--step", STEP, *PACKAGES, install="fail ok")

@@ -12,7 +12,8 @@
 # Installs with -y and --no-install-recommends, and runs apt-get through sudo unless it already is root (a container job
 # is). Exits 0 on success, 1 when every attempt failed, 2 on a usage error. Set by environment (the defaults suit a
 # hosted runner, the tests shrink them): APT_UPDATE_TIMEOUT (60 seconds for one `apt-get update`),
-# APT_INSTALL_TIMEOUT (180 seconds for one `apt-get install`), APT_ATTEMPTS (3) and APT_RETRY_PAUSE (10 seconds).
+# APT_INSTALL_TIMEOUT (180 seconds for one `apt-get install`), APT_ATTEMPTS (3), APT_RETRY_PAUSE (10 seconds) and
+# APT_LOCK_POLL (5 seconds between two tries while another apt holds a lock).
 #
 # One hang that a second attempt gets past costs about 4 minutes, two about 8. When every attempt fails the worst case is
 # about 15 minutes. Give the step `timeout-minutes: 25`, the last stop for anything this script can't see.
@@ -45,9 +46,10 @@ update_timeout=${APT_UPDATE_TIMEOUT:-60}
 install_timeout=${APT_INSTALL_TIMEOUT:-180}
 attempts=${APT_ATTEMPTS:-3}
 pause=${APT_RETRY_PAUSE:-10}
+lock_poll=${APT_LOCK_POLL:-5}
 
-# Network stalls give up after 30 seconds and a download is tried three times before apt fails; a held dpkg lock (the
-# runner's own updater, a package that was killed half-way) is waited for instead of refused.
+# Network stalls give up after 30 seconds and a download is tried three times before apt fails; a held dpkg lock is
+# waited for instead of refused (the lock on the package lists is handled in apt_call).
 apt_options=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120)
 
 sudo=()
@@ -72,20 +74,44 @@ describe() {
 }
 
 failure=""
+log=$(mktemp "${TMPDIR:-/tmp}/apt-install.XXXXXX")
+trap 'rm -f "$log"' EXIT
+
+# apt_call NAME SECONDS ARG...: `apt-get ARG...` with the shared options, for at most SECONDS in all. Another apt that
+# holds a lock (the runner's own updater, say) makes apt-get refuse at once, and DPkg::Lock::Timeout covers only dpkg's
+# lock, not the one `apt-get update` takes on the package lists. So a refusal because of a lock is not a failed attempt:
+# the call is made again every few seconds until the lock is free or SECONDS are up. The output goes to the step's log
+# and to $log. On failure, `failure` says what went wrong.
+apt_call() {
+  local name=$1 seconds=$2 deadline remaining status
+  shift 2
+  deadline=$((SECONDS + seconds))
+  while :; do
+    remaining=$((deadline - SECONDS))
+    if ((remaining < 1)); then
+      failure="$name could not get the apt lock within ${seconds}s"
+      return 1
+    fi
+    set +e
+    limited "$remaining" apt-get "${apt_options[@]}" "${quiet[@]}" "$@" 2>&1 | tee "$log"
+    status=${PIPESTATUS[0]}
+    set -e
+    if ((status == 0)); then
+      return 0
+    fi
+    if ((status != 124 && status != 137)) && grep -qE 'Could not get lock|Unable to acquire the dpkg frontend lock' "$log"; then
+      sleep "$lock_poll"
+      continue
+    fi
+    failure=$(describe "$name" "$status" "$seconds")
+    return 1
+  done
+}
 
 # One attempt. On failure, `failure` says what went wrong.
 attempt_install() {
-  local status=0
-  limited "$update_timeout" apt-get "${apt_options[@]}" "${quiet[@]}" update || status=$?
-  if ((status != 0)); then
-    failure=$(describe "apt-get update" "$status" "$update_timeout")
-    return 1
-  fi
-  limited "$install_timeout" apt-get "${apt_options[@]}" "${quiet[@]}" install -y --no-install-recommends "$@" || status=$?
-  if ((status != 0)); then
-    failure=$(describe "apt-get install" "$status" "$install_timeout")
-    return 1
-  fi
+  apt_call "apt-get update" "$update_timeout" update || return 1
+  apt_call "apt-get install" "$install_timeout" install -y --no-install-recommends "$@"
 }
 
 for ((attempt = 1; attempt <= attempts; attempt++)); do
