@@ -107,7 +107,6 @@ on:
     paths:
       - .github/workflows/publish-release.yml
       - .github/workflows/build-*.yml
-      - .github/workflows/release-please.yml
       - .github/scripts/release_assets.py
       - .github/scripts/test_release_assets.py
       - .github/scripts/sign-updates.sh
@@ -115,7 +114,6 @@ on:
       - .github/scripts/test_site_release.py
       - .github/scripts/updater_manifest.py
       - .github/scripts/test_updater_manifest.py
-      - .github/scripts/test_workflow_secrets.py
 
 permissions:
   contents: read

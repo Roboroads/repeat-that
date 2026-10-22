@@ -87,7 +87,8 @@ workflows, such as [`build-windows.yml`](../.github/workflows/build-windows.yml)
 `release-<platform>-<file>` artifacts.
 [`.github/scripts/release_assets.py`](../.github/scripts/release_assets.py) is the one place that knows the platforms
 and makes the decisions. Its unit tests (`test_release_assets.py`) run in every full run of the workflow, and by hand
-with `python3 -m unittest discover -s .github/scripts`.
+with `python3 -m unittest discover -s .github/scripts`. The `Workflow scripts` job of `ci.yml` runs every test in that
+folder on every pull request and every push to `main`, `test_workflow_secrets.py` among them.
 
 | Platform | Required | Files | Update files (only with an [update key](#update-signing-key)) | Build job in `publish-release.yml` |
 |---|---|---|---|---|
@@ -336,7 +337,8 @@ isn't `Accepted` it also prints `notarytool log`, which says what Apple objected
 `Check the signing secrets` step names the ones that are empty. If it names all six while the Environment has them, the
 build was called by another workflow that didn't pass them on. A called workflow only sees the secrets its caller
 passes, Environment secrets included, so every job that calls `build-macos.yml` (and the job in `release-please.yml`
-that calls `publish-release.yml`) has `secrets: inherit`. `.github/scripts/test_workflow_secrets.py` checks every call.
+that calls `publish-release.yml`) has `secrets: inherit`. `.github/scripts/test_workflow_secrets.py` checks every call,
+in the `Workflow scripts` job of `ci.yml`.
 
 While the repository variable `TAURI_UPDATER_PUBKEY` is set, and in every dry run, the build also packs the `.app` of the
 `.dmg` as `Repeat-That_<version>_aarch64.app.tar.gz` (the update bundle), checks it with `check-macos-bundle.sh
