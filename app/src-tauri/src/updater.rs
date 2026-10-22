@@ -1519,7 +1519,7 @@ mod tests {
     fn where_the_app_does_not_look_the_schedule_stays_quiet() {
         let detection = Detection {
             mode: UpdateMode::External,
-            reason: Some("Updates come through Flathub.".into()),
+            reason: Some(mode::FLATPAK_REASON.into()),
         };
         let f = fixture(detection, Some(true), quick(10), ShutdownTiming::AfterInstall, |s| s);
         std::thread::sleep(Duration::from_millis(100));
