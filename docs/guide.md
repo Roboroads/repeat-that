@@ -218,8 +218,10 @@ the keys, or you bind the commands yourself, see [linux.md](linux.md#hotkeys). A
 
 ### Replays are silent
 
-If the window says "Replays have nowhere to play", Repeat That found no output device. Connect one, or choose a device
-under Output device. If the call app itself stays quiet after a replay, see the volume section above.
+If the window says "Replays have nowhere to play", the reason follows it. "no audio output device" means Repeat That
+found none, so connect one. A reason that starts with "audio output error" comes from the sound system, which couldn't
+open the device. Reconnect it, or choose another one under Output device. If the call app itself stays quiet after a
+replay, see the volume section above.
 
 ### The window says the speech detection model didn't load
 
