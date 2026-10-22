@@ -1,7 +1,7 @@
 import { emit } from '@tauri-apps/api/event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { argsOf, installBackend } from '../test-utils';
-import { ApiError } from './api';
+import { argsOf, holdAnswers, installBackend } from '../test-utils';
+import { ApiError, type UpdateStatus } from './api';
 import { offUpdateStatus } from './defaults';
 import { SettingsStore } from './store.svelte';
 
@@ -154,6 +154,37 @@ describe('SettingsStore updates', () => {
     await store.checkForUpdates();
 
     expect(store.offerDismissed).toBe(false);
+  });
+
+  describe('when an event and an answer cross', () => {
+    const offer = {
+      version: '0.2.0',
+      date: null,
+      notes: '',
+      releaseUrl: 'https://github.com/Roboroads/repeat-that/releases/tag/v0.2.0',
+    };
+    const at = (change: Partial<UpdateStatus>): UpdateStatus => ({
+      ...offUpdateStatus('0.1.0'),
+      mode: 'install',
+      modeReason: null,
+      ...change,
+    });
+
+    it('keeps an event that came in while the first snapshot was on its way', async () => {
+      const backend = installBackend({ updates: { mode: 'install' } });
+      // The snapshot is taken now, in state idle, but only arrives after the event.
+      const release = holdAnswers(backend, 'get_update_status');
+      const store = new SettingsStore();
+      stores.push(store);
+
+      const started = store.start();
+      await vi.waitFor(() => expect(argsOf(backend, 'get_update_status')).toHaveLength(1));
+      await emit('update-status', at({ state: 'error', error: 'The download failed', available: offer }));
+      release();
+      await started;
+
+      expect(store.updates).toMatchObject({ state: 'error', error: 'The download failed' });
+    });
   });
 
   it('has nothing to dismiss when nothing was found', async () => {

@@ -43,6 +43,11 @@ export class SettingsStore {
   private dismissedVersion = $state<string | null>(null);
   /** A check or install request is out, so its button can't be pressed twice. */
   updateCallPending = $state(false);
+  /**
+   * How many `update-status` events came in. The backend sends one for every change, so the last one is the truth; a
+   * snapshot or an answer that was asked for before an event came in can be older than it.
+   */
+  private updateEvents = 0;
 
   private unlisteners: api.Unlisten[] = [];
   private disposed = false;
@@ -74,11 +79,13 @@ export class SettingsStore {
     this.loadError = null;
     try {
       await this.subscribe();
+      const eventsBefore = this.updateEvents;
       const [settings, status, updates] = await Promise.all([api.getSettings(), api.getStatus(), this.loadUpdates()]);
       if (this.disposed) return;
       this.settings = this.confirmed = settings;
       this.status = status;
-      this.updates = updates;
+      // An event that came in while the snapshot was on its way is newer than it.
+      if (this.updateEvents === eventsBefore) this.updates = updates;
     } catch (raw) {
       if (!this.disposed) this.loadError = api.toApiError(raw).message;
       return;
@@ -112,6 +119,7 @@ export class SettingsStore {
       );
       unlisteners.push(
         await api.onUpdateStatus((updates) => {
+          this.updateEvents++;
           this.updates = updates;
         }),
       );
