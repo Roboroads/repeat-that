@@ -307,26 +307,37 @@ class CleanNotesTests(unittest.TestCase):
         for text in ("", "\n", "<!-- only a comment -->", " \x00 \n<!-- x -->\n "):
             self.assertEqual(self.clean(text), "", repr(text))
 
-    def test_the_cap_is_4000_characters(self):
-        self.assertEqual(um.NOTES_LIMIT, 4000)
+    def test_the_cap_is_4000_bytes(self):
+        self.assertEqual(um.NOTES_MAX_BYTES, 4000)
 
-    def test_text_of_exactly_4000_characters_is_not_touched(self):
-        text = "a" * 4000
-        self.assertEqual(self.clean(text), text)
+    def test_text_of_exactly_4000_bytes_is_not_touched(self):
+        for text in ("a" * 4000, "\u00e9" * 2000, "\u65e5" * 1333 + "a"):
+            self.assertEqual(len(text.encode("utf-8")), 4000)
+            self.assertEqual(self.clean(text), text)
 
-    def test_text_over_4000_characters_is_cut_to_4000_with_an_ellipsis(self):
+    def test_text_over_4000_bytes_is_cut_to_4000_bytes_with_an_ellipsis(self):
         cut = self.clean("a" * 4001)
-        self.assertEqual(len(cut), 4000)
-        self.assertEqual(cut, "a" * 3999 + "…")
-        self.assertEqual(self.clean("b" * 100_000), "b" * 3999 + "…")
+        self.assertEqual(cut, "a" * 3997 + "\u2026")
+        self.assertEqual(len(cut.encode("utf-8")), 4000)
+        self.assertEqual(self.clean("b" * 100_000), "b" * 3997 + "\u2026")
 
-    def test_the_cap_counts_characters_not_bytes(self):
-        self.assertEqual(self.clean("é" * 4000), "é" * 4000)
-        self.assertEqual(len(self.clean("日" * 4001)), 4000)
+    def test_the_cut_is_between_characters_whatever_their_size(self):
+        self.assertEqual(self.clean("\u00e9" * 2001), "\u00e9" * 1998 + "\u2026")
+        self.assertEqual(self.clean("\u65e5" * 1334), "\u65e5" * 1332 + "\u2026")
+        self.assertEqual(self.clean("\U0001f600" * 1001), "\U0001f600" * 999 + "\u2026")
+
+    def test_the_result_fits_whichever_way_the_app_counts(self):
+        # A cap of 4000 characters, UTF-16 units or bytes in the app finds nothing left to cut (bytes are the most).
+        for text in ("a" * 9000, "\u00e9" * 9000, "\u65e5" * 9000, "\U0001f600" * 9000, "\U0001f600a" * 3000):
+            cut = self.clean(text)
+            self.assertLessEqual(len(cut.encode("utf-8")), 4000, text[:3])
+            self.assertLessEqual(len(cut.encode("utf-16-le")) // 2, 4000, text[:3])
+            self.assertLessEqual(len(cut), 4000, text[:3])
+            self.assertTrue(cut.endswith("\u2026"), text[:3])
 
     def test_white_space_before_the_cut_does_not_stay_in_front_of_the_ellipsis(self):
-        text = "a" * 3997 + "\n\n\n" + "b" * 100
-        self.assertEqual(self.clean(text), "a" * 3997 + "…")
+        text = "a" * 3995 + "\n\n\n" + "b" * 100
+        self.assertEqual(self.clean(text), "a" * 3995 + "\u2026")
 
     def test_the_cap_applies_to_what_is_left_after_the_cleaning(self):
         text = "a" * 2000 + "<!-- " + "c" * 5000 + " -->" + "b" * 2000

@@ -31,8 +31,8 @@ the plugin refuses those bytes as "not a valid deb package" after fetching them.
 
 `notes` is plain text for the app to show as text: line ends become \\n, control characters (not tab and newline) and
 HTML comments (`<!-- macos-untested -->`) are removed, except in code (a fenced block or `inline code`) and when never
-closed, runs of blank lines shrink to one, and the result is cut to 4000 characters, the last of which is an ellipsis
-when something was cut.
+closed, runs of blank lines shrink to one, and the result is cut to 4000 bytes of UTF-8 (at most 4000 characters, UTF-16
+units or bytes, whichever way the app counts), ending in an ellipsis when something was cut.
 
 It fails (exit 1, `::error::` annotations, nothing written) when a file is missing, the tag isn't v0.1.0-shaped, the
 payload doesn't carry the version of the tag or doesn't look like an update file of the platform, the .sig isn't named
@@ -53,9 +53,11 @@ from urllib.parse import quote
 from release_assets import TAG, ReleaseError, check_versions, find_platform, matches, read_text
 from site_release import REPO, read, write_output
 
-# The most characters of the notes the app shows. The app caps what it gets at the same number; staying within it here
-# keeps the ellipsis that marks a cut.
-NOTES_LIMIT = 4000
+# The notes are cut to this many bytes of UTF-8. The app caps what it gets at 4000 as well, counting characters, UTF-16
+# units or bytes. Bytes are the most of the three for any text, so notes that fit 4000 bytes fit 4000 of whatever the
+# app counts: it never cuts them again, which would cost the ellipsis that marks the cut.
+NOTES_MAX_BYTES = 4000
+ELLIPSIS = "\u2026"
 # A whole HTML comment (`<!--` up to the next `-->`) or, to keep it, a piece of code: a fenced block (also one that is
 # never closed, as in markdown) or an inline span. A comment that is never closed is not one and stays as text.
 COMMENT_OR_CODE = re.compile(r"(?P<code>```.*?(?:```|\Z)|`[^`\n]*`)|<!--.*?-->", re.DOTALL)
@@ -105,8 +107,11 @@ def clean_notes(text):
     text = COMMENT_OR_CODE.sub(lambda found: found["code"] or "", text)
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     text = BLANK_LINES.sub("\n\n", text).strip("\n")
-    if len(text) > NOTES_LIMIT:
-        text = text[: NOTES_LIMIT - 1].rstrip() + "…"
+    encoded = text.encode("utf-8")
+    if len(encoded) > NOTES_MAX_BYTES:
+        room = NOTES_MAX_BYTES - len(ELLIPSIS.encode("utf-8"))
+        # "ignore" drops the half of a character the cut may have split.
+        text = encoded[:room].decode("utf-8", errors="ignore").rstrip() + ELLIPSIS
     return text
 
 
