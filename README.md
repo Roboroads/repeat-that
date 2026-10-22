@@ -10,7 +10,8 @@ It's built for people whose attention wanders during calls (hello, ADHD 👋), b
 connections, accents, background noise, or just a moment of distraction.
 
 > **Status:** version 0.1 for Windows is feature-complete and has been tested on real Windows hardware. The first
-> release is `v0.1.0`. Linux and macOS are planned, see the [roadmap](ROADMAP.md).
+> release is `v0.1.0`. macOS support is built but **hasn't been tested on a real Mac yet**, see
+> [Install (macOS)](#install-macos). Linux is planned, see the [roadmap](ROADMAP.md).
 
 ## Install (Windows)
 
@@ -23,10 +24,23 @@ The installer isn't code-signed yet, so Windows shows a SmartScreen warning the 
 [docs/verify-downloads.md](docs/verify-downloads.md). The full steps, including updating and uninstalling, are in
 [docs/install-windows.md](docs/install-windows.md).
 
+## Install (macOS)
+
+You need a Mac with Apple Silicon and macOS 14.2 or later; Intel Macs aren't supported. Releases after `v0.1.0` have a
+`Repeat-That_<version>_aarch64.dmg` on the [Releases page](https://github.com/Roboroads/repeat-that/releases). Open it
+and drag Repeat That to Applications. The app is signed with a Developer ID certificate and notarized by Apple, so it
+opens like any other app. The first time it captures, macOS asks whether Repeat That may capture audio from other apps.
+Compare your download with the release's `SHA256SUMS`, see [docs/verify-downloads.md](docs/verify-downloads.md). The
+full steps, including the permission, updating and uninstalling, are in [docs/install-macos.md](docs/install-macos.md).
+
+**macOS support is new and hasn't been tested on a real Mac yet.** Nobody on the team has one, so the app has only been
+built and checked on GitHub's macOS runners. If something doesn't work, please
+[file a macOS report](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml).
+
 ## Using it
 
-Repeat That lives in the system tray. The first launch also opens the settings window; closing it keeps the app running,
-and Quit in the tray menu ends it.
+Repeat That lives in the system tray (the menu bar on a Mac). The first launch also opens the settings window; closing
+it keeps the app running, and Quit in the tray menu ends it.
 
 1. Start the app you want to catch up on (Discord, Teams, a browser tab with a video). It shows up in the **App** list
    within a couple of seconds.
@@ -40,6 +54,8 @@ and Quit in the tray menu ends it.
 | `Ctrl+Alt+Enter` | **Catch-up.** The same replay at a faster speed (1.5× by default, same pitch). It stops as soon as it reaches live. Pressed again during a catch-up, it jumps back one utterance. |
 | `Ctrl+Alt+Backspace` | **Stop.** Ends the replay at once. |
 
+On a Mac, Alt is the Option key.
+
 Pressing the hotkey of the other mode while a replay plays switches the speed from where the replay is, without
 starting over. Jumping back from the oldest utterance in the buffer goes to the start of that utterance. The app keeps
 listening while you replay, so what is said in the meantime plays right after, and the replay ends when it has caught up
@@ -51,8 +67,8 @@ another program already uses a combination.
 
 ## Features
 
-- Captures the audio of one app you choose, never your microphone and never the rest of your system sound (Windows,
-  WASAPI process loopback).
+- Captures the audio of one app you choose, never your microphone and never the rest of your system sound (WASAPI
+  process loopback on Windows, Core Audio process taps on macOS).
 - Keeps the last 10 to 120 seconds of **speech** (30 by default) in memory. Silence is cut out with voice activity
   detection, and a sensitivity setting handles quiet or noisy speakers.
 - Replay, step back one utterance at a time, catch up at 1.25 to 2× speed with the pitch kept.
@@ -60,11 +76,11 @@ another program already uses a combination.
 - Plays replays on the output device you pick, and falls back to the default device when it is unplugged.
 - Tray icon and menu (Replay, Stop, Catch-up, Pause capture, Settings, Quit). The tooltip says how far behind live a
   replay is.
-- Optional start with Windows, in the tray.
+- Optional start with Windows, or at login on a Mac, in the tray.
 - Waits for the app when it isn't running and picks it up again when it starts. Speech buffered before it quit can
   still be replayed.
 
-Planned: a live transcript of recent speech (local Whisper, fully offline), Linux (PipeWire) and macOS support. See the
+Planned: a live transcript of recent speech (local Whisper, fully offline) and Linux (PipeWire) support. See the
 [roadmap](ROADMAP.md).
 
 ## Platform support
@@ -73,17 +89,15 @@ Planned: a live transcript of recent speech (local Whisper, fully offline), Linu
 |---|---|---|---|
 | Windows (x64) | Windows 10 2004 / 11 | WASAPI process loopback | v0.1 |
 | Linux (Debian/Ubuntu, `.deb`) | Debian 12 / Ubuntu 22.04 with PipeWire | PipeWire per-stream capture | Planned |
-| macOS (Apple Silicon only) | macOS 14.2 | Core Audio process taps | Planned |
+| macOS (Apple Silicon only) | macOS 14.2 | Core Audio process taps | Built, untested |
 
 macOS is Apple Silicon only: Microsoft ships no x86_64 or universal ONNX Runtime after 1.23.2, and the speech detector
 needs it.
 
-On macOS a debug build of the app runs, but there is no capture backend yet: it plays a speech recording as a fake app
-called `speech_8s`, which is what the end-to-end test uses on Linux too.
-
-**macOS note:** macOS releases will be signed with a Developer ID certificate and notarized by Apple, so they open like
-any other app. The audio-capture permission and the steps to build on macOS (Xcode command-line tools, Rust,
-Node.js) are in [docs/macos.md](docs/macos.md).
+**macOS note:** macOS releases are signed with a Developer ID certificate and notarized by Apple, so they open like any
+other app. macOS support hasn't been tested on a real Mac yet; please
+[report problems](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml). The audio-capture permission
+and the steps to build on macOS (Xcode command-line tools, Rust, Node.js) are in [docs/macos.md](docs/macos.md).
 
 ## Privacy
 
@@ -106,9 +120,8 @@ npm run tauri dev
 ```
 
 The app starts in the tray. The first launch also opens the settings window; closing it keeps the app running in the
-tray, and Quit in the tray menu ends it. On macOS there is no capture backend yet, so a debug build plays a speech
-recording as a fake app, `speech_8s`; `REPEAT_THAT_MOCK_WAV=<file.wav>` does that on any OS. Add
-`REPEAT_THAT_NULL_OUTPUT=1` on a machine without an audio device.
+tray, and Quit in the tray menu ends it. `REPEAT_THAT_MOCK_WAV=<file.wav>` plays a speech recording as a fake app
+instead of capturing real ones, on any OS. Add `REPEAT_THAT_NULL_OUTPUT=1` on a machine without an audio device.
 
 System packages (the [Tauri prerequisites](https://tauri.app/start/prerequisites/) cover Windows and macOS):
 
