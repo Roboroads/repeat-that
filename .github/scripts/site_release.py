@@ -33,7 +33,7 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
-from release_assets import PLATFORMS, SUMS_NAME, TAG, ReleaseError, owner, parse_sums
+from release_assets import PLATFORMS, SUMS_NAME, TAG, ReleaseError, owner, parse_sums, read_json, read_text
 
 SCHEMA = 1
 NO_RELEASE = {"schema": SCHEMA, "release": None}
@@ -166,23 +166,15 @@ def render(data):
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
-def read_json(path):
+def read(reader, path):
+    """reader(path), where reader is read_json or read_text of release_assets.py, with a failure reported as a
+    ReleaseError that names the file and the cause."""
     try:
-        with open(path, encoding="utf-8") as stream:
-            return json.load(stream)
+        return reader(path)
     except OSError as error:
         raise ReleaseError(f"cannot read {path}: {error.strerror}")
-    except ValueError as error:
+    except json.JSONDecodeError as error:
         raise ReleaseError(f"{path} is not valid JSON: {error}")
-
-
-def read_sums(path):
-    """The text of the SHA256SUMS file."""
-    try:
-        with open(path, encoding="utf-8") as stream:
-            return stream.read()
-    except OSError as error:
-        raise ReleaseError(f"cannot read {path}: {error.strerror}")
     except ValueError as error:  # not UTF-8
         raise ReleaseError(f"cannot read {path}: {error}")
 
@@ -225,7 +217,8 @@ def main(argv=None):
         if args.none:
             data, warnings = NO_RELEASE, []
         else:
-            data, warnings = build_release_data(read_json(args.release_json), read_sums(args.sums), args.repo)
+            info = read(read_json, args.release_json)
+            data, warnings = build_release_data(info, read(read_text, args.sums), args.repo)
     except ReleaseError as error:
         for message in error.errors:
             print(f"::error::{message}", file=sys.stderr)
