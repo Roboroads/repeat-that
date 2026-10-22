@@ -34,14 +34,24 @@
 - [ ] `.deb` package
 - [ ] Wayland global shortcuts via XDG portal
 
-## Milestone 6 — macOS
-- [ ] Core Audio process tap backend (macOS 14.2+)
-- [ ] Apple Silicon `.dmg`, signed with a Developer ID Application certificate and notarized (Apple Silicon only: Microsoft
+## Milestone 6 — macOS (built, not yet tested on real hardware)
+Nobody on the team has a Mac, so macOS is released as untested: GitHub's macOS runners are the only test so far, and the
+release notes, README, settings window and [install guide](docs/install-macos.md) say so and link to a
+[macOS report form](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml).
+
+- [x] Core Audio process tap backend (macOS 14.2+), tested on a macOS runner with a virtual sound card
+- [x] Apple Silicon `.dmg`, signed with a Developer ID Application certificate and notarized (Apple Silicon only: Microsoft
   ships no x86_64 or universal ONNX Runtime after 1.23.2)
-- [ ] The `.dmg` itself is signed, notarized and stapled, not only the `.app` inside it
-- [ ] Capture works under the hardened runtime in a notarized build (`NSAudioCaptureUsageDescription`, entitlements as needed)
-- [ ] The `.dmg` is listed in the release's `SHA256SUMS`
-- [ ] Detect a missing or revoked audio-capture permission and show how to fix it
+- [x] The `.dmg` itself is signed, notarized and stapled, not only the `.app` inside it
+- [ ] Capture works under the hardened runtime in a notarized build (`NSAudioCaptureUsageDescription`, entitlements as
+  needed). The build has both, and its self-check passes, but no notarized build has captured audio yet
+- [x] The `.dmg` is listed in the release's `SHA256SUMS` (checked in a dry run of the publish workflow; no real release
+  has had one yet)
+- [x] Detect a missing or revoked audio-capture permission and show how to fix it
+- [x] Ducking without a per-app volume: the app is muted and its audio replayed at the duck level, down to 0%
+- [x] "Untested" notices and the macOS issue form
+- [ ] Try it on a real Mac (see the
+  [checklist](docs/install-macos.md#testing-checklist-if-you-have-a-mac)), then remove the "untested" notices
 
 ## Milestone 7 — Live transcript
 - [ ] `whisper-rs` transcription of finished utterances (local models, downloaded on demand)

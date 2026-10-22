@@ -14,8 +14,8 @@ Thanks for wanting to help! Bug reports, feature ideas, testing on different har
 4. Frontend checks, in `app/`: `npm run check` (svelte-check, and a type check of the end-to-end test) and `npm test`
    (vitest).
 5. End-to-end test, on Linux: see [Running the end-to-end test](#running-the-end-to-end-test).
-6. Capture tests against a real audio service: see [Testing capture on Linux](#testing-capture-on-linux) (Windows runs
-   them in CI only).
+6. Capture tests against a real audio service: see [Testing capture on Linux](#testing-capture-on-linux) and
+   [Testing capture on macOS](#testing-capture-on-macos) (Windows runs them in CI only).
 
 `tauri::generate_context!` embeds `app/dist`, the built frontend. A fresh debug build works without it (the build
 script puts a red "FRONTEND NOT BUILT" placeholder page there and warns); a release build refuses to go on. Run
@@ -84,6 +84,43 @@ sine, or any app) and use the probe: `cargo run -p rt-capture --example probe --
 --duck`, which should print a steady level through seconds 5 to 10 while `pw-dump <node>` shows the stream's
 `channelVolumes` at 0.2 (`wpctl get-volume` shows the cube root of that, 0.58).
 
+## Testing capture on macOS
+
+The Core Audio backend has end-to-end tests in `crates/rt-capture/tests/macos_audio.rs`. They are `#[ignore]`d, because
+they play real sound and need a virtual output device, the audio-capture permission and the microphone permission (the
+ducking tests record what the device plays from its input, which macOS counts as microphone use). CI runs them in
+`.github/workflows/macos-capture.yml`: `.github/scripts/macos-ci-audio.sh` installs BlackHole 2ch as the output and the
+input, so what `afplay` plays can be recorded back, and writes the permission into the runner's privacy database. That
+script changes your system's audio devices and permissions, so it refuses to run anywhere but on a GitHub macOS runner.
+
+On your own Mac, install BlackHole 2ch, make it the default output and input device, and allow both permissions for
+your terminal when macOS asks:
+
+```sh
+cargo build -p rt-capture --example probe
+cargo test -p rt-capture --test macos_audio -- --ignored --nocapture --test-threads=1
+```
+
+`RT_REQUIRE_TCC=1` says the audio-capture permission was given, and makes a missing one fail the tests instead of
+skipping them. Without the microphone permission the recording is silent and the ducking tests fail. The
+tones and noise are synthetic (`crates/rt-capture/tests/fixtures/`), `afplay` only reads them, and everything captured
+or recorded stays in memory. The pure parts (grouping processes, the ducking state machine) have ordinary unit tests
+that run on every OS.
+
+To try the backend by hand, use the probe:
+
+```sh
+cargo run -p rt-capture --example probe -- list
+cargo run -p rt-capture --example probe -- capture <name> 15 --duck
+cargo run -p rt-capture --example probe -- permission
+```
+
+`permission --ask-again` always fails in the probe: asking again needs the bundle identifier of the installed app, and a
+program started by cargo has none.
+
+For the permission screens without a Mac, run the app with `REPEAT_THAT_MOCK_PERMISSION=denied` (see
+[Running the end-to-end test](#running-the-end-to-end-test)).
+
 ## Project layout
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
@@ -110,7 +147,9 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). In short:
 ## Testing on real hardware
 
 Capture backends can only be fully tested on the matching OS. If you test on a platform/version combination, please
-mention it in your PR or issue (e.g. "Windows 11 23H2, Discord desktop").
+mention it in your PR or issue (e.g. "Windows 11 23H2, Discord desktop"). Nobody has tried macOS on a real Mac yet.
+If you have one, the [checklist in the install guide](docs/install-macos.md#testing-checklist-if-you-have-a-mac) lists what to try,
+and the [macOS report form](https://github.com/Roboroads/repeat-that/issues/new?template=macos.yml) is where results go.
 
 ## License
 
