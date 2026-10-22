@@ -16,8 +16,8 @@ from pathlib import Path
 
 WORKFLOWS = Path(__file__).resolve().parent.parent / "workflows"
 
-# secrets.GITHUB_TOKEN is there without being passed.
-SECRET = re.compile(r"\bsecrets\.(?!GITHUB_TOKEN\b)([A-Za-z_][A-Za-z0-9_]*)")
+# secrets.NAME, or secrets['NAME'] / secrets["NAME"].
+SECRET = re.compile(r"\bsecrets(?:\.([A-Za-z_][A-Za-z0-9_]*)|\[\s*(['\"])([A-Za-z_][A-Za-z0-9_]*)\2\s*\])")
 # A key whose value is a block scalar: `run: |`, `script: >-`, `- run: |2`.
 BLOCK = re.compile(r":\s*[|>][-+0-9]*$")
 CALLED = "./.github/workflows/"
@@ -30,8 +30,8 @@ def cut_comment(line):
         if quote:
             if char == quote:
                 quote = None
-        elif char in "'\"" and (i == 0 or line[i - 1] in " :[{,"):
-            quote = char
+        elif char in "'\"" and (not line[:i].strip() or line[:i].rstrip()[-1] in ":-[{,"):
+            quote = char  # only at the start of a value: in `echo "a # b"` the # starts a comment
         elif char == "#" and (i == 0 or line[i - 1] in " \t"):
             return line[:i]
     return line
@@ -101,9 +101,16 @@ def calls(text):
 
 
 def secrets_read(text):
-    """The secrets the workflow reads itself, not counting comments."""
-    lines = (line for line in text.splitlines() if not line.strip().startswith("#"))
-    return {name for line in lines for name in SECRET.findall(line)}
+    """The secrets the workflow reads itself, upper case (names ignore case), not counting comments. A line of a block
+    scalar counts even when it is a shell comment: GitHub fills in its expressions before the shell sees it.
+    GITHUB_TOKEN doesn't count, it is there without being passed."""
+    found = set()
+    for _indent, line, _in_block in lines(text):
+        for dotted, _quote, indexed in SECRET.findall(line):
+            name = (dotted or indexed).upper()
+            if name != "GITHUB_TOKEN":
+                found.add(name)
+    return found
 
 
 def problems(workflows):
@@ -213,6 +220,22 @@ class ProblemsTest(unittest.TestCase):
     def test_github_token_and_comments_are_not_secrets_to_pass(self):
         self.assertEqual(secrets_read(BUILD), {"SIGNING_KEY"})
         self.assertEqual(problems({"caller.yml": CALLER.format(secrets=""), "build.yml": NO_SECRETS}), [])
+
+    def test_secrets_read(self):
+        text = """\
+jobs:
+  build:
+    env:
+      A: ${{ secrets['FIRST'] }} # was secrets.IN_A_COMMENT
+      B: ${{ secrets[ "SECOND" ] || secrets.third }}
+      C: ${{ secrets.github_token }} "# not a comment" ${{ secrets.FOURTH }}
+    steps:
+      - run: |
+          # a shell comment: ${{ secrets.FIFTH }}
+          echo "a # b ${{ secrets.SIXTH }}"
+      - run: echo "a # b ${{ secrets.IN_A_COMMENT }}"
+"""
+        self.assertEqual(secrets_read(text), {"FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH"})
 
     def test_each_hop_must_pass_them_on(self):
         middle = CALLER.format(secrets="").replace("first:", "middle:")
