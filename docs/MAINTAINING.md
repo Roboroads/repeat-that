@@ -187,9 +187,18 @@ release notes: macOS hasn't been tested on a real Mac, plus a link to the macOS 
 `<!-- macos-untested -->` and is added once, so running it again, or the late attach after a full run, changes nothing.
 It never runs for a build that failed, so a release without a `.dmg` has no macOS paragraph.
 
-**Removing the "untested" notices** is a follow-up that waits until someone has confirmed on a Mac that it works: delete
-the paragraph from `macos-release-note.sh` and the notices in `README.md`, `docs/macos.md`, `docs/install-macos.md` and
-`app/src/lib/components/MacosNotice.svelte`.
+**Removing the "untested" notices** is a follow-up that waits until someone has confirmed on a Mac that it works. They
+are in:
+
+- `README.md` (the status block, Install (macOS), the platform table and the macOS note), `docs/macos.md`,
+  `docs/install-macos.md`, `docs/ARCHITECTURE.md` (the app section and the build modes), `CONTRIBUTING.md` (Testing on
+  real hardware) and `ROADMAP.md` (the milestone 6 heading and intro);
+- the first lines of `.github/ISSUE_TEMPLATE/macos.yml`;
+- the settings window: `app/src/lib/components/MacosNotice.svelte`, its test `MacosNotice.test.ts`, its use in
+  `GeneralSection.svelte`, and the entry for it in the links test in `app/src-tauri/src/lib.rs`;
+- the release notes: the `Release note` job of `build-macos.yml` and `macos-release-note.sh`.
+
+`grep -rniE "untested|on a real Mac"` finds them (the comment in `Entitlements.plist` matches too; it is not a notice).
 
 **When the macOS job fails in a release.** Windows and Linux still publish, without a `.dmg` and without its line in
 `SHA256SUMS`. Fix the cause (usually the Apple side: a lapsed membership, a revoked key, or the notary service being
