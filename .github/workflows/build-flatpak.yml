@@ -196,7 +196,8 @@ jobs:
         run: .github/scripts/check-flatpak.sh --version "$VERSION" "bundle/$FILE" 2>&1 | tee flatpak-check.log
 
       # Flathub's own linter, as a Flathub reviewer will run it: on the manifest, on the manifest that goes to Flathub
-      # (the release's tag in place of this folder), on the metainfo and on the built repository. Only these errors are
+      # (the release's tag in place of this folder), on the built repository and, once the screenshot is on main, on the
+      # metainfo. Only these errors are
       # let through, because they hold until the app is on Flathub:
       #   appid-url-not-reachable                        the app ID is that of roboroads.me, which has to answer, and
       #                                                  host the verification token Flathub makes, before the submission
@@ -216,9 +217,11 @@ jobs:
             echo "::error::the metainfo has no screenshot"
             exit 1
           fi
+          screenshot_found=true
           if ! curl -fsSLI "$screenshot" > /dev/null 2>&1; then
             echo "::warning::$screenshot is not there yet, so the build can't fetch the screenshot (expected on the change that adds it)"
             allow+=(--allow appstream-missing-screenshots)
+            screenshot_found=false
           fi
           lint() {
             flatpak-builder-lint "$@" > lint.json 2> lint.err || true
@@ -229,9 +232,13 @@ jobs:
           lint manifest packaging/flatpak/me.roboroads.RepeatThat.yml
           echo "== the manifest for Flathub"
           lint manifest packaging/flatpak/flathub/me.roboroads.RepeatThat.yml
-          echo "== the metainfo"
-          flatpak run --command=cat me.roboroads.RepeatThat /app/share/metainfo/me.roboroads.RepeatThat.metainfo.xml > metainfo.xml
-          lint appstream metainfo.xml
+          # Its own text, not JSON, and it looks the screenshot up on the network, so it is for when that is there.
+          # check-flatpak.sh has validated the metainfo without the network already.
+          if [[ $screenshot_found == true ]]; then
+            echo "== the metainfo"
+            flatpak run --command=cat me.roboroads.RepeatThat /app/share/metainfo/me.roboroads.RepeatThat.metainfo.xml > metainfo.xml
+            flatpak-builder-lint appstream metainfo.xml
+          fi
           echo "== the repository"
           lint repo repo
 

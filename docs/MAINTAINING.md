@@ -254,11 +254,13 @@ installation and checks, in the same container:
 - that the app starts under a virtual display, is still running ten seconds later, and wrote its tray icon to
   `$XDG_RUNTIME_DIR/app/me.roboroads.RepeatThat`, the folder the sandbox shares with the desktop's tray.
 
-Then `flatpak-builder-lint`, Flathub's own linter, runs on the manifest, on the manifest that goes to Flathub, on the
-metainfo and on the built repository, through `filter_lint.py`. Two errors are let through until the app is on Flathub:
-`appid-url-not-reachable` (`https://roboroads.me` has to answer, see [Flathub](#flathub)) and
-`appstream-screenshots-not-mirrored-in-ostree` (Flathub fetches the screenshot, which is a link to the main branch, and
-keeps its own copy). Anything else the linter reports fails the build.
+Then `flatpak-builder-lint`, Flathub's own linter, runs on the manifest, on the manifest that goes to Flathub and on the
+built repository, through `filter_lint.py`, and on the metainfo once its screenshot is on `main` (the linter looks it up
+on the network). Two errors are let through until the app is on Flathub: `appid-url-not-reachable`
+(`https://roboroads.me` has to answer, see [Flathub](#flathub)) and `appstream-screenshots-not-mirrored-in-ostree`
+(Flathub fetches the screenshot, which is a link to the main branch, and keeps its own copy). A third,
+`appstream-missing-screenshots`, is let through only while the screenshot isn't on `main` yet, on the change that adds it.
+Anything else the linter reports fails the build.
 
 **Not covered by CI.** There is no PipeWire in that container, so capture, replay and ducking inside the sandbox are
 tried by hand on a desktop: pick an app, replay it with the hotkey and with `flatpak run me.roboroads.RepeatThat
