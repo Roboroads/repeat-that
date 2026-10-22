@@ -128,6 +128,8 @@ export class SettingsStore {
         await api.onUpdateStatus((updates) => {
           this.updateEvents++;
           this.updates = updates;
+          // A check the user asked for, from the tray say, shows what it finds even when "Later" closed it before.
+          if (updates.manual && updates.state === 'checking') this.dismissedVersion = null;
         }),
       );
       unlisteners.push(

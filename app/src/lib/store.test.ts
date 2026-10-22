@@ -272,6 +272,32 @@ describe('SettingsStore updates', () => {
     });
   });
 
+  it('shows a closed offer again when the backend starts a check the user asked for, as the tray does', async () => {
+    const { store } = await open();
+    await store.checkForUpdates();
+    const found = store.updates;
+    store.dismissUpdate();
+
+    await emit('update-status', { ...found, state: 'checking', manual: true });
+    await vi.waitFor(() => expect(store.updates.state).toBe('checking'));
+
+    expect(store.offerDismissed).toBe(false);
+  });
+
+  it('keeps an offer closed through the daily check, which nobody asked for', async () => {
+    const { store } = await open();
+    await store.checkForUpdates();
+    const found = store.updates;
+    store.dismissUpdate();
+
+    await emit('update-status', { ...found, state: 'checking', manual: false });
+    await vi.waitFor(() => expect(store.updates.state).toBe('checking'));
+    await emit('update-status', { ...found, manual: false });
+    await vi.waitFor(() => expect(store.updates.state).toBe('available'));
+
+    expect(store.offerDismissed).toBe(true);
+  });
+
   it('has nothing to dismiss when nothing was found', async () => {
     const { store } = await open();
 
