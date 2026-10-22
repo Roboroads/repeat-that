@@ -35,6 +35,9 @@ pub const HOST_APP_ID: &str = "me.roboroads.repeat-that";
 /// How long to wait for the portal to answer a request to open its settings.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long to wait for kglobalaccel when giving the shortcuts their name in KDE.
+const KDE_NAME_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long after the portal is not found, or its session ended, to look again: quickly at first, so a portal that is
 /// slow at login still gets its hotkeys, then once a minute. The last delay repeats.
 const RETRY: &[Duration] = &[
@@ -681,9 +684,7 @@ mod worker {
         // Plasma 6.3's portal lists the shortcuts under the app ID once a session starts, see `kglobalaccel`. Done after
         // the first answer, when the portal has registered them, whether the dialog was accepted or not. Later binds in
         // the session leave the name alone.
-        if let Err(err) = kglobalaccel::name_component(connection, HOST_APP_ID, kglobalaccel::APP_NAME).await {
-            eprintln!("could not give the shortcuts their name in KDE: {err}");
-        }
+        name_for_kde(connection);
 
         loop {
             let request = std::pin::pin!(requests.recv());
@@ -715,6 +716,26 @@ mod worker {
                 }
             }
         }
+    }
+
+    /// Gives the shortcuts their name in KDE (see `kglobalaccel`) on a task of its own, with a time limit, so a desktop
+    /// that is slow to answer never holds up the hotkeys or the settings button.
+    fn name_for_kde(connection: &zbus::Connection) {
+        let connection = connection.clone();
+        tauri::async_runtime::spawn(async move {
+            let name = std::pin::pin!(kglobalaccel::name_component(
+                &connection,
+                HOST_APP_ID,
+                kglobalaccel::APP_NAME
+            ));
+            match select(name, std::pin::pin!(pause(KDE_NAME_TIMEOUT))).await {
+                Either::Left((Ok(_), _)) => {}
+                Either::Left((Err(err), _)) => eprintln!("could not give the shortcuts their name in KDE: {err}"),
+                Either::Right(_) => {
+                    eprintln!("could not give the shortcuts their name in KDE: kglobalaccel did not answer")
+                }
+            }
+        });
     }
 
     /// Binds `shortcuts` and tells the link how it went. Only the session ending turns the hotkeys off: a bind that fails
