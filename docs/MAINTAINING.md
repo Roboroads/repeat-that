@@ -1052,8 +1052,9 @@ signed by the old key that carries the new public key: the build and the signing
 `minisign -V` check insists on it. Whatever the reason for the change, the steps are the same:
 
 1. Make a new key pair (step 1 above, with another file name), replace the secrets (step 3) and set the variable to
-   the new `.pub` file (step 4). Do all three before the next release. `Check release` fails a release that has the
-   variable but not the secrets, and the `minisign -V` check fails one where they don't match.
+   the new `.pub` file (step 4). Do all three before the next release. If the new key has no password, delete the old
+   password secret. `Check release` fails a release that has the variable but no private key, or a value that isn't a
+   key file, and the `minisign -V` check fails one where the two keys don't match.
 2. Make a release. It is signed with the new key and has the new public key inside.
 3. An app from before the change finds the new version, downloads it and refuses it, because the signature isn't from
    the key it has. It says "Couldn't install" and links to the release page, and the user installs the new version by
