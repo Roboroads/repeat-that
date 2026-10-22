@@ -53,6 +53,7 @@ export function offUpdateStatus(currentVersion = ''): UpdateStatus {
     available: null,
     progress: null,
     error: null,
+    errorKind: null,
     lastCheckedAt: null,
     manual: false,
   };

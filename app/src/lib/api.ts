@@ -89,6 +89,9 @@ export interface PermissionHelp {
 export type UpdateMode = 'install' | 'notify' | 'external' | 'off';
 export type UpdateState = 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'error';
 
+/** Which step failed in state `error`: looking for a version, or downloading and installing the one found. */
+export type UpdateErrorKind = 'check' | 'install';
+
 export interface UpdateStatus {
   mode: UpdateMode;
   /** A sentence for `notify`, `external` and `off`; `null` for `install`. */
@@ -101,6 +104,12 @@ export interface UpdateStatus {
   progress: number | null;
   /** In state `error`. */
   error: string | null;
+  /**
+   * In state `error`: which step failed, `null` otherwise. After `install`, `available` is still filled in: the
+   * release page link in it is what the window offers. After `check`, `available` may or may not be filled in, and the
+   * window does not use it.
+   */
+  errorKind: UpdateErrorKind | null;
   /** Milliseconds since the epoch; this run only. */
   lastCheckedAt: number | null;
   /** The last check was asked for by the user. */

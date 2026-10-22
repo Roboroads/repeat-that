@@ -184,6 +184,7 @@ describe('general section updates', () => {
       mode: 'install',
       modeReason: null,
       state: 'error',
+      errorKind: 'install',
       error: "Couldn't verify the download",
       available: { version: '0.2.0', date: null, notes: '', releaseUrl: 'https://github.com/Roboroads/repeat-that/releases/tag/v0.2.0' },
     };

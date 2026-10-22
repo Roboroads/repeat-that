@@ -377,13 +377,20 @@ export class MockBackend {
     if (!this.checksByItself() || state === 'checking' || state === 'downloading' || state === 'installing') {
       return structuredClone(this.updateState);
     }
-    this.pushUpdate({ state: 'checking', manual, error: null });
+    this.pushUpdate({ state: 'checking', manual, error: null, errorKind: null });
     if (this.updates.checkMs > 0) await new Promise((resolve) => setTimeout(resolve, this.updates.checkMs));
 
     const lastCheckedAt = Date.now();
     const { outcome, release } = this.updates;
     if (outcome === 'none') {
-      return this.pushUpdate({ state: 'upToDate', available: null, progress: null, lastCheckedAt });
+      return this.pushUpdate({
+        state: 'upToDate',
+        available: null,
+        progress: null,
+        error: null,
+        errorKind: null,
+        lastCheckedAt,
+      });
     }
     if (outcome === 'fail-check') {
       return this.pushUpdate({
@@ -391,19 +398,27 @@ export class MockBackend {
         available: null,
         progress: null,
         error: "Couldn't reach GitHub to look for a new version",
+        errorKind: 'check',
         lastCheckedAt,
       });
     }
     const releaseUrl = `https://github.com/Roboroads/repeat-that/releases/tag/v${release.version}`;
     const available = { ...release, releaseUrl };
-    return this.pushUpdate({ state: 'available', available, progress: null, lastCheckedAt });
+    return this.pushUpdate({
+      state: 'available',
+      available,
+      progress: null,
+      error: null,
+      errorKind: null,
+      lastCheckedAt,
+    });
   }
 
   private install(): null {
     if (this.updateState.state !== 'available' || this.updateState.mode !== 'install') {
       return fail('invalid', 'There is no update to install');
     }
-    this.pushUpdate({ state: 'downloading', progress: 0, error: null });
+    this.pushUpdate({ state: 'downloading', progress: 0, error: null, errorKind: null });
     return null;
   }
 
@@ -412,7 +427,12 @@ export class MockBackend {
     if (this.updateState.state === 'downloading') {
       const progress = (this.updateState.progress ?? 0) + ms / MOCK_DOWNLOAD_MS;
       if (this.updates.outcome === 'fail-download' && progress >= 0.5) {
-        this.pushUpdate({ state: 'error', progress: null, error: 'The connection was lost during the download' });
+        this.pushUpdate({
+          state: 'error',
+          progress: null,
+          error: 'The connection was lost during the download',
+          errorKind: 'install',
+        });
       } else if (progress >= 1) {
         // The real app restarts here; the mock stays in `installing`.
         this.pushUpdate({ state: 'installing', progress: null });

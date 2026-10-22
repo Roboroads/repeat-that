@@ -306,6 +306,7 @@ describe('update commands', () => {
       state: 'error',
       available: null,
       error: expect.stringMatching(/\S/),
+      errorKind: 'check',
     });
   });
 
@@ -361,6 +362,7 @@ describe('update commands', () => {
       state: 'error',
       progress: null,
       error: expect.stringMatching(/\S/),
+      errorKind: 'install',
       available: { version: '99.0.0' },
     });
   });

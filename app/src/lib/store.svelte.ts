@@ -261,7 +261,7 @@ export class SettingsStore {
       // The backend took it. Its event can be behind this answer, and until it lands the page would offer the same
       // install again.
       if (this.updateEvents === eventsBefore && this.updates.state === 'available') {
-        this.updates = { ...this.updates, state: 'downloading', progress: null, error: null };
+        this.updates = { ...this.updates, state: 'downloading', progress: null, error: null, errorKind: null };
       }
     } catch (raw) {
       this.error = api.toApiError(raw).message;

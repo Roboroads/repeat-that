@@ -20,13 +20,15 @@
 
   /**
    * What to say about the version on offer. A download or install under way is always shown. A version the user put
-   * off ("Later") stays hidden, whether it is waiting or its install failed. A failed check has no version, so it
-   * isn't here: General shows it.
+   * off ("Later") stays hidden, whether it is waiting or its install failed. A failed check isn't here, whether or not
+   * it still has a version: it can't be acted on, and General shows it.
    */
   const form = $derived.by(() => {
     if (offer === null) return null;
     if (update.state === 'downloading' || update.state === 'installing') return update.state;
-    if ((update.state === 'available' || update.state === 'error') && !store.offerDismissed) return update.state;
+    if (store.offerDismissed) return null;
+    if (update.state === 'available') return 'available';
+    if (update.state === 'error' && update.errorKind === 'install') return 'error';
     return null;
   });
 

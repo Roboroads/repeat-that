@@ -279,7 +279,7 @@ describe('an install that failed', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     await renderApp(ANSWERED);
 
-    await receive({ state: 'error', available: offer, error: "Couldn't verify the download" });
+    await receive({ state: 'error', errorKind: 'install', available: offer, error: "Couldn't verify the download" });
 
     const banner = await screen.findByRole('complementary', { name: "Couldn't install version 0.2.0" });
     expect(banner).toHaveTextContent("Couldn't verify the download");
@@ -300,6 +300,19 @@ describe('an install that failed', () => {
 
     const banner = await screen.findByRole('complementary', { name: "Couldn't install version 99.0.0" });
     expect(banner).toHaveTextContent('The connection was lost during the download');
+  });
+});
+
+describe('a check that failed after a version was found', () => {
+  it.each(['install', 'notify'] as const)('is not an install that failed, in mode %s', async (mode) => {
+    await renderApp({ settings: { checkForUpdates: true }, updates: { mode, modeReason: mode === 'notify' ? 'Use the download page.' : null } });
+
+    // Offline on the next check: the version found earlier may still be filled in.
+    await receive({ mode, state: 'error', errorKind: 'check', error: 'No network', available: offer, manual: true });
+
+    expect(screen.queryByRole('complementary', { name: /Couldn't install/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'General' })).toHaveTextContent("Couldn't check for updates.");
+    expect(screen.getByRole('region', { name: 'General' })).not.toHaveTextContent("Couldn't install");
   });
 });
 

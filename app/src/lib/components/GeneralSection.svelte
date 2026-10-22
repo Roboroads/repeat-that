@@ -50,7 +50,7 @@
       case 'available':
         return found && { text: `Version ${found.version} is available.`, offer: true };
       case 'error':
-        if (found) {
+        if (update.errorKind === 'install' && found) {
           return { text: `Couldn't install version ${found.version}.`, detail: update.error ?? undefined, offer: true };
         }
         return {
