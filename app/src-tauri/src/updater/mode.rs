@@ -50,6 +50,8 @@ pub struct BuildFacts {
     pub debug_build: bool,
     /// A debug build that was started with a mock update source, which stands in for the server.
     pub mocked: bool,
+    /// Runs in a Flatpak sandbox, which only a Linux build can (`rt_capture::in_flatpak`).
+    pub in_flatpak: bool,
     pub os: Os,
 }
 
@@ -57,7 +59,6 @@ pub struct BuildFacts {
 pub trait InstallFacts {
     /// The path of the running program.
     fn current_exe(&self) -> Option<PathBuf>;
-    fn exists(&self, path: &Path) -> bool;
     /// Whether the file `file` can be replaced by a new version: it is there and its folder can be written to.
     fn can_replace(&self, file: &Path) -> bool;
 }
@@ -90,13 +91,10 @@ pub const FLATPAK_REASON: &str = "Updates come through Flathub.";
 pub const PACKAGE_REASON: &str = "Install updates from the download page or your package manager.";
 pub const MOVE_REASON: &str = "Move Repeat That to Applications to get updates.";
 
-/// The file Flatpak puts at the root of every sandbox.
-const FLATPAK_INFO: &str = "/.flatpak-info";
-
 /// How this install handles updates.
 pub fn detect(build: BuildFacts, env: &dyn Env, facts: &dyn InstallFacts) -> Detection {
     // A store that updates the app comes first: it is what the user should be told, key or no key.
-    if build.os == Os::Linux && (env.var("FLATPAK_ID").is_some() || facts.exists(Path::new(FLATPAK_INFO))) {
+    if build.in_flatpak {
         return Detection::with(UpdateMode::External, FLATPAK_REASON);
     }
     if build.mocked {
@@ -135,10 +133,6 @@ pub struct SystemFacts;
 impl InstallFacts for SystemFacts {
     fn current_exe(&self) -> Option<PathBuf> {
         std::env::current_exe().ok()
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        path.exists()
     }
 
     fn can_replace(&self, file: &Path) -> bool {
@@ -186,17 +180,12 @@ mod tests {
     #[derive(Default)]
     struct FakeFacts {
         exe: Option<&'static str>,
-        existing: Vec<&'static str>,
         replaceable: Vec<&'static str>,
     }
 
     impl InstallFacts for FakeFacts {
         fn current_exe(&self) -> Option<PathBuf> {
             self.exe.map(PathBuf::from)
-        }
-
-        fn exists(&self, path: &Path) -> bool {
-            self.existing.iter().any(|p| Path::new(p) == path)
         }
 
         fn can_replace(&self, file: &Path) -> bool {
@@ -210,7 +199,16 @@ mod tests {
             has_key: true,
             debug_build: false,
             mocked: false,
+            in_flatpak: false,
             os,
+        }
+    }
+
+    /// The same, in a Flatpak.
+    fn flatpak() -> BuildFacts {
+        BuildFacts {
+            in_flatpak: true,
+            ..shipped(Os::Linux)
         }
     }
 
@@ -250,6 +248,7 @@ mod tests {
                     has_key,
                     debug_build: true,
                     mocked: true,
+                    in_flatpak: false,
                     os,
                 };
                 // On Linux without an AppImage a real build could only announce; the mock still installs.
@@ -272,22 +271,8 @@ mod tests {
 
     #[test]
     fn a_flatpak_leaves_updates_to_flathub() {
-        let expected = Detection::with(UpdateMode::External, FLATPAK_REASON);
-        let by_variable = detect_with(
-            shipped(Os::Linux),
-            &[("FLATPAK_ID", "me.roboroads.RepeatThat")],
-            FakeFacts::default(),
-        );
-        assert_eq!(by_variable, expected);
-        let by_file = detect_with(
-            shipped(Os::Linux),
-            &[],
-            FakeFacts {
-                existing: vec!["/.flatpak-info"],
-                ..FakeFacts::default()
-            },
-        );
-        assert_eq!(by_file, expected);
+        let found = detect_with(flatpak(), &[], FakeFacts::default());
+        assert_eq!(found, Detection::with(UpdateMode::External, FLATPAK_REASON));
     }
 
     #[test]
@@ -295,17 +280,17 @@ mod tests {
         // Flathub builds the app itself, without the update key; the sentence that fits is still Flathub's.
         let build = BuildFacts {
             has_key: false,
-            ..shipped(Os::Linux)
+            ..flatpak()
         };
-        let found = detect_with(build, &[("FLATPAK_ID", "x")], FakeFacts::default());
+        let found = detect_with(build, &[], FakeFacts::default());
         assert_eq!(found, Detection::with(UpdateMode::External, FLATPAK_REASON));
     }
 
     #[test]
     fn a_flatpak_wins_over_a_stray_appimage_variable() {
         let found = detect_with(
-            shipped(Os::Linux),
-            &[("FLATPAK_ID", "x"), ("APPIMAGE", "/a.AppImage")],
+            flatpak(),
+            &[("APPIMAGE", "/a.AppImage")],
             FakeFacts {
                 replaceable: vec!["/a.AppImage"],
                 ..FakeFacts::default()
@@ -404,14 +389,10 @@ mod tests {
     }
 
     #[test]
-    fn the_flatpak_and_appimage_rules_are_for_linux_only() {
-        // Neither variable means anything on the other systems, whatever the environment holds.
+    fn the_appimage_rule_is_for_linux_only() {
+        // The variable means nothing on the other systems, whatever the environment holds.
         for os in [Os::Windows, Os::Mac] {
-            let found = detect_with(
-                shipped(os),
-                &[("FLATPAK_ID", "x"), ("APPIMAGE", "/a.AppImage")],
-                FakeFacts::default(),
-            );
+            let found = detect_with(shipped(os), &[("APPIMAGE", "/a.AppImage")], FakeFacts::default());
             assert_eq!(found, Detection::install(), "{os:?}");
         }
     }
@@ -426,7 +407,7 @@ mod tests {
                 },
                 vec![],
             ),
-            (shipped(Os::Linux), vec![("FLATPAK_ID", "x")]),
+            (flatpak(), vec![]),
             (shipped(Os::Linux), vec![]),
             (shipped(Os::Windows), vec![]),
         ] {
