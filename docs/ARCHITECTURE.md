@@ -421,10 +421,10 @@ release notes, once (`macos-release-note.sh`, behind the marker `<!-- macos-unte
 what is checked is what ships. In every mode: one `.app`; `NSAudioCaptureUsageDescription`, `LSUIElement` and
 `LSMinimumSystemVersion` 14.2 in `Info.plist`; an arm64-only binary built for no newer macOS than that; `codesign
 --verify --deep --strict`; the hardened runtime on; the entitlements exactly those of `Entitlements.plist`; and
-`--rt-self-check` reporting Silero on `aarch64` with the bundle's version. Silero is required even in the ad hoc mode,
-because it is linked in and a fallback would mean something broke. Signed builds also check that the app and the image
-are signed by the Developer ID identity, that `spctl` accepts both as "Notarized Developer ID", and that both have their
-ticket stapled.
+`--rt-self-check` reporting Silero on `aarch64` with the bundle's version and an `updater` field that must match
+whether `TAURI_UPDATER_PUBKEY` is set. Silero is required even in the ad hoc mode, because it is linked in and a
+fallback would mean something broke. Signed builds also check that the app and the image are signed by the Developer ID
+identity, that `spctl` accepts both as "Notarized Developer ID", and that both have their ticket stapled.
 
 macOS ties the audio-capture permission to the app's signing identity. A Developer ID signature stays the same from
 one release to the next, so an update shouldn't reset the permission (nobody has tried this on a Mac). The user can
@@ -482,14 +482,19 @@ manifest format. A manifest gives the version (the tag without the `v`), the not
 the `url` of the file on the release and its signature. It is written once and never changes, so `SHA256SUMS` only gains
 lines, and the macOS manifest can come with the late attach without touching the others. The `.deb`, `.rpm` and Flatpak
 have no update files: the packages only announce a new version, and the Flatpak never checks. Signing happens in the
-publish job and not in the build workflows, so one place holds the private key and the signature covers the final files,
-which stays true if Windows code signing is added. The builds only get the public key, which they compile in.
-`build-macos.yml` packs the stapled `.app` as `Repeat-That_<version>_aarch64.app.tar.gz`, and `check-macos-bundle.sh
+publish job (and in the late attach job) and not in the build workflows, so one place holds the private key and the
+signature covers the final files, which stays true if Windows code signing is added. Those jobs use the
+`updater-signing` Environment once the repository variable `TAURI_UPDATER_PUBKEY` is set. The builds only get the public
+key, which they compile in. `build-macos.yml` packs the `.app` of the `.dmg`, stapled in a signed build, as
+`Repeat-That_<version>_aarch64.app.tar.gz` while the variable is set and in dry runs, and `check-macos-bundle.sh
 --update-bundle` runs the signature, ticket, Gatekeeper and self-check tests on what is inside it. `release_assets.py`
 knows the update files as part of their platform, but keeps them out of the rule that a platform must produce all its
-files, because a release without a key has none; its `--updater` flag asks for them, and for manifests that name the
-tag and files of the same release. A dry run uses a throwaway key. The update key is separate from any code signing,
-and how it is made, stored and replaced is in [MAINTAINING.md](MAINTAINING.md#update-signing-key).
+files, because a release without a key has none; its `--updater` flag asks for them. `sign-updates.sh` ends with
+`release_assets.py check-manifests`, which reads each manifest again: its version must be the tag, its `url` a file of
+the release, its `signature` the content of that file's `.sig`. A release with no variable has no update files, and a
+dry run uses a throwaway key. The website's download list leaves the update files out. The update key is separate from
+any code signing, and how it is made, stored and replaced is in
+[MAINTAINING.md](MAINTAINING.md#update-signing-key).
 
 The Windows installer is not code signed yet, so Windows shows a SmartScreen warning. Open-source code signing on
 Windows: apply to [SignPath Foundation](https://signpath.org).
