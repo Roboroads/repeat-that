@@ -661,6 +661,8 @@ impl State {
             });
             capture.compensation.asynchronous.store(asynchronous, Ordering::Relaxed);
             let wanted = capture::plan_links(ports, &app, |id| nodes.get(&id).map(|n| n.class.as_str()), node);
+            let mix = capture::mix_gain(ports, &wanted);
+            capture.compensation.mix.store(mix.to_bits(), Ordering::Relaxed);
             let gone: Vec<(u32, u32)> = capture
                 .links
                 .iter()
