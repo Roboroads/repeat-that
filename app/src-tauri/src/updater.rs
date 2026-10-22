@@ -859,7 +859,7 @@ mod tests {
     fn the_status_is_the_contract_with_the_window() {
         let status = UpdateStatus {
             mode: UpdateMode::Notify,
-            mode_reason: Some("Install updates from the download page or your package manager.".into()),
+            mode_reason: Some(mode::PACKAGE_REASON.into()),
             current_version: "0.1.0".into(),
             state: UpdateState::Available,
             available: Some(AvailableUpdate {
@@ -878,7 +878,7 @@ mod tests {
             serde_json::to_value(&status).unwrap(),
             json!({
                 "mode": "notify",
-                "modeReason": "Install updates from the download page or your package manager.",
+                "modeReason": mode::PACKAGE_REASON,
                 "currentVersion": "0.1.0",
                 "state": "available",
                 "available": {
@@ -1360,7 +1360,7 @@ mod tests {
     fn an_install_that_only_announces_is_never_installed() {
         let detection = Detection {
             mode: UpdateMode::Notify,
-            reason: Some("Install updates from the download page or your package manager.".into()),
+            reason: Some(mode::PACKAGE_REASON.into()),
         };
         let f = fixture(detection, None, NEVER, ShutdownTiming::AfterInstall, |s| {
             s.answering(vec![Ok(Some(found("0.2.0")))])
