@@ -874,10 +874,13 @@ paragraph once step 4 is done.
 ### Where the parts live
 
 - The private key and its password are the secrets `TAURI_SIGNING_PRIVATE_KEY` and
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` of the Environment `updater-signing`, which only `main` may use. The jobs of
-  `publish-release.yml` that run for a tag use it: `Check release` checks that both secrets exist, and `Publish` and
-  the late attach sign with them. A dry run doesn't touch it. GitHub doesn't show a secret again after it is saved, so
-  the secrets are not a backup: keep the key file and the password in a password manager.
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` of the Environment `updater-signing`, which only `main` may use. Only the
+  private key is required. GitHub can't store an empty secret, so a key made without a password has no password secret.
+  The jobs of `publish-release.yml` that run for a tag (`Check release`, `Publish` and the late attach) use the
+  Environment once the variable below is set, and not before, so its rule that only `main` may use it can't hold up a
+  release that has no update key. `Check release` looks at the secrets, and `Publish` and the late attach sign with
+  them. A dry run doesn't use the Environment. GitHub doesn't show a secret again after it is saved, so the secrets are
+  not a backup: keep the key file and the password in a password manager.
 - The public key is the repository variable `TAURI_UPDATER_PUBKEY`, set to the contents of the `.pub` file. It isn't
   secret. The three build workflows pass it to the build as `REPEAT_THAT_UPDATER_PUBKEY`, and
   [`updater.rs`](../app/src-tauri/src/updater.rs) compiles it into the app.
@@ -887,12 +890,17 @@ paragraph once step 4 is done.
 
 ### What a release does with it
 
-| `TAURI_UPDATER_PUBKEY` | Secrets | What happens |
+| `TAURI_UPDATER_PUBKEY` | `TAURI_SIGNING_PRIVATE_KEY` | What happens |
 |---|---|---|
-| set | both set | The update files are signed and attached. |
-| set | missing | `Check release` fails the release before any build, and the error lists the steps below. |
-| not set | set | A warning, and no update files. |
-| not set | missing | A notice, and no update files. This is the state today. |
+| set | set | The update files are signed and attached. |
+| set | missing | `Check release` fails the release before any build, and the error points here. |
+| not set | any | No update files, and a notice. This is the state today. |
+
+`Check release` also fails the release when the variable or the private key isn't what `tauri signer generate` wrote:
+one line of base64, the contents of the file and not its path. A variable of blanks counts as set (the workflows test it
+with `!= ''`), so it fails there as "not a key". The password secret is never required. While the variable isn't set,
+`Check release` doesn't use the Environment and can't see its secrets, so it only prints the notice. Set the variable
+last, once the secrets are in.
 
 With the key, `Publish` (and the late attach, for macOS) does this after it downloads the builds:
 
