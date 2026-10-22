@@ -57,7 +57,9 @@ jobs:
   # Builds every platform and attaches the files when this run created a release; publish-release.yml says why it is
   # called here and not from an `on: release` trigger. The release is a draft ("draft" in release-please-config.json)
   # that the called workflow publishes once the files are attached, so a failed build leaves a draft instead of a
-  # public release without files. A draft has no tag yet, hence the commit.
+  # public release without files. A draft has no tag yet, hence the commit. `secrets: inherit` because a called
+  # workflow only sees the secrets its caller passes, Environment secrets included: without it the update key of
+  # updater-signing and, one call further down, the Apple secrets of apple-signing would be empty.
   publish-release:
     name: Publish release
     needs: release-please
@@ -66,6 +68,7 @@ jobs:
       contents: write
       actions: read # asked for by the late attach job of the called workflow, which a caller must grant even if unused
     uses: ./.github/workflows/publish-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
       sha: ${{ needs.release-please.outputs.sha }}
