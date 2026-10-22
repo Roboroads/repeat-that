@@ -67,6 +67,11 @@ export function hasRoute(route: string): boolean {
   return getDocs().some((d) => d.route === route);
 }
 
+/** True for a link or image that names a file of the repository: not a full url, a protocol-relative url or an anchor. */
+export function isRepoPath(href: string): boolean {
+  return href !== "" && !href.startsWith("#") && !href.startsWith("//") && !/^[a-z][a-z0-9+.-]*:/i.test(href);
+}
+
 /**
  * Turns a link from a Markdown file into one that works on the site. `from` is the file the link is in, relative to
  * the repository root. A relative link to a doc on the site becomes its route, anchor kept. Any other relative link

@@ -105,6 +105,22 @@ describe("the remark plugin", () => {
     expect(urls).toEqual(["/install/macos/#permission"]);
   });
 
+  it("stops the build on an image that is a file in the repository, because the site serves none", async () => {
+    await expect(linksIn("![The tray](images/tray.png)", "docs/linux.md")).rejects.toThrow(/docs\/linux\.md.*images\/tray\.png/);
+    await expect(linksIn("![The tray](/docs/images/tray.png)", "docs/linux.md")).rejects.toThrow(/tray\.png/);
+    await expect(linksIn("![The tray][pic]\n\n[pic]: ../app/tray.png\n", "docs/linux.md")).rejects.toThrow(/tray\.png/);
+  });
+
+  it("leaves images with a full url or a data url to check-dist", async () => {
+    const tree = unified().use(remarkParse).parse("![a](https://example.org/a.png) ![b](data:image/png;base64,AAAA)") as Root;
+    await unified().use(remarkDocLinks, { from: "docs/linux.md", routes }).run(tree);
+    const urls: string[] = [];
+    visit(tree, "image", (node) => {
+      urls.push(node.url);
+    });
+    expect(urls).toEqual(["https://example.org/a.png", "data:image/png;base64,AAAA"]);
+  });
+
   it("does not touch links inside code", async () => {
     const urls = await linksIn("`[a](verify-downloads.md)`\n\n```\n[a](verify-downloads.md)\n```\n", "docs/linux.md");
     expect(urls).toEqual([]);
