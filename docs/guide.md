@@ -120,8 +120,9 @@ custom shortcuts in your desktop. [linux.md](linux.md#hotkeys) has the details f
 ## Volume during a replay
 
 While a replay plays, Repeat That lowers the volume of the app you picked, so the replay is easy to hear over the live
-call. The volume comes back about 300 milliseconds after the replay ends or is stopped. The switch "Lower the app's
-volume during a replay" turns it off, and the slider "Volume during replay" sets the level. The default is 20%.
+call. The volume comes back about 300 milliseconds after the replay ends or is stopped. In the Ducking section, the
+switch "Lower the app's volume during a replay" turns it off, and the slider "Volume during replay" sets the level. The
+default is 20%.
 
 The slider goes from 5% to 100% on Windows and Linux. A muted app can't be captured there, so 5% is the lowest. On a Mac
 it goes down to 0%, shown as "Muted". macOS has no volume setting per app, so Repeat That mutes the app and plays its
@@ -135,15 +136,15 @@ run a helper, so there the volume comes back the next time Repeat That starts.
 
 ## Other settings
 
-| Setting | Range | Default |
-|---|---|---|
-| Buffer length | 10 to 120 seconds | 30 seconds |
-| Sensitivity | Low, Normal or High | Normal |
-| Replay speed | 0.75x to 1.5x | 1x |
-| Catch-up speed | 1.25x to 2x | 1.5x |
-| Volume during replay | 5% to 100% (0% to 100% on macOS) | 20% |
-| Output device | any listed device | System default |
-| Start at login | on or off | off |
+| Section | Setting | Range | Default |
+|---|---|---|---|
+| Replay | Buffer length | 10 to 120 seconds | 30 seconds |
+| Replay | Replay speed | 0.75x to 1.5x | 1x |
+| Replay | Catch-up speed | 1.25x to 2x | 1.5x |
+| Replay | Output device | any listed device | System default |
+| Detection | The three buttons | Low, Normal or High | Normal |
+| Ducking | Volume during replay | 5% to 100% (0% to 100% on macOS) | 20% |
+| General | Start at login | on or off | off |
 
 Settings apply at once, except the volume and the output device, which apply from the next replay.
 
@@ -151,9 +152,9 @@ Buffer length is seconds of speech, not seconds of clock time. Silence isn't kep
 more than 30 seconds of the call. A longer buffer uses more memory, and a shorter one drops the oldest speech right
 away.
 
-Sensitivity is how readily the speech detector calls a sound speech. Low ignores background noise but may miss quiet
-speech. Normal is balanced for most calls. High catches quiet speech but may also pick up background noise. Changing it
-doesn't wipe the buffer.
+The Detection section sets how readily the speech detector calls a sound speech. Low ignores background noise but may
+miss quiet speech. Normal is balanced for most calls. High catches quiet speech but may also pick up background noise.
+Changing it doesn't wipe the buffer.
 
 Replay speed and catch-up speed are the speeds of the two actions. Both keep the pitch.
 
@@ -187,7 +188,7 @@ countries, and you are responsible for following the ones that apply to you.
 Two short falling tones mean the buffer is empty. Common reasons:
 
 - You just picked the app or resumed from a pause. Both start with an empty buffer.
-- The app hasn't played any speech since then, or the speech was too quiet for the sensitivity setting. Try High.
+- The app hasn't played any speech since then, or the speech was too quiet for the Detection setting. Try High.
 - The speech was played by a different app than the one you picked.
 
 ### The app isn't in the list
