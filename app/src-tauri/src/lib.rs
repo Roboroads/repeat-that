@@ -22,6 +22,8 @@ mod permission;
 mod portal;
 #[cfg(all(test, target_os = "linux"))]
 mod private_bus;
+#[cfg(target_os = "linux")]
+mod sandbox;
 pub mod self_check;
 mod service;
 mod session;

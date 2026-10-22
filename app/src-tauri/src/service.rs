@@ -8,11 +8,15 @@ use serde_json::{Value, json};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime};
 
 use crate::actions;
+#[cfg(target_os = "linux")]
+use crate::autostart::PortalAutostart;
 use crate::autostart::{Autostart, OsAutostart, reconcile};
 use crate::engine;
 use crate::hotkeys::{HotkeyManager, HotkeyReport, NoBackend, PluginBackend, ShortcutBackend};
 use crate::ipc::{CommandError, ConfigureOutcome, HotkeyBackendKind, HotkeyStates, Settings, SettingsPatch};
 use crate::locking::lock;
+#[cfg(target_os = "linux")]
+use crate::sandbox::{self, AutostartKind};
 use crate::session::{SharedSession, choose_backend};
 use crate::settings::{apply_patch, sanitize};
 use crate::store::{InMemoryPersistence, StorePersistence, settings_file};
@@ -182,12 +186,17 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
                 )))
             }
         };
-    install_with(
-        app,
-        persistence,
-        Arc::new(OsAutostart(app.clone())),
-        shortcut_backend(app),
-    );
+    install_with(app, persistence, os_autostart(app), shortcut_backend(app));
+}
+
+/// The way this install starts with the system: the autostart plugin, or in a Flatpak the Background portal, which makes
+/// the entry on the host (the plugin's would land inside the sandbox).
+fn os_autostart<R: Runtime>(app: &AppHandle<R>) -> Arc<dyn Autostart> {
+    #[cfg(target_os = "linux")]
+    if sandbox::autostart_kind() == AutostartKind::Portal {
+        return Arc::new(PortalAutostart);
+    }
+    Arc::new(OsAutostart(app.clone()))
 }
 
 /// The way the hotkeys work on this desktop: the plugin where it works, the portal on a Wayland desktop (which looks for

@@ -631,14 +631,17 @@ mod worker {
             .await
             .map_err(|err| format!("the shortcuts portal is not there: {err}"))?;
         // Portals know apps by their ID. A packaged app is told apart by its desktop file, an unpackaged one has to say
-        // who it is. Older portals don't have the call; they find the app by other means.
-        match AppID::try_from(HOST_APP_ID) {
-            Ok(id) => {
-                if let Err(err) = ashpd::register_host_app_with_connection(connection.clone(), id).await {
-                    eprintln!("could not tell the portal the app's ID (fine on older portals): {err}");
+        // who it is. Older portals don't have the call; they find the app by other means. A Flatpak is known by its
+        // Flatpak ID, which the portal reads from the sandbox, and the call is for apps outside one.
+        if !crate::sandbox::in_flatpak() {
+            match AppID::try_from(HOST_APP_ID) {
+                Ok(id) => {
+                    if let Err(err) = ashpd::register_host_app_with_connection(connection.clone(), id).await {
+                        eprintln!("could not tell the portal the app's ID (fine on older portals): {err}");
+                    }
                 }
+                Err(err) => eprintln!("{HOST_APP_ID} is not a valid app ID: {err}"),
             }
-            Err(err) => eprintln!("{HOST_APP_ID} is not a valid app ID: {err}"),
         }
 
         let portal = GlobalShortcuts::with_connection(connection.clone())
@@ -721,6 +724,11 @@ mod worker {
     /// Gives the shortcuts their name in KDE (see `kglobalaccel`) on a task of its own, with a time limit, so a desktop
     /// that is slow to answer never holds up the hotkeys or the settings button.
     fn name_for_kde(connection: &zbus::Connection) {
+        // A Flatpak is known to the portal by its Flatpak ID, not `HOST_APP_ID`, and the desktop finds its name and icon
+        // in the desktop file the Flatpak exports. kglobalaccel isn't reachable from the sandbox either.
+        if crate::sandbox::in_flatpak() {
+            return;
+        }
         let connection = connection.clone();
         tauri::async_runtime::spawn(async move {
             let name = std::pin::pin!(kglobalaccel::name_component(

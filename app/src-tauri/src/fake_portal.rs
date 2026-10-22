@@ -1,5 +1,5 @@
-//! A stand-in for the desktop's GlobalShortcuts portal, on a bus of its own, for the tests of the code that talks to the
-//! real one. It does what the interface description says and nothing more: a session per `CreateSession`, answers to
+//! A stand-in for the desktop's GlobalShortcuts and Background portals, on a bus of its own, for the tests of the code
+//! that talks to the real ones. It does what the interface description says and nothing more: a session per `CreateSession`, answers to
 //! `BindShortcuts` through `Request` objects, and signals the test sends when it wants a key pressed, a key changed or the
 //! session ended. No desktop is involved, so what it shows is that the app speaks the protocol, not that a particular
 //! desktop answers the way the interface says.
@@ -41,8 +41,34 @@ pub struct Asked {
     pub preferred_trigger: Option<String>,
 }
 
+/// What `RequestBackground` is answered with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BackgroundAnswer {
+    /// The user said yes: the app runs in the background, and starts with the system if it asked for that.
+    #[default]
+    Allow,
+    /// The user said no: neither is allowed.
+    Deny,
+    /// The user closed the dialog.
+    Dismiss,
+    /// The method call fails.
+    Fail,
+}
+
+/// One `RequestBackground` call.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BackgroundCall {
+    pub autostart: Option<bool>,
+    pub dbus_activatable: Option<bool>,
+    pub command: Vec<String>,
+    pub reason: Option<String>,
+}
+
 #[derive(Default)]
 pub struct State {
+    /// The `RequestBackground` calls so far.
+    pub backgrounds: Mutex<Vec<BackgroundCall>>,
+    pub background_answer: Mutex<BackgroundAnswer>,
     /// The `BindShortcuts` calls so far, each with the shortcuts it asked for.
     pub binds: Mutex<Vec<Vec<Asked>>>,
     pub configures: AtomicUsize,
@@ -227,6 +253,84 @@ impl Shortcuts {
     }
 }
 
+#[derive(Serialize, Type)]
+#[zvariant(signature = "dict")]
+struct BackgroundResult {
+    #[serde(with = "as_value")]
+    background: bool,
+    #[serde(with = "as_value")]
+    autostart: bool,
+}
+
+struct Background {
+    state: Arc<State>,
+}
+
+fn option<T: TryFrom<OwnedValue>>(options: &HashMap<String, OwnedValue>, key: &str) -> Option<T> {
+    options.get(key).and_then(|value| T::try_from(value.clone()).ok())
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Background")]
+impl Background {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        2
+    }
+
+    async fn request_background(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+        _parent_window: String,
+        options: HashMap<String, OwnedValue>,
+    ) -> fdo::Result<OwnedObjectPath> {
+        let call = BackgroundCall {
+            autostart: option(&options, "autostart"),
+            dbus_activatable: option(&options, "dbus-activatable"),
+            command: option(&options, "commandline").unwrap_or_default(),
+            reason: option(&options, "reason"),
+        };
+        let wants_autostart = call.autostart == Some(true);
+        self.state.backgrounds.lock().unwrap().push(call);
+        let answer = *self.state.background_answer.lock().unwrap();
+        if answer == BackgroundAnswer::Fail {
+            return Err(fdo::Error::Failed("the portal refused".into()));
+        }
+        let request = format!(
+            "/org/freedesktop/portal/desktop/request/{}/{}",
+            sender_in_path(&header),
+            token(&options, "handle_token")
+        );
+        match answer {
+            BackgroundAnswer::Allow => respond(
+                connection.clone(),
+                request.clone(),
+                0,
+                BackgroundResult {
+                    background: true,
+                    autostart: wants_autostart,
+                },
+            ),
+            BackgroundAnswer::Deny => respond(
+                connection.clone(),
+                request.clone(),
+                0,
+                BackgroundResult {
+                    background: false,
+                    autostart: false,
+                },
+            ),
+            _ => respond(
+                connection.clone(),
+                request.clone(),
+                1,
+                HashMap::<String, OwnedValue>::new(),
+            ),
+        }
+        OwnedObjectPath::try_from(request).map_err(|err| fdo::Error::Failed(err.to_string()))
+    }
+}
+
 /// A portal that has an interface, but not the shortcuts one: what a desktop whose portal has no backend for shortcuts
 /// looks like.
 struct Settings;
@@ -273,6 +377,18 @@ impl FakePortal {
             state: Arc::clone(&self.state),
         };
         zbus::block_on(self.connection.object_server().at(PORTAL_PATH, shortcuts)).expect("the interface is served");
+    }
+
+    /// The portal gets its Background interface.
+    pub fn add_background(&self) {
+        let background = Background {
+            state: Arc::clone(&self.state),
+        };
+        zbus::block_on(self.connection.object_server().at(PORTAL_PATH, background)).expect("the interface is served");
+    }
+
+    pub fn answer_background_with(&self, answer: BackgroundAnswer) {
+        *self.state.background_answer.lock().unwrap() = answer;
     }
 
     /// Answers the bind that [`BindAnswer::Hold`] kept open, as if the user accepted the dialog.
