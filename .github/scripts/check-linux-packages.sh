@@ -59,6 +59,8 @@ indent() { sed 's/^/    /'; }
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
+# A command that fails outside a check stops the script; say which, so the log isn't silent about it.
+trap 'echo "FAIL: stopped at line $LINENO: $BASH_COMMAND (exit $?)"' ERR
 
 # The value of KEY in the [Desktop Entry] group of a desktop file.
 entry_key() {
@@ -263,7 +265,18 @@ has_all ".rpm Requires" "$(rpm_query --requires)" "libwebkit2gtk-4.1.so.0()(64bi
   "libc.so.6(GLIBC_$glibc_max)(64bit)" "libstdc++.so.6(GLIBCXX_$glibcxx_max)(64bit)"
 has_all ".rpm Recommends" "$(rpm_query --recommends)" pipewire wireplumber
 mkdir "$work/rpm"
-rpm2cpio "$rpm" | (cd "$work/rpm" && cpio -idm --quiet)
+# In two steps, so a failure says which tool failed and how.
+code=0
+rpm2cpio "$rpm" >"$work/rpm.cpio" 2>"$work/rpm2cpio.err" || code=$?
+if [[ $code -ne 0 ]]; then
+  echo "note: rpm2cpio exited $code ($(wc -c <"$work/rpm.cpio") bytes of payload)"
+  indent <"$work/rpm2cpio.err"
+fi
+if (cd "$work/rpm" && cpio -idm --quiet <"$work/rpm.cpio") 2>&1 | indent; then
+  ok ".rpm unpacks"
+else
+  fail ".rpm does not unpack with rpm2cpio and cpio"
+fi
 check_installed ".rpm" "$work/rpm"
 
 deb_files=$(cd "$work/deb" && find . -type f | sort)
