@@ -128,6 +128,30 @@ describe('SettingsStore updates', () => {
     await vi.waitFor(() => expect(store.updates.state).toBe('downloading'));
   });
 
+  it('is downloading as soon as the backend took the install, before its event comes in', async () => {
+    const { backend, store } = await open();
+    await store.checkForUpdates();
+    // Accepted, and the event that says so is still on its way.
+    backend.overrides.install_update = () => null;
+
+    await store.installUpdate();
+
+    expect(store.updates.state).toBe('downloading');
+  });
+
+  it('sends one install for two presses, and one check for two presses', async () => {
+    const { backend, store } = await open();
+    await store.checkForUpdates();
+    backend.overrides.install_update = () => null;
+
+    await Promise.all([store.installUpdate(), store.installUpdate()]);
+    expect(argsOf(backend, 'install_update')).toHaveLength(1);
+
+    const again = await open({ updates: { mode: 'install', checkMs: 10 } });
+    await Promise.all([again.store.checkForUpdates(), again.store.checkForUpdates()]);
+    expect(argsOf(again.backend, 'check_for_updates')).toHaveLength(1);
+  });
+
   it('hides the offer for the version dismissed, shows it again for a newer one or when asked to', async () => {
     const { store } = await open();
     await store.checkForUpdates();

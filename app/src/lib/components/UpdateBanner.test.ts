@@ -147,6 +147,20 @@ describe('an update that was found', () => {
     expect(await screen.findByRole('complementary', { name: 'Downloading version 99.0.0' })).toBeInTheDocument();
   });
 
+  it('has no button to press again once the install was accepted, even before the backend says so', async () => {
+    const { backend } = await renderApp(ANSWERED);
+    await backend.handle('check_for_updates', {});
+    backend.overrides.install_update = () => null;
+    const install = await screen.findByRole('button', { name: 'Install and restart' });
+
+    await fireEvent.click(install);
+
+    expect(await screen.findByRole('complementary', { name: 'Downloading version 99.0.0' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Install and restart' })).not.toBeInTheDocument();
+    expect(argsOf(backend, 'install_update')).toHaveLength(1);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it('shows the download, then the install', async () => {
     const { backend } = await renderApp(ANSWERED);
     await backend.handle('check_for_updates', {});

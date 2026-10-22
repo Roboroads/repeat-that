@@ -237,6 +237,7 @@ export class SettingsStore {
   /** Looks for a newer version now, as the user asked, and shows the offer again if they had closed it. */
   async checkForUpdates(): Promise<void> {
     this.dismissedVersion = null;
+    if (this.updateCallPending) return;
     this.updateCallPending = true;
     const eventsBefore = this.updateEvents;
     try {
@@ -252,9 +253,16 @@ export class SettingsStore {
 
   /** Downloads and installs the version found. The progress and the restart come as `update-status` events. */
   async installUpdate(): Promise<void> {
+    if (this.updateCallPending) return;
     this.updateCallPending = true;
+    const eventsBefore = this.updateEvents;
     try {
       await api.installUpdate();
+      // The backend took it. Its event can be behind this answer, and until it lands the page would offer the same
+      // install again.
+      if (this.updateEvents === eventsBefore && this.updates.state === 'available') {
+        this.updates = { ...this.updates, state: 'downloading', progress: null, error: null };
+      }
     } catch (raw) {
       this.error = api.toApiError(raw).message;
     } finally {
