@@ -1166,25 +1166,22 @@ class CheckUpdaterKeysTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual((result.errors, result.warnings, result.notices), ([], [], []))
 
-    def test_the_variable_without_a_secret_fails_and_names_what_to_do(self):
-        for name, changes in (
-            ("TAURI_SIGNING_PRIVATE_KEY", {"private_key": ""}),
-            ("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", {"password": ""}),
-        ):
-            result = self.check(**changes)
-            self.assertFalse(result.ok, name)
-            self.assertEqual(len(result.errors), 1)
-            self.assertIn(name, result.errors[0])
-            self.assertIn("updater-signing", result.errors[0])
-            self.assertIn("docs/MAINTAINING.md", result.errors[0])
+    def test_the_variable_without_the_private_key_fails_and_names_what_to_do(self):
+        result = self.check(private_key="")
+        self.assertFalse(result.ok)
+        self.assertEqual(len(result.errors), 1)
+        self.assertIn("TAURI_SIGNING_PRIVATE_KEY", result.errors[0])
+        self.assertIn("updater-signing", result.errors[0])
+        self.assertIn("docs/MAINTAINING.md", result.errors[0])
 
-    def test_the_variable_without_either_secret_fails_for_each(self):
-        result = self.check(private_key="", password="")
-        self.assertEqual(len(result.errors), 2)
+    def test_a_key_without_a_password_passes(self):
+        # GitHub can't store an empty secret, so a key made without a password has no password secret at all.
+        result = self.check(password="")
+        self.assertTrue(result.ok)
+        self.assertEqual((result.errors, result.warnings, result.notices), ([], [], []))
 
-    def test_a_value_of_blanks_counts_as_not_set(self):
+    def test_a_private_key_of_blanks_counts_as_not_set(self):
         self.assertFalse(self.check(private_key=" \n").ok)
-        self.assertFalse(self.check(password="\n").ok)
 
     def test_a_variable_that_is_not_a_public_key_fails(self):
         raw = "untrusted comment: minisign public key: 3F9E6B1A2C4D5E70\nRWRwXkQsGhtunk"  # the file, not its base64

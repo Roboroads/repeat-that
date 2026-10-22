@@ -28,8 +28,8 @@ Usage: release_assets.py <command> ...
   check-updater-keys [--summary FILE]
                                check-release's look at the update key: the variable TAURI_UPDATER_PUBKEY and the
                                secrets TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD, read from
-                               the environment (never printed). The variable without the secrets is an error, the
-                               secrets without the variable a warning, neither a notice
+                               the environment (never printed). The variable without the private key is an error (the
+                               password is optional), the secrets without the variable a warning, neither a notice
   check-source-run --run-json FILE [--compare-json FILE] --platform P --repo OWNER/NAME --branch B
                                the earlier run whose files are attached: a successful dispatched build workflow of
                                P on branch B of this repository, its commit part of the release
@@ -622,19 +622,19 @@ def is_key_file(text, kind):
 def check_updater_keys(pubkey, private_key, password):
     """check-release's look at the update key. `pubkey` is the repository variable TAURI_UPDATER_PUBKEY, `private_key`
     and `password` the secrets of the updater-signing Environment; each is the empty string when it is not set.
-    The variable without the secrets is an error (the apps of the release would have an updater that its own
-    release can't feed), the secrets without the variable a warning, and neither a notice."""
+    The variable without the private key is an error (the apps of the release would have an updater that its own
+    release can't feed), the secrets without the variable a warning, and neither a notice. The password is optional:
+    GitHub can't store an empty secret, so a key without a password has no secret for it."""
     pubkey, private_key, password = pubkey.strip(), private_key.strip(), password.strip()
     guide = "See Update signing key in docs/MAINTAINING.md."
     secrets = (("TAURI_SIGNING_PRIVATE_KEY", private_key), ("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", password))
     errors, warnings, notices = [], [], []
     if pubkey:
-        for name, value in secrets:
-            if not value:
-                errors.append(
-                    "The repository variable TAURI_UPDATER_PUBKEY is set, so the builds have an updater, but the "
-                    f"updater-signing Environment has no secret {name} to sign its updates with. {guide}"
-                )
+        if not private_key:
+            errors.append(
+                "The repository variable TAURI_UPDATER_PUBKEY is set, so the builds have an updater, but the "
+                f"updater-signing Environment has no secret TAURI_SIGNING_PRIVATE_KEY to sign its updates with. {guide}"
+            )
         if not is_key_file(pubkey, "public key"):
             errors.append(
                 "TAURI_UPDATER_PUBKEY is not the content of the .pub file that `tauri signer generate` wrote "
