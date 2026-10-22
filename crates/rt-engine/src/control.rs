@@ -163,17 +163,24 @@ impl Control {
         let _ = self.worker.send(WorkerCmd::Clear);
     }
 
-    /// Notices a capture that ended by itself (the app quit): the buffer stays, and the target is looked for again.
+    /// Notices a capture that ended by itself (the app quit, or the OS took back the permission to capture): the buffer
+    /// stays, and the target is looked for again.
     fn check_capture(&mut self) {
         if self.capture.as_ref().is_none_or(|c| c.is_running()) {
             return;
         }
-        if let Some(capture) = self.capture.take() {
+        let refused = self.capture.take().and_then(|capture| {
+            let refused = capture.refused();
             capture.stop();
-        }
+            refused
+        });
         let _ = self.worker.send(WorkerCmd::Detach);
         self.next_poll = Instant::now() + POLL_EVERY;
-        let state = self.idle_state();
+        // Not allowed at once, rather than waiting until the next start is refused.
+        let state = match refused {
+            Some(how) => CaptureState::PermissionDenied(how),
+            None => self.idle_state(),
+        };
         self.status.update(|s| s.capture = state);
     }
 
@@ -208,12 +215,16 @@ impl Control {
         }
     }
 
+    /// The state for a capture that failed with `error`. Only `Unsupported` stops the polling; the rest is tried again,
+    /// so a permission the user gives later starts the capture by itself. The buffer is kept either way.
     fn failed(&mut self, error: CaptureError) -> CaptureState {
         match error {
             CaptureError::Unsupported(why) => {
                 self.unsupported = true;
                 CaptureState::Unsupported(why)
             }
+            // Already a sentence for the user.
+            CaptureError::PermissionDenied(how) => CaptureState::PermissionDenied(how),
             other => CaptureState::Error(other.to_string()),
         }
     }

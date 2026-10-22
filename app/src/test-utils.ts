@@ -28,6 +28,14 @@ export function argsOf(backend: MockBackend, cmd: string): unknown[] {
   return backend.calls.filter((call) => call.cmd === cmd).map((call) => call.args);
 }
 
+/**
+ * Makes `navigator.platform` say `platform`, e.g. `MacIntel`, `Win32` or `Linux x86_64`, for what is worded or limited
+ * per OS. The test setup puts the real one back after each test.
+ */
+export function pretendPlatform(platform: string): void {
+  Object.defineProperty(navigator, 'platform', { configurable: true, get: () => platform });
+}
+
 /** Makes `document.visibilityState` report `state` and tells the page. */
 export function setVisibility(state: 'visible' | 'hidden'): void {
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });

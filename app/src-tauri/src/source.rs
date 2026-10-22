@@ -1,8 +1,10 @@
 //! Where captured audio comes from and where replays play: the OS capture backend and the sound card, or a WAV file
-//! playing as a fake app and an output that plays into nothing, for development and tests.
+//! playing as a fake app and an output that plays into nothing, for development and tests. Debug builds can also
+//! pretend that the OS doesn't let the app capture audio, see [`MockPermission`].
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rt_capture::{AppAudioSource, AudioApp, CaptureError, CaptureHandle, FrameSink, MockSource, PlatformOptions};
@@ -14,6 +16,9 @@ use crate::locking::lock;
 pub const MOCK_WAV_VAR: &str = "REPEAT_THAT_MOCK_WAV";
 /// `1` plays replays into nothing, for machines without an audio device (CI, a dev box). Debug builds only.
 pub const NULL_OUTPUT_VAR: &str = "REPEAT_THAT_NULL_OUTPUT";
+/// `denied` makes captures fail as if the OS doesn't let the app capture audio, as macOS can, until "Ask again" in the
+/// window allows it. For seeing and testing that state on any OS; debug builds only. See [`MockPermission`].
+pub const MOCK_PERMISSION_VAR: &str = "REPEAT_THAT_MOCK_PERMISSION";
 /// What capture says on an OS without a capture backend.
 pub const UNSUPPORTED: &str = "Capturing apps isn't supported on this OS yet";
 
@@ -30,7 +35,8 @@ const DEBUG_FIXTURE: Option<&str> = None;
 /// Which capture source to use.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SourceKind {
-    /// The OS's capture backend: WASAPI process loopback on Windows, PipeWire on Linux.
+    /// The OS's capture backend: WASAPI process loopback on Windows, PipeWire on Linux, Core Audio process taps on
+    /// macOS.
     Platform,
     /// A WAV file playing as a fake app, named after the file.
     Mock(PathBuf),
@@ -172,6 +178,78 @@ pub fn output_from_env() -> Box<dyn OutputBackend> {
         Box::new(NullOutput::default())
     } else {
         Box::new(CpalOutput::new())
+    }
+}
+
+/// Whether to pretend the OS refuses capture: only in debug builds, and only when [`MOCK_PERMISSION_VAR`] is `denied`.
+pub fn wants_mock_permission(debug_build: bool, value: Option<&OsStr>) -> bool {
+    debug_build && value == Some(OsStr::new("denied"))
+}
+
+/// The pretend permission for this build and environment, see [`wants_mock_permission`]. `None` in release builds.
+pub fn mock_permission_from_env() -> Option<SharedMockPermission> {
+    wants_mock_permission(cfg!(debug_assertions), std::env::var_os(MOCK_PERMISSION_VAR).as_deref())
+        .then(MockPermission::denied)
+}
+
+/// How the pretend OS says to allow capture: what macOS 15 says.
+pub const MOCK_HOW_TO_ALLOW: &str =
+    "Turn on Repeat That in System Settings > Privacy & Security > Screen & System Audio Recording.";
+
+/// A permission to capture audio that the user hasn't given, for debug builds on any OS (see [`MOCK_PERMISSION_VAR`]).
+/// A source behind [`gate`](Self::gate) refuses to start captures with [`CaptureError::PermissionDenied`] until
+/// [`allow`](Self::allow), which is what "Ask again" in the window does here, as if the user chose Allow at once.
+/// Listing apps and ducking work as they do on macOS without the permission.
+#[derive(Debug, Default)]
+pub struct MockPermission {
+    allowed: AtomicBool,
+}
+
+/// The managed state the permission commands find the pretend permission in, when there is one.
+pub type SharedMockPermission = Arc<MockPermission>;
+
+impl MockPermission {
+    pub fn denied() -> SharedMockPermission {
+        Arc::new(MockPermission::default())
+    }
+
+    pub fn allow(&self) {
+        self.allowed.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_allowed(&self) -> bool {
+        self.allowed.load(Ordering::Relaxed)
+    }
+
+    /// `source`, refusing to start captures until this is allowed.
+    pub fn gate(self: &Arc<Self>, source: Arc<dyn AppAudioSource>) -> Arc<dyn AppAudioSource> {
+        Arc::new(Gated {
+            source,
+            permission: Arc::clone(self),
+        })
+    }
+}
+
+/// A source whose captures need a [`MockPermission`].
+struct Gated {
+    source: Arc<dyn AppAudioSource>,
+    permission: SharedMockPermission,
+}
+
+impl AppAudioSource for Gated {
+    fn list_apps(&self) -> rt_capture::Result<Vec<AudioApp>> {
+        self.source.list_apps()
+    }
+
+    fn start(&self, app: &AudioApp, sink: FrameSink) -> rt_capture::Result<Box<dyn CaptureHandle>> {
+        if !self.permission.is_allowed() {
+            return Err(CaptureError::PermissionDenied(MOCK_HOW_TO_ALLOW.into()));
+        }
+        self.source.start(app, sink)
+    }
+
+    fn set_app_volume(&self, app: &AudioApp, level: f32) -> rt_capture::Result<()> {
+        self.source.set_app_volume(app, level)
     }
 }
 
@@ -471,6 +549,45 @@ mod tests {
         // The first use waits for the one being made, and doesn't make another.
         assert_eq!(source.list_apps().unwrap().len(), 1);
         assert_eq!(made.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_captures_through_its_own_backend() {
+        const { assert!(rt_capture::HAS_PLATFORM_BACKEND) };
+        // Also in a debug build, which has the fixture to play.
+        assert_eq!(
+            choose(rt_capture::HAS_PLATFORM_BACKEND, None, DEBUG_FIXTURE),
+            SourceKind::Platform
+        );
+    }
+
+    #[test]
+    fn the_mock_permission_only_in_debug_builds_and_only_when_denied() {
+        assert!(wants_mock_permission(true, os("denied")));
+        assert!(!wants_mock_permission(false, os("denied")), "release builds ignore it");
+        assert!(!wants_mock_permission(true, None));
+        assert!(!wants_mock_permission(true, os("")), "an empty variable is ignored");
+        assert!(!wants_mock_permission(true, os("allowed")));
+        assert!(!wants_mock_permission(true, os("Denied")));
+    }
+
+    #[test]
+    fn a_mock_permission_refuses_captures_until_allowed() {
+        let permission = MockPermission::denied();
+        let source = permission.gate(Arc::new(MockSource::from_wav(DEBUG_FIXTURE.unwrap()).unwrap()));
+        // The app is listed, as macOS lists apps without the permission; only capturing it is refused.
+        let app = source.list_apps().unwrap().remove(0);
+        match source.start(&app, Box::new(|_, _| {})) {
+            Err(CaptureError::PermissionDenied(how)) => assert_eq!(how, MOCK_HOW_TO_ALLOW),
+            other => panic!("expected PermissionDenied, got {:?}", other.map(drop)),
+        }
+        assert!(source.set_app_volume(&app, 0.2).is_ok());
+
+        permission.allow();
+        let capture = source.start(&app, Box::new(|_, _| {})).unwrap();
+        assert!(capture.is_running());
+        capture.stop();
     }
 
     #[test]

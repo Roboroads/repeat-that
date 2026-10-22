@@ -111,6 +111,13 @@ pub trait CaptureHandle: Send {
     /// audio service restarted.
     fn is_running(&self) -> bool;
 
+    /// If the capture ended by itself because the OS took back the permission to capture audio: how to allow it again,
+    /// as a sentence for the user, like [`CaptureError::PermissionDenied`] says. `None` while it runs, and when it
+    /// ended for any other reason. Only macOS asks for this permission.
+    fn refused(&self) -> Option<String> {
+        None
+    }
+
     fn stop(self: Box<Self>);
 }
 

@@ -16,6 +16,8 @@ use crate::source::UNSUPPORTED;
 
 /// The window title and the start of the tooltip.
 const APP_NAME: &str = "Repeat That";
+/// The status line while the OS doesn't let the app capture audio. How to allow it is in the settings window.
+const NOT_ALLOWED: &str = "Not allowed to capture audio";
 
 /// Which of the three tray icons to show.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +38,8 @@ pub enum CaptureView {
     Paused,
     /// Capture failed (and is tried again): what to tell the user.
     Error(String),
+    /// The OS doesn't let the app capture audio (and it is tried again). How to allow it is in the settings window.
+    NotAllowed,
     /// Capturing isn't possible here: why.
     Unsupported(String),
 }
@@ -81,6 +85,7 @@ impl TrayStatus {
             CaptureStateName::Paused => CaptureView::Paused,
             // The tooltip is short; the settings window has the details.
             CaptureStateName::Error => CaptureView::Error(format!("Can't capture {}", name())),
+            CaptureStateName::NotAllowed => CaptureView::NotAllowed,
             CaptureStateName::Unsupported => {
                 CaptureView::Unsupported(status.capture.message.clone().unwrap_or_else(|| UNSUPPORTED.into()))
             }
@@ -111,9 +116,11 @@ impl TrayStatus {
         match self.capture {
             CaptureView::Capturing(_) => TrayIconKind::Capturing,
             CaptureView::Paused => TrayIconKind::Paused,
-            CaptureView::NoTarget | CaptureView::Waiting(_) | CaptureView::Error(_) | CaptureView::Unsupported(_) => {
-                TrayIconKind::Idle
-            }
+            CaptureView::NoTarget
+            | CaptureView::Waiting(_)
+            | CaptureView::Error(_)
+            | CaptureView::NotAllowed
+            | CaptureView::Unsupported(_) => TrayIconKind::Idle,
         }
     }
 
@@ -135,6 +142,7 @@ impl TrayStatus {
             CaptureView::Waiting(name) => format!("Waiting for {name}"),
             CaptureView::Capturing(name) => format!("Capturing {name} · {} s of speech", whole_seconds(self.buffered)),
             CaptureView::Paused => "Paused".to_string(),
+            CaptureView::NotAllowed => NOT_ALLOWED.to_string(),
             CaptureView::Error(message) | CaptureView::Unsupported(message) => message.clone(),
         }
     }
@@ -589,6 +597,7 @@ mod tests {
         assert_eq!(icon(Waiting("Discord".into())), TrayIconKind::Idle);
         assert_eq!(icon(Error("boom".into())), TrayIconKind::Idle);
         assert_eq!(icon(Unsupported("no backend".into())), TrayIconKind::Idle);
+        assert_eq!(icon(NotAllowed), TrayIconKind::Idle);
         assert_eq!(icon(Capturing("Discord".into())), TrayIconKind::Capturing);
         assert_eq!(icon(Paused), TrayIconKind::Paused);
     }
@@ -681,6 +690,7 @@ mod tests {
         assert!(pause_enabled(CaptureView::Capturing("Discord".into())));
         assert!(pause_enabled(CaptureView::Paused), "resuming stays possible");
         assert!(pause_enabled(CaptureView::Error("Can't capture Discord".into())));
+        assert!(pause_enabled(CaptureView::NotAllowed));
     }
 
     #[test]
@@ -760,6 +770,31 @@ mod tests {
             Some("Discord"),
         );
         assert_eq!(view(&status), CaptureView::Error("Can't capture Discord".into()));
+    }
+
+    #[test]
+    fn capture_that_is_not_allowed_says_so_and_leaves_how_to_allow_it_to_the_window() {
+        let status = wire(
+            CaptureStateName::NotAllowed,
+            Some("Turn on Repeat That in System Settings > Privacy & Security > Screen & System Audio Recording."),
+            Some("Discord"),
+        );
+        let tray = TrayStatus::from_status(&status);
+        assert_eq!(tray.capture, CaptureView::NotAllowed);
+        assert_eq!(tray.status_line(), "Not allowed to capture audio");
+        assert_eq!(tray.icon(), TrayIconKind::Idle);
+        let model = build_model(&tray, &HotkeyLabels::default());
+        assert_eq!(model.tooltip, "Repeat That - Not allowed to capture audio");
+        assert_eq!(item(&model, STATUS_ID).label, "Not allowed to capture audio");
+        // Pausing works, replays still play what was buffered, and Settings opens the window with the steps.
+        for id in [
+            AppAction::TogglePause.id(),
+            AppAction::Replay.id(),
+            AppAction::OpenSettings.id(),
+        ] {
+            assert!(item(&model, id).enabled, "{id}");
+        }
+        assert_eq!(item(&model, AppAction::TogglePause.id()).checked, Some(false));
     }
 
     #[test]

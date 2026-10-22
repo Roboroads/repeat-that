@@ -13,7 +13,12 @@ pub const BUFFER_SECONDS_MAX: u32 = 120;
 const BUFFER_SECONDS_DEFAULT: u32 = 30;
 const REPLAY_SPEED: (f64, f64, f64) = (0.75, 1.5, 1.0);
 const CATCH_UP_SPEED: (f64, f64, f64) = (1.25, 2.0, 1.5);
-const DUCK_LEVEL: (f64, f64, f64) = (0.05, 1.0, 0.2);
+const DUCK_LEVEL: (f64, f64, f64) = (DUCK_LEVEL_MIN, 1.0, 0.2);
+/// The lowest duck level, the capture backend's [`rt_capture::PLATFORM_MIN_DUCK_LEVEL`]: macOS can mute the app during
+/// a replay (0), Windows and Linux go down to 5%, because their capture can't hear a muted app. A file from a Mac that
+/// holds 0 is clamped to 5% here. Rounded to whole thousandths, so the window gets 0.05 and not the `f32` that is
+/// closest to it, 0.0500000007.
+const DUCK_LEVEL_MIN: f64 = (rt_capture::PLATFORM_MIN_DUCK_LEVEL as f64 * 1000.0).round() / 1000.0;
 
 /// One action that has a hotkey: everything the settings code needs to know about it.
 pub struct HotkeyDef {
@@ -591,14 +596,49 @@ mod tests {
     }
 
     #[test]
+    fn the_duck_minimum_is_the_one_of_the_capture_backend() {
+        assert_eq!(DUCK_LEVEL_MIN as f32, rt_capture::PLATFORM_MIN_DUCK_LEVEL);
+        let expected = if cfg!(target_os = "macos") { 0.0 } else { 0.05 };
+        assert_eq!(
+            DUCK_LEVEL_MIN, expected,
+            "exactly what the window shows as a whole percent"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_ducks_down_to_muted() {
+        for level in [json!(0.0), json!(0), json!(-0.5)] {
+            assert_eq!(
+                sanitize(&json!({ "duck": { "level": level } })).duck.level,
+                0.0,
+                "{level}"
+            );
+            assert_eq!(
+                apply(json!({ "duck": { "level": level } })).unwrap().duck.level,
+                0.0,
+                "{level}"
+            );
+        }
+        assert_eq!(apply(json!({ "duck": { "level": 0.05 } })).unwrap().duck.level, 0.05);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_muted_duck_from_a_mac_is_five_percent_here() {
+        assert_eq!(sanitize(&json!({ "duck": { "level": 0.0 } })).duck.level, 0.05);
+        assert_eq!(apply(json!({ "duck": { "level": 0.0 } })).unwrap().duck.level, 0.05);
+    }
+
+    #[test]
     fn stored_numbers_are_clamped() {
         let low = sanitize(&json!({
-            "bufferSeconds": 1, "replaySpeed": 0.1, "catchUpSpeed": 0.5, "duck": { "level": 0.0 }
+            "bufferSeconds": 1, "replaySpeed": 0.1, "catchUpSpeed": 0.5, "duck": { "level": -1.0 }
         }));
         assert_eq!(low.buffer_seconds, 10);
         assert_eq!(low.replay_speed, 0.75);
         assert_eq!(low.catch_up_speed, 1.25);
-        assert_eq!(low.duck.level, 0.05);
+        assert_eq!(low.duck.level, DUCK_LEVEL_MIN);
         let high = sanitize(&json!({
             "bufferSeconds": 9000, "replaySpeed": 4, "catchUpSpeed": 9, "duck": { "level": 3 }
         }));
@@ -799,13 +839,13 @@ mod tests {
     #[test]
     fn patch_numbers_are_clamped() {
         let settings = apply(json!({
-            "bufferSeconds": 5000, "replaySpeed": 0.1, "catchUpSpeed": 10, "duck": { "level": 0 }
+            "bufferSeconds": 5000, "replaySpeed": 0.1, "catchUpSpeed": 10, "duck": { "level": -1 }
         }))
         .unwrap();
         assert_eq!(settings.buffer_seconds, 120);
         assert_eq!(settings.replay_speed, 0.75);
         assert_eq!(settings.catch_up_speed, 2.0);
-        assert_eq!(settings.duck.level, 0.05);
+        assert_eq!(settings.duck.level, DUCK_LEVEL_MIN);
     }
 
     #[test]

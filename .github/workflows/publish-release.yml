@@ -1,9 +1,10 @@
 name: Publish release
 
 # Owns every release: builds each platform, checks the builds, writes one SHA256SUMS over all assets, attaches them to
-# the GitHub release and publishes it. The build workflows (build-windows.yml, ...) only build and upload their files
-# as `release-<platform>-<file>` artifacts. .github/scripts/release_assets.py is the one place that knows the platforms
-# (which files each has, which are required) and makes the decisions; its unit tests run in every full run.
+# the GitHub release and publishes it. The build workflows (build-windows.yml, build-macos.yml, ...) only build and
+# upload their files as `release-<platform>-<file>` artifacts. .github/scripts/release_assets.py is the one place that
+# knows the platforms (which files each has, which are required) and makes the decisions; its unit tests run in every
+# full run.
 #
 # Two modes:
 #   * full (the default). `workflow_call` from release-please.yml, or `workflow_dispatch` with a tag to redo a release.
@@ -13,11 +14,12 @@ name: Publish release
 #     and the combined SHA256SUMS is a workflow artifact. No release is touched.
 #   * late-attach. Adds one optional platform's files (the macOS .dmg) to a release that already has its SHA256SUMS,
 #     published or not. The new SHA256SUMS is the old one plus the new lines; lines already in it never change.
-#     Two ways in: `workflow_call` from a build workflow that has just built the files (they are artifacts of that
-#     same run), or `workflow_dispatch` with `artifacts_run_id` naming an earlier build run. That run is checked: the
-#     platform's build workflow, started by hand, successful, on the default branch of this repository, its commit
-#     the tag's commit or an ancestor of it. The files' names must carry the tag's version. A caller needs
-#     `contents: write` and `actions: read` (the latter to read another run's artifacts).
+#     Two ways in: `workflow_dispatch` with `artifacts_run_id` naming an earlier build run, or `workflow_call` from a
+#     workflow that has just built the files (they are artifacts of that same run). macOS takes the first way: this
+#     workflow calls build-macos.yml, so build-macos.yml can't call this one back (GitHub refuses a loop). The earlier
+#     run is checked: the platform's build workflow, started by hand, successful, on the default branch of this
+#     repository, its commit the tag's commit or an ancestor of it. The files' names must carry the tag's version. A
+#     caller needs `contents: write` and `actions: read` (the latter to read another run's artifacts).
 #     The files are uploaded before SHA256SUMS. If the run stops in between, run it again (gh run rerun --failed): a
 #     file that is on the release but not in SHA256SUMS, and identical to the new one, is finished, not refused.
 #     With `replace`, every file of the platform on the release is replaced or deleted, whatever its name.
@@ -149,9 +151,23 @@ jobs:
       tag: ${{ inputs.tag }}
       sha: ${{ inputs.sha }}
 
+  # Optional: when it fails or is skipped, `publish` only warns and the release goes out without the .dmg. On main it
+  # signs and notarizes with the apple-signing Environment, which build-macos.yml asks for itself (an Environment's
+  # secrets reach a called workflow only that way); anywhere else a dry run is signed ad hoc and a tagged run fails.
+  macos:
+    name: macOS
+    needs: check-release
+    if: ${{ !cancelled() && inputs.mode != 'late-attach' && needs.check-release.result != 'failure' }}
+    permissions:
+      contents: write # the release-note job of build-macos.yml edits the release notes
+    uses: ./.github/workflows/build-macos.yml
+    with:
+      tag: ${{ inputs.tag }}
+      sha: ${{ inputs.sha }}
+
   publish:
     name: Publish
-    needs: [check-release, windows]
+    needs: [check-release, windows, macos]
     # Runs even when a build failed: its first step says which one and why nothing is published.
     if: ${{ !cancelled() && inputs.mode != 'late-attach' }}
     runs-on: ubuntu-latest

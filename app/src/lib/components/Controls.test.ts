@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
-import { argsOf, renderApp } from '../../test-utils';
+import { argsOf, pretendPlatform, renderApp } from '../../test-utils';
 
 async function patches(backend: Awaited<ReturnType<typeof renderApp>>['backend'], expected: unknown[]) {
   await waitFor(() => expect(argsOf(backend, 'update_settings')).toEqual(expected.map((patch) => ({ patch }))));
@@ -111,6 +111,31 @@ describe('ducking section', () => {
 
     await patches(backend, [{ duck: { enabled: true, level: 0.55 } }]);
     expect(screen.getByText('55%')).toBeInTheDocument();
+  });
+
+  it.each(['Win32', 'Linux x86_64'])('level slider stops at 5%% on %s', async (platform) => {
+    pretendPlatform(platform);
+    await renderApp();
+
+    expect(screen.getByRole('slider', { name: 'Volume during replay' })).toHaveAttribute('min', '5');
+  });
+
+  it('level slider goes down to Muted on a Mac', async () => {
+    pretendPlatform('MacIntel');
+    const { backend } = await renderApp();
+    const slider = screen.getByRole('slider', { name: 'Volume during replay' });
+    expect(slider).toHaveAttribute('min', '0');
+    expect(slider).toHaveAttribute('max', '100');
+
+    await fireEvent.input(slider, { target: { value: '0' } });
+    expect(screen.getByText('Muted')).toBeInTheDocument();
+    expect(slider).toHaveAttribute('aria-valuetext', 'Muted');
+    await fireEvent.change(slider);
+
+    await patches(backend, [{ duck: { enabled: true, level: 0 } }]);
+    expect(screen.getByText('Muted')).toBeInTheDocument();
+    await fireEvent.change(slider, { target: { value: '5' } });
+    await waitFor(() => expect(screen.getByText('5%')).toBeInTheDocument());
   });
 });
 

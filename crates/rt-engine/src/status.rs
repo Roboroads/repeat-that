@@ -31,6 +31,9 @@ pub enum CaptureState {
     Paused,
     /// Capture failed to start; retried every 2 s.
     Error(String),
+    /// The OS doesn't let this app capture audio (macOS asks the user); retried every 2 s, so capture starts once the
+    /// user allows it. The buffer is kept. The message says how to allow it, as a sentence for the user.
+    PermissionDenied(String),
     /// Capturing isn't possible on this system; not retried.
     Unsupported(String),
 }

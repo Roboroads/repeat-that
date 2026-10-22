@@ -94,6 +94,8 @@ struct Shared {
     /// The tap ended by itself (see [`Shared::end`]): the app quit, its device went away, or capture isn't allowed any
     /// more. Its IOProc sets it too when it panics, and the watcher then ends the tap.
     ended: AtomicBool,
+    /// It ended because capture isn't allowed any more, see [`CaptureHandle::refused`].
+    refused: AtomicBool,
     /// Whether the muting tap is there, as `description` says, readable without waiting for its lock.
     muted: AtomicBool,
     stop: AtomicBool,
@@ -383,6 +385,7 @@ impl Tap {
             sink: Mutex::new(None),
             sinks: AtomicU64::new(0),
             ended: AtomicBool::new(false),
+            refused: AtomicBool::new(false),
             muted: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             wake: Wake::default(),
@@ -834,6 +837,7 @@ fn watch(shared: &Shared) {
         if checked_permission.elapsed() >= PERMISSION_EVERY {
             checked_permission = Instant::now();
             if permission::status().is_ok_and(|status| status == PermissionStatus::Denied) {
+                shared.refused.store(true, Ordering::Relaxed);
                 return ended("capture isn't allowed any more");
             }
         }
@@ -863,6 +867,12 @@ impl Capture {
 impl CaptureHandle for Capture {
     fn is_running(&self) -> bool {
         !self.tap.ended() && self.attached()
+    }
+
+    fn refused(&self) -> Option<String> {
+        let shared = &self.tap.shared;
+        (shared.ended.load(Ordering::Relaxed) && shared.refused.load(Ordering::Relaxed))
+            .then(|| permission::how_to_allow(sys::os_version().0))
     }
 
     fn stop(self: Box<Self>) {

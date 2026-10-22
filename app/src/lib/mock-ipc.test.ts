@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { pretendPlatform } from '../test-utils';
 import type { AppEntry, Settings, Status } from './api';
-import { MockBackend, SCENARIOS, scenarioInit } from './mock-ipc';
+import { MOCK_HOW_TO_ALLOW, MockBackend, SCENARIOS, scenarioInit } from './mock-ipc';
 
 function backend(init: ConstructorParameters<typeof MockBackend>[0] = {}) {
   const events: Array<{ event: string; payload: unknown }> = [];
@@ -30,6 +31,15 @@ describe('MockBackend', () => {
     expect(result.replaySpeed).toBe(0.75);
     expect(result.duck).toEqual({ enabled: false, level: 0.05 });
     expect((b.handle('get_settings', {}) as Settings).bufferSeconds).toBe(120);
+  });
+
+  it('lets the duck level go down to muted on a Mac only', () => {
+    pretendPlatform('MacIntel');
+    const { b } = backend();
+
+    const result = b.handle('update_settings', { patch: { duck: { enabled: true, level: -1 } } }) as Settings;
+
+    expect(result.duck.level).toBe(0);
   });
 
   it('rejects a hotkey that another action uses, changing nothing', () => {
@@ -193,6 +203,39 @@ describe('the desktop', () => {
 
   it('the no-tray scenario has no tray', () => {
     expect(backend(scenarioInit('no-tray')).b.status().trayAvailable).toBe(false);
+  });
+});
+
+describe('the permission to capture audio', () => {
+  it('has nothing to allow by default, as outside macOS', () => {
+    const { b } = backend({ apps: [discord], settings: { target: { exePath: discord.exePath, name: 'Discord' } } });
+
+    expect(b.status().capture).toEqual({ state: 'capturing', message: null });
+    expect(b.handle('capture_permission_help', {})).toEqual({ canOpenSettings: false, canAskAgain: false });
+    expect(() => b.handle('ask_for_capture_permission', {})).toThrowError(expect.objectContaining({ kind: 'backend' }));
+    expect(() => b.handle('open_capture_permission_settings', {})).toThrowError(
+      expect.objectContaining({ kind: 'backend' }),
+    );
+  });
+
+  it('is not allowed to capture a running target until asked again, and buffers nothing meanwhile', () => {
+    const { b, events } = backend(scenarioInit('not-allowed'));
+
+    b.tick(10_000);
+    expect(b.status().capture).toEqual({ state: 'notAllowed', message: MOCK_HOW_TO_ALLOW });
+    expect(b.status().bufferedMs).toBe(0);
+    expect(b.handle('capture_permission_help', {})).toEqual({ canOpenSettings: true, canAskAgain: true });
+    expect(b.handle('open_capture_permission_settings', {})).toBeNull();
+
+    expect(b.handle('ask_for_capture_permission', {})).toBeNull();
+    expect(b.status().capture.state).toBe('capturing');
+    expect(events.at(-1)).toMatchObject({ event: 'status', payload: { capture: { state: 'capturing' } } });
+  });
+
+  it('waits for a target that is not running, allowed or not', () => {
+    const { b } = backend({ ...scenarioInit('not-allowed'), apps: [] });
+
+    expect(b.status().capture.state).toBe('waiting');
   });
 });
 

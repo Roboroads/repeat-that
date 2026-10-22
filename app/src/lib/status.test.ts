@@ -67,6 +67,22 @@ describe('describeStatus', () => {
     expect(describeStatus(s, null)).toMatchObject({ headline: "Can't capture Discord", detail: 'Access denied', tone: 'warn' });
   });
 
+  it('says capture is not allowed, with how to allow it, as a warning', () => {
+    const how = 'Turn on Repeat That in System Settings > Privacy & Security > Screen & System Audio Recording.';
+    const s = status({ capture: { state: 'notAllowed', message: how } });
+    expect(describeStatus(s, null)).toEqual({
+      headline: "Repeat That isn't allowed to capture audio",
+      detail: how,
+      playback: null,
+      tone: 'warn',
+    });
+  });
+
+  it('still says how far behind live a replay of the kept speech is while not allowed', () => {
+    const s = status({ capture: { state: 'notAllowed', message: null }, playback: 'replaying', behindMs: 3_000 });
+    expect(describeStatus(s, null).playback).toBe('Replaying · 3 s behind live');
+  });
+
   it('shows why capturing is unsupported', () => {
     const s = status({
       capture: { state: 'unsupported', message: "Capturing apps isn't supported on this OS yet" },

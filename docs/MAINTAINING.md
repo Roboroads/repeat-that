@@ -93,7 +93,7 @@ with `python3 -m unittest discover -s .github/scripts`.
 | `windows` | yes | `*-setup.exe` | `windows`, calls `build-windows.yml` |
 | `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | added with the Linux packages |
 | `flatpak` | yes | `*.flatpak` | added with the Flatpak |
-| `macos` | **no** | `*.dmg` | added with the macOS build |
+| `macos` | **no** | `*.dmg` | `macos`, calls `build-macos.yml` |
 
 A required platform must build before a release is published: if one fails, nothing is published and the draft stays.
 An optional platform (macOS) that fails or is skipped only warns, in the job summary and as a `::warning::`; the
@@ -156,17 +156,20 @@ summary shows its checksum. The workflow checks that the app version matches the
 
 macOS is optional, so a macOS build or notarization that fails doesn't hold back Windows and Linux. The late attach adds
 the `.dmg` to a release that is already out (or still a draft), and extends its `SHA256SUMS` by one line. It is the
-`late-attach` mode of `publish-release.yml`, with two ways in:
+`late-attach` mode of `publish-release.yml`, and it takes the `.dmg` from a macOS build run, in two steps:
 
-- **From the macOS build** (the normal route): run the macOS build workflow by hand with the release tag. It builds and
-  notarizes the `.dmg`, uploads `release-macos-*`, then calls `publish-release.yml` with `mode: late-attach` in the
-  same run. A workflow that calls it needs `contents: write` and `actions: read`.
-- **From an earlier build** without rebuilding: Actions → Publish release → Run workflow, with `mode` `late-attach`,
-  the `tag`, `platform` `macos` and `artifacts_run_id` set to the number in the URL of the successful macOS build
-  run (`.../actions/runs/<number>`). Artifacts are kept for 30 days, so after that the build has to run again. That run
-  is trusted with the release's files, so it is checked first: it must be a run of `build-macos.yml` that was started
-  by hand (a pull request build is not notarized), that succeeded, on the default branch of this repository (not a
-  fork), and its commit must be the tag's commit or one of its ancestors (for a draft, the commit the draft targets).
+1. Actions → Build macOS installers → Run workflow on `main`, with the release `tag` (for a draft, also its commit as
+   `sha`). It builds, signs and notarizes the `.dmg`, uploads `release-macos-*` and adds the "untested" paragraph to
+   the release notes.
+2. Once that run has succeeded: Actions → Publish release → Run workflow, with `mode` `late-attach`, the `tag`,
+   `platform` `macos` and `artifacts_run_id` set to the number in the URL of the macOS build run
+   (`.../actions/runs/<number>`). The build run's summary prints the matching `gh workflow run` command.
+
+The build can't call `publish-release.yml` itself: that one calls the build for a release, and GitHub refuses workflows
+that call each other in a loop. Artifacts are kept for 30 days, so after that the build has to run again. The build
+run is trusted with the release's files, so it is checked first: it must be a run of `build-macos.yml` that was started
+by hand (a pull request build is not notarized), that succeeded, on the default branch of this repository (not a fork),
+and its commit must be the tag's commit or one of its ancestors (for a draft, the commit the draft targets).
 
 What it does, in order, stopping at the first problem:
 
@@ -257,7 +260,8 @@ Notarization uses an App Store Connect API key. That is the recommended route, s
 password or two-factor prompts. Create the key under Users and Access → Integrations in App Store Connect with Developer
 access. Apple lets you download the `.p8` file once.
 
-Repository secrets (Settings → Secrets and variables → Actions):
+Secrets of the `apple-signing` Environment (Settings → Environments → `apple-signing`, deployment branches limited to
+`main`), so pull request builds never get them:
 - `APPLE_CERTIFICATE`: the Developer ID Application certificate exported from Keychain Access as a `.p12`,
   base64-encoded as in the Tauri reference: `openssl base64 -A -in MyCertificate.p12 -out MyCertificate-base64.txt`.
 - `APPLE_CERTIFICATE_PASSWORD`: the password set when exporting the `.p12`.
