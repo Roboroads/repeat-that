@@ -247,7 +247,7 @@ or hold that change back.
 installation and checks, in the same container:
 
 - the file name and version, and that the permissions are exactly the manifest's (the display, the GPU, the PipeWire
-  socket and the tray's bus name: no network, no PulseAudio, no home folder);
+  socket and the bus names of the tray and of KDE's shortcut daemon: no network, no PulseAudio, no home folder);
 - the exported desktop entry, metainfo and icons (named after the app ID), `ldd` on the binary and on the tray library,
   and `desktop-file-validate` and `appstreamcli validate` on the exports;
 - the self-check (`--rt-self-check`), which proves that the ONNX Runtime linked in works inside the sandbox;
@@ -532,6 +532,13 @@ change: [submission](https://docs.flathub.org/docs/for-app-authors/submission) a
   checks it). No PulseAudio socket is asked for.
 - *`--talk-name=org.kde.StatusNotifierWatcher`.* For the tray icon. The icon file goes to
   `$XDG_RUNTIME_DIR/app/me.roboroads.RepeatThat`, which the tray can read.
+- *`--talk-name=org.kde.kglobalaccel`.* KDE's shortcut daemon, for a cosmetic fix. Plasma 6.3's GlobalShortcuts portal
+  (Debian 13 has 6.3.5) lists the app's shortcuts in System Settings under the Flatpak ID instead of "Repeat That", and
+  the app gives the component its name through kglobalaccel (`allActionsForComponent` and `doRegister`, for its own
+  component only). The sandbox hides the name without the permission (`NameHasOwner` answers false, a call fails with
+  `ServiceUnknown`), so there is no other way. Plasma 6.4 and later read the name from the desktop file, and the
+  permission can be dropped when 6.3 is out of use. Other Flathub apps ask for it for their global shortcuts (Strawberry,
+  and KDE's own apps).
 - *No network and no filesystem access.* The app has no network code; audio never leaves memory. Settings and the duck
   journal (the volumes to give back after a crash) are in the app's own folders.
 - *Start at login* goes through the Background portal (`RequestBackground`), and so does the permission to run in the

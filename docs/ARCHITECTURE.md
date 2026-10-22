@@ -295,8 +295,13 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   logged, with `flatpak permission-set background background me.roboroads.RepeatThat yes` as the way to allow it. The tray icon file goes to
   `$XDG_RUNTIME_DIR/app/$FLATPAK_ID`, the folder the sandbox shares with the host at the same path, so the desktop's tray
   can read it (the library's default, `$XDG_RUNTIME_DIR/tray-icon`, is inside the sandbox). And the app doesn't tell the
-  portal an app ID (`register_host_app`) or name its shortcuts in kglobalaccel: the portal knows a Flatpak by its ID and
-  the desktop reads its name from the exported desktop file. The Flatpak's identifier is `me.roboroads.RepeatThat`
+  portal an app ID (`register_host_app`): the portal knows a Flatpak by the ID it reads from the sandbox (checked: the
+  frontend hands the backend `me.roboroads.RepeatThat` and the three preferred triggers). It does give the shortcuts
+  their name in kglobalaccel (see `kglobalaccel.rs`) under that Flatpak ID, which is why the Flatpak may talk to
+  `org.kde.kglobalaccel`: the sandbox hides that name otherwise, so Plasma 6.3's portal would list the shortcuts under
+  the Flatpak ID. A default key that stays unassigned on Plasma is one that another component already holds
+  (kglobalacceld skips a taken key, and the portal only offers a key for an action it has not seen), for instance the
+  same app installed as a package. The Flatpak's identifier is `me.roboroads.RepeatThat`
   (`tauri.flatpak.conf.json`, merged at build time through `TAURI_CONFIG`), so the single-instance D-Bus name
   `me.roboroads.RepeatThat.SingleInstance` is in the sandbox's own namespace and `flatpak run … --replay` reaches the
   running app. How the Flatpak is built and checked is in [MAINTAINING.md](MAINTAINING.md#flatpak).
@@ -350,7 +355,8 @@ GitHub Actions builds:
   Flathub's linter. It is a required platform of `publish-release.yml`, and the same manifest goes to Flathub
   ([MAINTAINING.md](MAINTAINING.md#flatpak)). The sandbox has the display, the GPU, PipeWire's socket
   (`--filesystem=xdg-run/pipewire-0`: the app connects as a manager, `media.category = Manager`, which PipeWire turns into
-  `flatpak-manager` access for a sandboxed client, so it can link streams and set volumes) and the tray's D-Bus name.
+  `flatpak-manager` access for a sandboxed client, so it can link streams and set volumes) and the D-Bus names of the
+  tray and of KDE's shortcut daemon.
 - macOS: `Repeat-That_<version>_aarch64.dmg` for Apple Silicon only (no Intel or universal build, see the VAD note
   under [`rt-core`](#rt-core--platform-independent-logic)). It is signed with a Developer ID Application certificate and
   notarized, with the ticket stapled to the `.app` and to the `.dmg`, so Gatekeeper opens it without extra steps.

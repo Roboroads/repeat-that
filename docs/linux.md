@@ -24,9 +24,14 @@ How the hotkeys work depends on the session you are logged in to.
   same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets the
   shortcuts up as soon as it is there. Plasma 6.3's portal lists the shortcuts under the app ID
   (`me.roboroads.repeat-that`) after every start, so Repeat That gives them back the name "Repeat That" in kglobalaccel
-  each time it starts. Plasma 6.4 and later get the name right themselves. The Flatpak doesn't do this: the portal
-  knows it by its Flatpak ID, `me.roboroads.RepeatThat`, and the desktop takes its name from the desktop file that the
-  Flatpak exports.
+  each time it starts. Plasma 6.4 and later get the name right themselves. The Flatpak does the same under its own
+  ID, `me.roboroads.RepeatThat`, which the portal reads from the sandbox; for that it has permission to talk to
+  kglobalaccel (`--talk-name=org.kde.kglobalaccel`) and uses it for nothing else. If a **default key is left
+  unassigned**, another shortcut already has it: Plasma leaves out, without a word, a key that another component
+  holds, and only offers a key when it first sees an action. This happens when Repeat That is installed twice, say the
+  `.deb` or the AppImage next to the Flatpak: the other install keeps the same three keys under
+  `me.roboroads.repeat-that`. Remove the entry you don't use in System Settings → Shortcuts, or give the unassigned
+  actions other keys there.
 - **Wayland without the portal.** GNOME 46 (Ubuntu 24.04), Sway, Hyprland and others have no GlobalShortcuts portal, so
   Repeat That can't have global hotkeys there. The Hotkeys section says so and lists the three commands below, each with
   a Copy button. Bind them as custom shortcuts in your desktop, and they do the same job.
