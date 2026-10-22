@@ -1,7 +1,7 @@
 <script lang="ts">
   import { quitApp, toApiError, type Settings } from '../api';
   import { NO_UPDATER_REASON } from '../defaults';
-  import { openExternal } from '../opener';
+  import { openLink } from '../opener';
   import { isWindows } from '../platform';
   import type { SettingsStore } from '../store.svelte';
   import { checksForUpdates, versionLine } from '../updates';
@@ -17,11 +17,6 @@
   let { store, settings }: Props = $props();
 
   const PRIVACY_URL = 'https://github.com/Roboroads/repeat-that/blob/main/PRIVACY.md';
-  // A plain link does nothing inside the app window; see openExternal.
-  function openPrivacy(event: MouseEvent) {
-    event.preventDefault();
-    void openExternal(PRIVACY_URL);
-  }
 
   const autostartLabel = isWindows() ? 'Start with Windows' : 'Start at login';
 
@@ -106,7 +101,7 @@
     {/if}
   </div>
   <p class="privacy muted">
-    <a href={PRIVACY_URL} target="_blank" rel="noreferrer" onclick={openPrivacy}>Audio stays in memory only</a>
+    <a href={PRIVACY_URL} target="_blank" rel="noreferrer" onclick={(event) => openLink(event, PRIVACY_URL)}>Audio stays in memory only</a>
     and is wiped when you pause, pick another app or quit. Only your settings are saved, including the name and
     location of the app you picked.
   </p>

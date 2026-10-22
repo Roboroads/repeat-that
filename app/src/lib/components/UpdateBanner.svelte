@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Settings } from '../api';
-  import { openExternal } from '../opener';
+  import { openExternal, openLink } from '../opener';
   import type { SettingsStore } from '../store.svelte';
   import { checksForUpdates, isLink } from '../updates';
 
@@ -60,12 +60,6 @@
   const progress = $derived(
     update.progress === null || Number.isNaN(update.progress) ? null : Math.min(1, Math.max(0, update.progress)),
   );
-
-  // A plain link does nothing inside the app window; see openExternal.
-  function openRelease(event: MouseEvent, url: string) {
-    event.preventDefault();
-    void openExternal(url);
-  }
 </script>
 
 {#if asking}
@@ -113,7 +107,7 @@
         {/if}
         <button type="button" onclick={() => store.dismissUpdate()}>Later</button>
         {#if update.mode === 'install' && isLink(offer.releaseUrl)}
-          <a href={offer.releaseUrl} onclick={(event) => openRelease(event, offer.releaseUrl)}>
+          <a href={offer.releaseUrl} onclick={(event) => openLink(event, offer.releaseUrl)}>
             Release notes on GitHub
           </a>
         {/if}

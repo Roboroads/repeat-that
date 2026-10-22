@@ -1,6 +1,6 @@
 import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { openExternal } from './opener';
+import { openExternal, openLink } from './opener';
 
 const URL_TO_OPEN = 'https://example.com/PRIVACY.md';
 
@@ -49,5 +49,16 @@ describe('openExternal', () => {
     await openExternal(URL_TO_OPEN);
 
     expect(open).toHaveBeenCalledWith(URL_TO_OPEN, '_blank', 'noopener,noreferrer');
+  });
+});
+
+describe('openLink', () => {
+  it('keeps the window on its page and opens the address outside it', async () => {
+    const click = new MouseEvent('click', { cancelable: true });
+
+    openLink(click, URL_TO_OPEN);
+
+    expect(click.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith(URL_TO_OPEN, '_blank', 'noopener,noreferrer'));
   });
 });
