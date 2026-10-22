@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.astro/
+# Media the deploy workflow downloads from the site-media prerelease
+public/media/
+# Playwright output and the builds the browser tests make
+.e2e/
+test-results/
+playwright-report/
+# Scratch dirs of the unit tests
+.tmp/

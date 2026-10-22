@@ -1,0 +1,30 @@
+---
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import Base from "../layouts/Base.astro";
+import { getDocs, REPO_BLOB_URL, repoRoot, routeParam, routesBySource } from "../lib/docs";
+import { renderDoc } from "../lib/render-doc";
+
+export async function getStaticPaths() {
+  const docs = getDocs();
+  const routes = routesBySource(docs);
+  return Promise.all(
+    docs.map(async (doc) => {
+      const { html, title, summary } = await renderDoc(readFileSync(resolve(repoRoot(), doc.source), "utf8"), doc.source, routes);
+      return { params: { doc: routeParam(doc.route) }, props: { html, title, summary, source: doc.source } };
+    }),
+  );
+}
+
+const { html, title, summary, source } = Astro.props;
+const pageTitle = title ? `${title} - Repeat That` : "Repeat That";
+---
+
+<Base title={pageTitle} description={summary ?? title ?? "Repeat That"} type="article">
+  <div class="wrap doc">
+    <article set:html={html} />
+    <p class="doc-source">
+      This page is <a href={REPO_BLOB_URL + source}>{source}</a> in the repository.
+    </p>
+  </div>
+</Base>
