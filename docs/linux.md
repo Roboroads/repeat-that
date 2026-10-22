@@ -24,7 +24,9 @@ How the hotkeys work depends on the session you are logged in to.
   same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets the
   shortcuts up as soon as it is there. Plasma 6.3's portal lists the shortcuts under the app ID
   (`me.roboroads.repeat-that`) after every start, so Repeat That gives them back the name "Repeat That" in kglobalaccel
-  each time it starts. Plasma 6.4 and later get the name right themselves.
+  each time it starts. Plasma 6.4 and later get the name right themselves. The Flatpak doesn't do this: the portal
+  knows it by its Flatpak ID, `me.roboroads.RepeatThat`, and the desktop takes its name from the desktop file that the
+  Flatpak exports.
 - **Wayland without the portal.** GNOME 46 (Ubuntu 24.04), Sway, Hyprland and others have no GlobalShortcuts portal, so
   Repeat That can't have global hotkeys there. The Hotkeys section says so and lists the three commands below, each with
   a Copy button. Bind them as custom shortcuts in your desktop, and they do the same job.
@@ -74,3 +76,8 @@ menu shows it again. If you turn the extension on later, the tray icon appears w
 
 The start-at-login switch writes an entry in `~/.config/autostart` that passes `--hidden`. Repeat That then starts
 without a window, also on a desktop with no tray.
+
+In a Flatpak, the app can't write that file: the system does, when Repeat That asks through the Background portal, and
+your desktop asks you first. The entry is `~/.config/autostart/me.roboroads.RepeatThat.desktop` and starts the Flatpak
+with `--hidden`. The portal can't tell the app whether the entry is still there, so removing it in your desktop's
+settings doesn't turn the switch off: turn it off and on again.

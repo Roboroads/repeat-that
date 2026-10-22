@@ -92,7 +92,7 @@ with `python3 -m unittest discover -s .github/scripts`.
 |---|---|---|---|
 | `windows` | yes | `*-setup.exe` | `windows`, calls `build-windows.yml` |
 | `linux` | yes | `*.deb`, `*.rpm`, `*.AppImage` | `linux`, calls `build-linux.yml` |
-| `flatpak` | yes | `*.flatpak` | added with the Flatpak |
+| `flatpak` | yes | `*.flatpak` | `flatpak`, calls `build-flatpak.yml` |
 | `macos` | **no** | `*.dmg` | `macos`, calls `build-macos.yml` |
 
 A required platform must build before a release is published: if one fails, nothing is published and the draft stays.
@@ -212,6 +212,79 @@ decision for the README, `install-linux.md` and the matrix together.
 **Raising the minimum** (for example to Ubuntu 26.04): change the build container, the install matrix and the systems
 named in `install-linux.md`, the README and `ARCHITECTURE.md`. To test another distribution, add it to the matrix of
 the `install` job; the script needs `apt-get` or `dnf`.
+
+### Flatpak
+
+[`build-flatpak.yml`](../.github/workflows/build-flatpak.yml) builds the x64 Flatpak, app ID `me.roboroads.RepeatThat`,
+from [`packaging/flatpak`](../packaging/flatpak), in Flathub's own build container for the GNOME 51 runtime
+(`ghcr.io/flathub-infra/flatpak-github-actions:gnome-51`), and uploads `Repeat-That_<version>_x86_64.flatpak` as the
+artifact `release-flatpak-<file>`. Flatpak is a required platform of `publish-release.yml`: a failing step holds the
+release back. Install instructions for users are in [`install-linux.md`](install-linux.md#install-the-flatpak).
+
+What is in `packaging/flatpak`:
+
+| File | What it is |
+|---|---|
+| `me.roboroads.RepeatThat.yml` | The manifest. Runtime `org.gnome.Platform` 51, SDK extensions `rust-stable`, `node22` and `llvm22`. Its `repeat-that` module builds the settings window with Vite and the app with `cargo build --release --offline`, with the identifier of [`tauri.flatpak.conf.json`](../app/src-tauri/tauri.flatpak.conf.json) (`me.roboroads.RepeatThat`, which is also the GTK application ID and the app's single-instance D-Bus name). |
+| `me.roboroads.RepeatThat.desktop`, `me.roboroads.RepeatThat.metainfo.xml` | The menu entry and the AppStream data (GPL-3.0-or-later, metadata CC0-1.0, OARS, screenshot). The metainfo's `<releases>` is filled in during the build by `metainfo_releases.py` from `CHANGELOG.md`, for the version in `Cargo.toml`, so release-please needs no change; the build fails when the changelog has no section for that version. |
+| `generate-sources.sh` | Writes `cargo-sources.json` (from `Cargo.lock`) and `node-sources.json` (from `app/package-lock.json`) with `flatpak-cargo-generator` and `flatpak-node-generator`, and checks out Flathub's `shared-modules`, all pinned by commit. None of it is committed, so a Dependabot PR never leaves them stale. `--flathub TAG COMMIT` also writes the files for Flathub, see [Flathub](#flathub). |
+| `check_ort_pin.py`, `metainfo_releases.py`, `filter_lint.py` and their `test_*.py` | Small scripts of the build, with unit tests that the workflow runs first (`python3 -m unittest discover -s packaging/flatpak -p 'test_*.py'`). |
+| `flathub.json` | Tells Flathub to build for x86_64 only. |
+
+**Offline.** `flatpak-builder` downloads every source first and builds without network. The one prebuilt file is the
+static ONNX Runtime that `ort-sys` would download itself (`build/download/dist.tsv` in the crate, for x86_64 Linux),
+pinned by URL and sha256 in the manifest and linked through `ORT_LIB_LOCATION`. `check_ort_pin.py` compares the pin with
+the `ort-sys` in `Cargo.lock`, so an `ort` update that needs another ONNX Runtime fails the Flatpak build and prints the
+URL and hash to put in the manifest. If Flathub refuses a prebuilt binary, the fallback is a module that builds ONNX
+Runtime from source (CMake, the version `ort` wants) and points `ORT_LIB_LOCATION` at its output; that is untested.
+
+**Rust.** The workspace names the newest stable (`rust-version`), and Flathub's `rust-stable` extension is usually a
+release behind it (1.98 when the workspace asked for 1.99), so the manifest builds with `--ignore-rust-version`. If the
+code starts to use something newer than the extension has, the Flatpak build fails to compile: wait for the extension,
+or hold that change back.
+
+**Checks.** After the build, [`check-flatpak.sh`](../.github/scripts/check-flatpak.sh) installs the bundle as a user
+installation and checks, in the same container:
+
+- the file name and version, and that the permissions are exactly the manifest's (the display, the GPU, the PipeWire
+  socket and the tray's bus name: no network, no PulseAudio, no home folder);
+- the exported desktop entry, metainfo and icons (named after the app ID), `ldd` on the binary and on the tray library,
+  and `desktop-file-validate` and `appstreamcli validate` on the exports;
+- the self-check (`--rt-self-check`), which proves that the ONNX Runtime linked in works inside the sandbox;
+- that the app starts under a virtual display, is still running ten seconds later, and wrote its tray icon to
+  `$XDG_RUNTIME_DIR/app/me.roboroads.RepeatThat`, the folder the sandbox shares with the desktop's tray.
+
+Then `flatpak-builder-lint`, Flathub's own linter, runs on the manifest, on the manifest that goes to Flathub, on the
+metainfo and on the built repository, through `filter_lint.py`. Two errors are let through until the app is on Flathub:
+`appid-url-not-reachable` (`https://roboroads.me` has to answer, see [Flathub](#flathub)) and
+`appstream-screenshots-not-mirrored-in-ostree` (Flathub fetches the screenshot, which is a link to the main branch, and
+keeps its own copy). Anything else the linter reports fails the build.
+
+**Not covered by CI.** There is no PipeWire in that container, so capture, replay and ducking inside the sandbox are
+tried by hand on a desktop: pick an app, replay it with the hotkey and with `flatpak run me.roboroads.RepeatThat
+--replay`, check that the app's volume comes back, turn on Start at login, and `kill -9` the app during a replay. So are
+the tray on a real desktop and the Wayland hotkey portal.
+
+To try it without a desktop, start a headless PipeWire with [`start-pipewire.sh`](../.github/scripts/start-pipewire.sh)
+in a short folder under `$HOME` (a socket path is limited to 108 bytes), play something into it with `pw-cat`, and run
+the app under `xvfb-run` with `XDG_RUNTIME_DIR` set as the script prints, and with `flatpak run
+--filesystem=<folder>/run --env=PIPEWIRE_RUNTIME_DIR=<folder>/run --nodevice=dri me.roboroads.RepeatThat`. That is how
+the Flatpak was shown to capture, replay and duck an app. `--nodevice=dri` because the DRM device of a virtual machine
+can make WebKit hang.
+
+**Building it yourself:**
+
+```sh
+packaging/flatpak/generate-sources.sh
+flatpak-builder --user --install-deps-from=flathub --force-clean --repo=repo build-dir packaging/flatpak/me.roboroads.RepeatThat.yml
+flatpak build-bundle repo Repeat-That.flatpak me.roboroads.RepeatThat --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+```
+
+The first build takes about 25 minutes (add `--jobs=3` on a small machine: the Rust build is what needs the memory).
+
+**A new GNOME runtime.** Change `runtime-version` in the manifest, the `gnome-NN` tag of the container in
+`build-flatpak.yml`, and the branch of the SDK extensions if the freedesktop base changed (GNOME 51 uses 26.08, which
+`flatpak install` picks by itself). Flathub drops old runtimes about a year after the release.
 
 ### macOS installer
 
@@ -394,6 +467,98 @@ signing key to look after.
 - [ ] Apply to [SignPath Foundation](https://signpath.org) for free Windows code signing. The Pages site has to be live
   first, because SignPath asks for a project website and a public repository
 - [ ] Add topics and a social preview image so people can find the project
+- [ ] Submit the Flatpak to Flathub and host the verification token (see [Flathub](#flathub))
+
+## Flathub
+
+The Flatpak on Flathub is a repository of its own, `flathub/me.roboroads.RepeatThat`, whose manifest builds a release tag
+of this repository. The build and the files for it are in this repository (see [Flatpak](#flatpak)); sending them to
+Flathub and hosting the verification token are for the maintainer to do. Flathub's own pages are the authority, and they
+change: [submission](https://docs.flathub.org/docs/for-app-authors/submission) and
+[verification](https://docs.flathub.org/docs/for-app-authors/verification).
+
+### Before submitting
+
+- A release exists (a tag `vX.Y.Z`), Flathub builds from a tag, and `CHANGELOG.md` has its section (the metainfo's
+  release notes come from it).
+- `https://roboroads.me` answers over HTTPS. The app ID `me.roboroads.RepeatThat` is the reverse of the domain
+  `roboroads.me`, which Flathub checks (`appid-url-not-reachable` in the linter) and uses to verify that the app is yours.
+- The screenshot is on `main`: the metainfo links to `packaging/flatpak/screenshots/settings.png` there, and Flathub
+  fetches it when it builds. Retake it (a Flatpak under a virtual display shows the window) when the window changes.
+- The Flatpak works on a real desktop: pick an app and replay it, the hotkeys on your session, the tray, Start at login,
+  and the volume coming back after `kill -9` during a replay, see [Not covered by CI](#flatpak).
+
+### Submit
+
+1. Make the files, from a checkout of the release tag:
+
+   ```sh
+   packaging/flatpak/generate-sources.sh --flathub vX.Y.Z "$(git rev-parse vX.Y.Z^{commit})"
+   ```
+
+   `packaging/flatpak/flathub/` then has the manifest (building that tag and commit from GitHub), `cargo-sources.json`,
+   `node-sources.json` and `flathub.json`. The script prints the commit of Flathub's `shared-modules` that the manifest
+   was made with.
+2. Fork [`flathub/flathub`](https://github.com/flathub/flathub) (all branches, not only `master`), and clone the
+   `new-pr` branch of your fork. Start a branch from it: `git checkout -b add-repeat-that new-pr`.
+3. Copy the four files into the root of that branch and add the shared modules as a submodule at the commit the script
+   printed:
+
+   ```sh
+   git submodule add https://github.com/flathub/shared-modules.git shared-modules
+   git -C shared-modules checkout <commit>
+   ```
+
+   Commit, push, and open a pull request against the **`new-pr`** branch of `flathub/flathub`, titled
+   `Add me.roboroads.RepeatThat`. Fill in its checklist.
+4. A Flathub bot builds it when a reviewer (or you) comments `bot, build`. Answer the reviewer's questions with the notes
+   below, and push changes to the same branch. When it is merged, Flathub creates `flathub/me.roboroads.RepeatThat`
+   and invites you to it; accept the invitation soon, it expires.
+
+**Notes for the reviewer** (the same as the comments in the manifest):
+
+- *What it is.* Repeat That keeps the last seconds of speech from one app the user picks in memory and replays it on a
+  hotkey. GPL-3.0-or-later, built from the release tag. The Rust and npm sources are generated from the lock files with
+  `flatpak-cargo-generator` and `flatpak-node-generator`; the build has no network.
+- *`--filesystem=xdg-run/pipewire-0`.* The app needs PipeWire's socket to list the apps that play sound, link the picked
+  app's output ports to its capture stream, lower that app's volume while a replay plays (and give it back), and play the
+  replay. It connects as a manager (`media.category = Manager`), which WirePlumber's default access rules give the right
+  to link streams and set volumes, as for the other PipeWire graph tools on Flathub (Helvum, qpwgraph). No portal
+  captures one app's audio or sets another app's volume. The app never links a microphone or any other source (a test
+  checks it). No PulseAudio socket is asked for.
+- *`--talk-name=org.kde.StatusNotifierWatcher`.* For the tray icon. The icon file goes to
+  `$XDG_RUNTIME_DIR/app/me.roboroads.RepeatThat`, which the tray can read.
+- *No network and no filesystem access.* The app has no network code; audio never leaves memory. Settings and the duck
+  journal (the volumes to give back after a crash) are in the app's own folders.
+- *Start at login* goes through the Background portal (`RequestBackground`), the Wayland hotkeys through the
+  GlobalShortcuts portal.
+- *The prebuilt ONNX Runtime.* The speech detector (Silero VAD) runs on ONNX Runtime, linked statically from the file that
+  the `ort` crate downloads for x86_64 Linux. The manifest pins its URL and sha256, and CI checks the pin against
+  `Cargo.lock`. If Flathub wants it built from source, see the fallback in [Flatpak](#flatpak).
+- *`--ignore-rust-version`.* The `rust-stable` extension is a release behind the Rust the workspace names; the code
+  builds with it.
+- *The linter's `appid-url-not-reachable`* is the domain (above), until it answers.
+
+### Verify the app
+
+When the app is on Flathub, the developer page on flathub.org (log in with GitHub) shows a token for verifying it as
+`me.roboroads.RepeatThat`. Serve it as plain text at `https://roboroads.me/.well-known/org.flathub.VerifiedApps.txt`, and
+check it on that page. Verification shows the maintainer as the developer on the app's page.
+
+### Updating on each release
+
+After a release is published:
+
+1. In a checkout of the new tag, run `packaging/flatpak/generate-sources.sh --flathub vX.Y.Z "$(git rev-parse vX.Y.Z^{commit})"`.
+2. In your clone of `flathub/me.roboroads.RepeatThat`, start a branch, replace the manifest, `cargo-sources.json` and
+   `node-sources.json` with the new ones (and move the `shared-modules` submodule to the commit the script printed, if it
+   changed), commit and open a pull request. The bot builds it; merge it when it is green, and Flathub publishes the
+   new version.
+3. If the window changed, retake the screenshot first (it is in this repository, so it ships with the tag).
+
+Nothing here is automatic on purpose: a new release changes the lock files, so the generated sources change with it. The
+CI build of this repository already builds the same manifest from the same files on every pull request, so a release
+that built here builds on Flathub too, apart from the changes to Flathub itself.
 
 ## macOS signing and notarization
 

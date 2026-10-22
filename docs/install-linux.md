@@ -5,7 +5,8 @@ Debian 13, Ubuntu 24.04 and Fedora 40; newer releases of those work too. Arm com
 
 Debian 12 and other systems with a glibc older than 2.38 can't run it: the speech detector (ONNX Runtime, built into
 the app) needs glibc 2.38 and the C++ library of GCC 13. The `.deb` and the `.rpm` say so, so apt or dnf refuses to
-install them there, and the AppImage stops at once with a "version ... not found" error.
+install them there, and the AppImage stops at once with a "version ... not found" error. The
+[Flatpak](#install-the-flatpak) brings its own libraries and runs there.
 
 Capture, ducking and replay all go through PipeWire, with WirePlumber as its session manager. Ubuntu 24.04, Fedora 40
 and GNOME on Debian 13 use both by default. On a system that still runs PulseAudio, Repeat That starts but the status
@@ -22,10 +23,12 @@ release has:
 - `Repeat-That-<version>-1.x86_64.rpm` for Fedora. It names the libraries it needs rather than Fedora's package names,
   so other rpm distributions may take it too, but only Fedora is tested.
 - `Repeat-That_<version>_amd64.AppImage`, a single file that runs on other distributions without installing.
+- `Repeat-That_<version>_x86_64.flatpak`, a [Flatpak](#install-the-flatpak) for any distribution with Flatpak.
 - `SHA256SUMS` holds the checksum of each file, to [verify your download](verify-downloads.md).
 
 The `.deb` and the `.rpm` are the better choice where they fit: they install the app's menu entry under the name the
-desktop expects, and your package manager brings in what the app needs.
+desktop expects, and your package manager brings in what the app needs. The Flatpak is the choice for distributions
+without those packages, and for those who prefer an app in a sandbox.
 
 ## Install the .deb (Debian, Ubuntu)
 
@@ -69,9 +72,46 @@ differently from the packages:
 - **Start at login** and the command-line actions use the path of the AppImage file. If you move or rename the file,
   turn **Start at login** off and on again, and update any custom shortcuts that run it.
 
+## Install the Flatpak
+
+The Flatpak runs on any distribution with [Flatpak](https://flatpak.org/setup/) and PipeWire, including ones the
+packages can't run on, such as Debian 12: it brings its own libraries (the GNOME 51 runtime). It was tried against
+PipeWire 1.4. Download `Repeat-That_<version>_x86_64.flatpak` from the Releases page, then:
+
+```sh
+flatpak install ./Repeat-That_<version>_x86_64.flatpak
+flatpak run me.roboroads.RepeatThat
+```
+
+The file names Flathub as the place to get the GNOME runtime from, so Flatpak offers to add it if it isn't set up yet,
+and downloads the runtime (about 1 GB, shared with other Flatpaks that use it). Repeat That then appears in your app
+menu. It isn't on Flathub yet, so `flatpak update` doesn't find newer versions: install the newer file the same way, with
+`--reinstall` added if Flatpak says Repeat That is installed already.
+
+A Flatpak runs in a sandbox, and Repeat That's is small: it has your display, your GPU, PipeWire's socket and the tray's
+bus name, and nothing else. It has no network and can't see your files. PipeWire's socket is what lets it hear the apps
+that play sound, capture the one you pick and lower its volume, which is what the app does in every package; any
+Flatpak with the socket could do the same. Differences from the packages:
+
+- **Commands for custom shortcuts** are `flatpak run me.roboroads.RepeatThat --replay`, `--stop` and `--catch-up`. The
+  Hotkeys section shows them when your desktop can't give the app hotkeys.
+- **Start at login** asks the system through the Background portal. The first time, your desktop asks whether to allow
+  it, and the entry is made on the host and starts the app hidden, as in the other packages. The app can't read the
+  entry back, so if you remove it in your desktop's settings, the switch in Repeat That stays on: turn it off and on
+  again.
+- **After a crash during a replay**, the app you were catching up on stays at the lowered volume until you start Repeat
+  That again, which then gives it back. The packages keep a small helper process alive that restores the volume at once,
+  and a sandbox can't outlive its app. A `kill -9` or a power cut is the case: quitting Repeat That restores the volume
+  as usual.
+- **The button that opens your desktop's shortcut settings** only works where the desktop's portal can open them,
+  because a Flatpak can't start programs on the host. Otherwise the window says where to find the settings.
+- **App icons** in the list can fall back to the generic one: the sandbox can't read your icon theme.
+- **Files**: settings are in `~/.var/app/me.roboroads.RepeatThat/config/me.roboroads.RepeatThat`, and the duck journal
+  (no audio, see [PRIVACY.md](../PRIVACY.md)) in `~/.var/app/me.roboroads.RepeatThat/data/me.roboroads.RepeatThat`.
+
 ## First start
 
-Start Repeat That from your app menu (or run the AppImage). It opens its settings window on the first run and puts an
+Start Repeat That from your app menu (or run the AppImage, or `flatpak run me.roboroads.RepeatThat`). It opens its settings window on the first run and puts an
 icon in the tray. Closing the window keeps it running, and **Quit** in the tray menu ends it. On GNOME there is no
 tray unless the AppIndicator and KStatusNotifierItem Support extension is on; without one, the window opens at every
 start and has a **Quit Repeat That** button.
@@ -98,15 +138,19 @@ Your file must show `OK`. More in [verify-downloads.md](verify-downloads.md).
 
 There's no automatic updater yet. To update, download the newer package and install it the same way: apt and dnf
 replace the old version. For the AppImage, replace the file, then turn **Start at login** off and on again if the new
-file has another name (the name carries the version). Your settings are kept in each case.
+file has another name (the name carries the version). For the Flatpak, install the newer file with
+`flatpak install --reinstall ./Repeat-That_<version>_x86_64.flatpak`. Your settings are kept in each case.
 
 To uninstall:
 
 1. Turn off **Start at login** in the settings window, then quit Repeat That. If you removed the app with the switch
-   still on, delete `~/.config/autostart/Repeat That.desktop`.
-2. Remove the app: `sudo apt remove repeat-that`, `sudo dnf remove repeat-that`, or delete the AppImage file.
+   still on, delete `~/.config/autostart/Repeat That.desktop` (for the Flatpak,
+   `~/.config/autostart/me.roboroads.RepeatThat.desktop`).
+2. Remove the app: `sudo apt remove repeat-that`, `sudo dnf remove repeat-that`, `flatpak uninstall
+   me.roboroads.RepeatThat`, or delete the AppImage file.
 3. Delete the settings folder, `~/.config/me.roboroads.repeat-that`, and `~/.local/share/me.roboroads.repeat-that`,
-   which holds the duck journal (see [PRIVACY.md](../PRIVACY.md)). Neither holds audio.
+   which holds the duck journal (see [PRIVACY.md](../PRIVACY.md)). Neither holds audio. The Flatpak's are in
+   `~/.var/app/me.roboroads.RepeatThat`, which `flatpak uninstall --delete-data me.roboroads.RepeatThat` removes.
 
 ## Build from source
 
