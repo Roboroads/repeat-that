@@ -20,7 +20,7 @@ proof of concept helps but isn't required.
 In scope:
 
 - the app
-- the capture backends (WASAPI on Windows today, PipeWire and Core Audio once they exist)
+- the capture backends (WASAPI on Windows, PipeWire on Linux and Core Audio on macOS)
 - the duck guard process and the duck journal
 - the auto-updater, once it exists
 - release artifacts and their checksums (from v0.1)
