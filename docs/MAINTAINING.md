@@ -173,10 +173,10 @@ Two jobs check them, and a failure in either fails the `linux` job of a release,
   the real desktop entry at its root and no `libpipewire-0.3` or `libspa-0.2` inside. The job summary shows the result
   and the checksums.
 - `Install on <system>` runs [`smoke-linux-package.sh`](../.github/scripts/smoke-linux-package.sh) as root in a fresh
-  `debian:13`, `ubuntu:24.04` and `fedora:40` container: it installs the `.deb` or the `.rpm` without recommended
-  packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays nothing),
-  validates the installed desktop entries, runs the AppImage's self-check, and uninstalls. In `debian:12` it checks
-  that apt refuses the `.deb` for its glibc or libstdc++.
+  `debian:13`, `ubuntu:24.04`, `fedora:40` and `fedora:44` container: it installs the `.deb` or the `.rpm` without
+  recommended packages, checks `ldd`, runs `repeat-that --rt-self-check` (which loads the binary and Silero and plays
+  nothing), validates the installed desktop entries, runs the AppImage's self-check, and uninstalls. In `debian:12` it
+  checks that apt refuses the `.deb` for its glibc or libstdc++ and nothing else.
 
 On a pull request the packages are workflow artifacts (kept for 30 days), so they can be tried on a real desktop
 before the change merges. Artifacts lose the executable bit, so `chmod +x` the AppImage after unzipping it.
@@ -196,9 +196,16 @@ dependencies in `tauri.linux.conf.json`, `glibc_max`/`glibcxx_max` in the script
 ONNX Runtime built for its glibc: Microsoft's own shared library (built on an older glibc), shipped with the packages
 and loaded at run time, or one built from source in a `debian:12` container.
 
+**Fedora releases go end of life** about 13 months after they come out, and the mirrors drop them a little later.
+Fedora 40, the oldest supported one, has been end of life since May 2025, so its install job (`archive: true` in the
+matrix) takes its packages from `archives.fedoraproject.org`, which doesn't change any more. A Fedora job whose
+mirrors stop answering falls back to the archive on its own, so a release that goes end of life doesn't block
+publishing. When Fedora 44 does, replace it in the matrix by the newest Fedora. Raising the Fedora minimum is a
+decision for the README, `install-linux.md` and the matrix together.
+
 **Raising the minimum** (for example to Ubuntu 26.04): change the build container, the install matrix and the systems
-named in `install-linux.md`, the README and `ARCHITECTURE.md`. To test another distribution, add it to the matrix of the `install` job; the script needs `apt-get`
-or `dnf`.
+named in `install-linux.md`, the README and `ARCHITECTURE.md`. To test another distribution, add it to the matrix of
+the `install` job; the script needs `apt-get` or `dnf`.
 
 ### macOS installer
 

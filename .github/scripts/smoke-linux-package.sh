@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the Linux packages on the system it runs on, the way a user would, and checks that the app starts there.
 # .github/workflows/build-linux.yml runs it as root in a fresh container of each supported distribution (Debian 13,
-# Ubuntu 24.04, Fedora 40), on the files check-linux-packages.sh has checked.
+# Ubuntu 24.04, Fedora 40 and 44), on the files check-linux-packages.sh has checked.
 #
 #   * the .deb (with apt) or the .rpm (with dnf) installs with its required dependencies alone, no recommended ones;
 #   * the installed binary has every library it links (ldd) and its self-check (`--rt-self-check`) reports Silero with
@@ -14,19 +14,32 @@
 # With --refused it checks the opposite, on a system that is too old (Debian 12): the package manager must refuse the
 # package, naming the glibc or libstdc++ it needs, rather than install a binary that can't start.
 #
+# With --archive, on Fedora, dnf takes the release's packages from archives.fedoraproject.org, where a release goes
+# once it is end of life (Fedora 40 since May 2025) and the mirrors drop it. A Fedora whose mirrors don't answer falls
+# back to the archive too, so a release that has just gone end of life doesn't block anything.
+#
 # The self-check plays and captures nothing and needs no display. Prints every check as "ok: ..." or "FAIL: ..." and
 # exits 1 when one failed. Needs linux-packages-lib.sh next to it.
 #
-# Usage: smoke-linux-package.sh [--refused] DIR
+# Usage: smoke-linux-package.sh [--refused] [--archive] DIR
 set -euo pipefail
 
+usage="usage: smoke-linux-package.sh [--refused] [--archive] DIR"
 refused=false
-if [[ "${1:-}" == --refused ]]; then
-  refused=true
+archive=false
+while [[ "${1:-}" == --* ]]; do
+  case $1 in
+    --refused) refused=true ;;
+    --archive) archive=true ;;
+    *)
+      echo "$usage" >&2
+      exit 2
+      ;;
+  esac
   shift
-fi
+done
 if [[ $# -ne 1 || ! -d "$1" ]]; then
-  echo "usage: smoke-linux-package.sh [--refused] DIR" >&2
+  echo "$usage" >&2
   exit 2
 fi
 dir=$(cd "$1" && pwd)
@@ -44,6 +57,29 @@ fi
 expected="{\"vad\":\"silero\",\"arch\":\"x86_64\",\"os\":\"linux\",\"version\":\"$version\"}"
 
 echo "System: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '"')"
+
+# Replaces dnf's repositories by the release's archive: the release itself and its final updates. The archive doesn't
+# change any more, and its packages are signed with the same keys as before.
+use_fedora_archive() {
+  local release base=https://archives.fedoraproject.org/pub/archive/fedora/linux
+  release=$(sed -n 's/^VERSION_ID=//p' /etc/os-release | tr -d '"')
+  mkdir -p /etc/yum.repos.d/mirrors
+  mv /etc/yum.repos.d/*.repo /etc/yum.repos.d/mirrors/
+  cat >/etc/yum.repos.d/fedora-archive.repo <<EOF
+[fedora-archive]
+name=Fedora $release (archive)
+baseurl=$base/releases/$release/Everything/\$basearch/os/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$release-\$basearch
+
+[updates-archive]
+name=Fedora $release updates (archive)
+baseurl=$base/updates/$release/Everything/\$basearch/
+gpgcheck=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$release-\$basearch
+EOF
+  echo "note: dnf takes Fedora $release from $base"
+}
 if command -v apt-get >/dev/null; then
   kind=deb
   export DEBIAN_FRONTEND=noninteractive
@@ -54,6 +90,9 @@ if command -v apt-get >/dev/null; then
   uninstall() { apt-get remove -y -qq repeat-that; }
 elif command -v dnf >/dev/null; then
   kind=rpm
+  if [[ $archive == true ]] || ! dnf -q makecache >/dev/null 2>&1; then
+    use_fedora_archive
+  fi
   install_packages() { dnf install -y -q --setopt=install_weak_deps=False "$@"; }
   try_install() { dnf install -y --setopt=install_weak_deps=False "$@"; }
   uninstall() { dnf remove -y -q repeat-that; }

@@ -13,7 +13,7 @@ name: Build Linux packages
 # 24.04 and Fedora 40 have 2.39, Debian 13 has 2.41), so the binary needs nothing newer, and the AppImage carries
 # Ubuntu 24.04's libraries. Debian 12 is too old: the ONNX Runtime that `ort` links in needs glibc 2.38 and GCC 13's
 # libstdc++, which the packages declare. The `install` jobs install the .deb on Debian 13 and Ubuntu 24.04 and the .rpm
-# on Fedora 40 and run the AppImage on each, and check that apt refuses the .deb on Debian 12.
+# on Fedora 40 and 44 and run the AppImage on each, and check that apt refuses the .deb on Debian 12.
 
 on:
   workflow_call:
@@ -252,7 +252,9 @@ jobs:
         include:
           - { system: Debian 13, image: "debian:13" }
           - { system: Ubuntu 24.04, image: "ubuntu:24.04" }
-          - { system: Fedora 40, image: "fedora:40" }
+          # End of life since May 2025, so its packages come from the Fedora archive, which no longer changes.
+          - { system: Fedora 40, image: "fedora:40", archive: true }
+          - { system: Fedora 44, image: "fedora:44" }
           # Too old (glibc 2.36, GCC 12): apt must refuse the .deb instead of installing a binary that can't start.
           - { system: Debian 12 (refused), image: "debian:12", refused: true }
     steps:
@@ -269,7 +271,12 @@ jobs:
 
       - name: Install and start
         if: ${{ !matrix.refused }}
-        run: bash .github/scripts/smoke-linux-package.sh packages
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          flags=()
+          if [[ "$ARCHIVE" == true ]]; then flags+=(--archive); fi
+          bash .github/scripts/smoke-linux-package.sh "${flags[@]}" packages
       - name: Install is refused
         if: ${{ matrix.refused }}
         run: bash .github/scripts/smoke-linux-package.sh --refused packages

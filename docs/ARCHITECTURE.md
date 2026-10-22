@@ -322,8 +322,8 @@ GitHub Actions builds:
   it yet)
 - Linux: `Repeat-That_<version>_amd64.deb`, `Repeat-That-<version>-1.x86_64.rpm` and
   `Repeat-That_<version>_amd64.AppImage`, x64 only. `build-linux.yml` builds them in an `ubuntu:24.04` container
-  (glibc 2.39, the oldest of the supported systems) and installs them on Debian 13, Ubuntu 24.04 and Fedora 40 before
-  they count. Linux is a required platform of `publish-release.yml`. A Flatpak comes later.
+  (glibc 2.39, the oldest of the supported systems) and installs them on Debian 13, Ubuntu 24.04, Fedora 40 and
+  Fedora 44 before they count. Linux is a required platform of `publish-release.yml`. A Flatpak comes later.
 - macOS: `Repeat-That_<version>_aarch64.dmg` for Apple Silicon only (no Intel or universal build, see the VAD note
   under [`rt-core`](#rt-core--platform-independent-logic)). It is signed with a Developer ID Application certificate and
   notarized, with the ticket stapled to the `.app` and to the `.dmg`, so Gatekeeper opens it without extra steps.

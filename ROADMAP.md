@@ -35,8 +35,8 @@
 - [x] `.deb` package (Debian 13+, Ubuntu 24.04+)
 - [x] `.rpm` package (Fedora 40+)
 - [x] AppImage
-- [x] Packages installed and started in CI on Debian 13, Ubuntu 24.04 and Fedora 40 (Debian 12 is too old for the
-  speech detector's ONNX Runtime, and CI checks that apt refuses the `.deb` there)
+- [x] Packages installed and started in CI on Debian 13, Ubuntu 24.04, Fedora 40 and Fedora 44 (Debian 12 is too old
+  for the speech detector's ONNX Runtime, and CI checks that apt refuses the `.deb` there)
 - [x] The packages are listed in the release's `SHA256SUMS` (checked in a dry run of the publish workflow and a
   rehearsal release; no real release has had them yet)
 - [ ] Flatpak on Flathub
