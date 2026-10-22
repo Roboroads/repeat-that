@@ -5,13 +5,13 @@ Debian 13, Ubuntu 24.04 and Fedora 40; newer releases of those work too. Arm com
 
 Debian 12 and other systems with a glibc older than 2.38 can't run it: the speech detector (ONNX Runtime, built into
 the app) needs glibc 2.38 and the C++ library of GCC 13. The `.deb` and the `.rpm` say so, so apt or dnf refuses to
-install them there, and the AppImage stops at once with a "GLIBC_2.38 not found" message.
+install them there, and the AppImage stops at once with a "version ... not found" error.
 
 Capture, ducking and replay all go through PipeWire, with WirePlumber as its session manager. Ubuntu 24.04, Fedora 40
-and GNOME on Debian 13 use both by default. On a system that still runs PulseAudio, Repeat That starts but
-the status reads "Capture needs PipeWire, and it isn't running". Your distribution's documentation says how to switch,
-for Debian see [wiki.debian.org/PipeWire](https://wiki.debian.org/PipeWire). `wpctl status` lists your sound devices
-when PipeWire and WirePlumber are running.
+and GNOME on Debian 13 use both by default. On a system that still runs PulseAudio, Repeat That starts but the status
+reads "Capture needs PipeWire, and it isn't running". Your distribution's documentation says how to switch, for Debian
+see [wiki.debian.org/PipeWire](https://wiki.debian.org/PipeWire). `wpctl status` lists your sound devices when PipeWire
+and WirePlumber are running.
 
 ## Download
 
@@ -53,8 +53,8 @@ chmod +x Repeat-That_<version>_amd64.AppImage
 ```
 
 The AppImage carries its own copy of WebKitGTK, GTK and most other libraries, from Ubuntu 24.04. It takes PipeWire's
-and ALSA's client libraries from your system on purpose: a PipeWire client must match the PipeWire that runs on your
-desktop. Every system with PipeWire has them.
+and ALSA's client libraries and the C++ library from your system on purpose: a PipeWire client must match the PipeWire
+that runs on your desktop. A desktop system with PipeWire has all three.
 
 An AppImage mounts itself with FUSE. If it says it can't, install your distribution's `fuse3` package, or start it
 with `--appimage-extract-and-run` added, which unpacks it to a temporary folder first.
