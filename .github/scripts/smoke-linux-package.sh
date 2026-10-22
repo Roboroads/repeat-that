@@ -65,15 +65,24 @@ if [[ $kind == deb ]]; then package=$deb; else package=$rpm; fi
 
 # Checks one self-check run: its output must be exactly the expected line, and its exit code 0.
 check_self_check() {
-  local label=$1 out code=0
+  local label=$1 out code=0 err
   shift
-  out=$("$@" 2>&1) || code=$?
-  if [[ $code -eq 0 && "$(tail -n 1 <<<"$out")" == "$expected" ]]; then
+  # The report is a line of its own on stdout. Whatever else is printed (a library's warning on stderr, say) is shown
+  # but doesn't decide.
+  err=$(mktemp)
+  out=$("$@" 2>"$err") || code=$?
+  if [[ $code -eq 0 ]] && grep -qxF -- "$expected" <<<"$out"; then
     ok "$label: the self-check reports $expected"
   else
-    fail "$label: the self-check exited $code, expected $expected"
+    fail "$label: the self-check exited $code, expected $expected on stdout"
+    echo "    stdout:"
     indent <<<"$out"
   fi
+  if [[ -s "$err" ]]; then
+    echo "    stderr:"
+    indent <"$err"
+  fi
+  rm -f "$err"
 }
 
 echo
