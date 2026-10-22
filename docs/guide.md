@@ -80,8 +80,8 @@ An utterance is a stretch of speech between pauses. A replay starts at the utter
 run for 1.5 seconds. Otherwise it starts at the last one that ended, unless that was more than 10 seconds ago and a new
 one has started. It doesn't stop after that utterance. It plays everything said since, including what is said while it
 plays, and a pause between two utterances is shortened to about two thirds of a second at normal speed, however long it
-really was. When it reaches someone who is still talking it follows them at normal speed, and it ends when there is
-nothing left to play. The app keeps listening throughout.
+really was. When it reaches someone who is still talking, it plays the rest of their sentence at normal speed, whatever
+the replay speed is, and it ends when there is nothing left to play. The app keeps listening throughout.
 
 Pressing Replay again steps back one utterance. A pause of about 0.7 seconds ends an utterance, and a long monologue is
 cut every 15 seconds so that you can still step back inside it. Stepping back from the oldest utterance in the buffer
