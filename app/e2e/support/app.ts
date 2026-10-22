@@ -54,13 +54,18 @@ export async function waitForBufferedSpeech(timeout = 12_000): Promise<void> {
   });
 }
 
-/** Calls a command of the backend the way the page does, and returns what it answers. */
+/**
+ * Calls a command of the backend the way the page does, and returns what it answers. The answer travels in a wrapper:
+ * WebdriverIO takes any script result with a truthy `error` field for a failed command and throws its message, which an
+ * answer like the update status has while a check or download has failed.
+ */
 export async function invoke<T = void>(command: string): Promise<T> {
-  return browser.execute((name: string) => {
+  const answer = (await browser.execute((name: string) => {
     const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<unknown> } })
       .__TAURI_INTERNALS__;
-    return internals.invoke(name);
-  }, command) as Promise<T>;
+    return internals.invoke(name).then((value) => ({ value }));
+  }, command)) as { value: T };
+  return answer.value;
 }
 
 /** The backend's own view of the engine, for what the page does not show. */
@@ -75,7 +80,8 @@ export interface BackendStatus {
 export const backendStatus = () => invoke<BackendStatus>('get_status');
 
 /** The settings as the backend has them, which is what a reload shows. */
-export const backendSettings = () => invoke<{ bufferSeconds: number }>('get_settings');
+export const backendSettings = () =>
+  invoke<{ bufferSeconds: number; checkForUpdates: boolean | null }>('get_settings');
 
 /** The built app, where `wdio.conf.ts` starts it from. */
 function applicationPath(): string {

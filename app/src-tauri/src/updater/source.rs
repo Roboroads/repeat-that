@@ -524,6 +524,8 @@ mod tests {
 
         fn source(port: u16) -> (tauri::App<MockRuntime>, PluginSource<MockRuntime>) {
             let mut context = mock_context(noop_assets());
+            // The mock app would otherwise report a version of its own, not the one this crate is released as.
+            context.package_info_mut().version = env!("CARGO_PKG_VERSION").parse().unwrap();
             let endpoint = format!("http://127.0.0.1:{port}/latest-{{{{target}}}}-{{{{arch}}}}.json");
             context.config_mut().plugins.0.insert(
                 "updater".into(),
