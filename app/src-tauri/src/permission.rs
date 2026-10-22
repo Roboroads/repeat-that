@@ -50,9 +50,15 @@ pub async fn ask_for_capture_permission<R: Runtime>(app: AppHandle<R>) -> Result
     off_the_main_thread(|| rt_capture::permission::ask_again().map_err(permission_error)).await
 }
 
-/// Opens the OS settings page where the user allows capture.
+/// Opens the OS settings page where the user allows capture. The
+/// [`MockPermission`](crate::source::MockPermission) has no settings page, so with it this does nothing, and never
+/// opens the real one.
 #[tauri::command]
-pub async fn open_capture_permission_settings() -> Result<(), CommandError> {
+pub async fn open_capture_permission_settings<R: Runtime>(app: AppHandle<R>) -> Result<(), CommandError> {
+    if app.try_state::<SharedMockPermission>().is_some() {
+        eprintln!("debug: the mock permission has no settings to open; Ask again allows it");
+        return Ok(());
+    }
     off_the_main_thread(|| rt_capture::permission::open_settings().map_err(permission_error)).await
 }
 
@@ -130,6 +136,13 @@ mod tests {
         let status = h.wait_for_status(Duration::from_secs(5), "not allowed", |s| state(s) == "notAllowed");
         assert_eq!(status["capture"]["message"], MOCK_HOW_TO_ALLOW);
         assert_eq!(status["targetName"], "speech_8s");
+
+        // Opening the settings works, and touches neither the mock nor the real settings of this OS.
+        assert_eq!(
+            h.invoke("open_capture_permission_settings", json!({})).unwrap(),
+            Value::Null
+        );
+        assert!(!permission.is_allowed());
 
         assert_eq!(h.invoke("ask_for_capture_permission", json!({})).unwrap(), Value::Null);
         assert!(permission.is_allowed());

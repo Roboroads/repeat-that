@@ -44,12 +44,11 @@ describe('capture that is not allowed', () => {
     await expect(pauseButton()).toBeEnabled();
   });
 
-  // Linux has no settings page for this, so the real command says so, and the page shows it next to the buttons.
-  it('shows why Open System Settings did nothing here', async () => {
+  // The mock has no settings page: the button works and changes nothing.
+  it('opens the settings without an error, and stays not allowed', async () => {
     await help().$('button=Open System Settings').click();
-    const problem = help().$('[role="alert"]');
-    await problem.waitForDisplayed({ timeoutMsg: 'the failed command was not shown' });
-    await expect(problem).toHaveText(expect.stringContaining("doesn't ask for permission to capture audio"));
+    await expect(help().$('button=Open System Settings')).toBeEnabled();
+    await expect(help().$('[role="alert"]')).not.toBeExisting();
     await expect(headline()).toHaveText(NOT_ALLOWED);
   });
 
