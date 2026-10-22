@@ -7,7 +7,8 @@
 //! Playback streams apply their volume before their output ports, so a ducked app is captured ducked. The capture
 //! undoes that: each cycle's audio is amplified by the inverse of the level the app played it at, from the
 //! [`DuckLevel`] history. A volume change takes effect at a cycle boundary of the graph, so one level per cycle is
-//! exact; see `ramp.rs` for how well the estimate of that boundary holds.
+//! exact; see `ramp.rs` for how well the estimate of that boundary holds. The capture gets the app's streams mixed, so
+//! it undoes the duck only while all of them play ducked (see [`Compensation`]).
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -111,6 +112,27 @@ pub(super) fn plan_links<'a>(
     links
 }
 
+/// How a capture undoes its app's duck: the app's duck level, whether the app's streams are asynchronous (`node.async`),
+/// and whether to undo it at all. That is only right while every stream of the app plays ducked: one the duck left
+/// alone, because the user set its volume during the duck or its volume wasn't known yet, plays at its own volume, and
+/// undoing the duck on the mix would boost it by up to 20 times. Then the capture takes the app as it plays.
+#[derive(Clone)]
+pub(super) struct Compensation {
+    pub level: DuckLevel,
+    pub asynchronous: Arc<AtomicBool>,
+    pub undo: Arc<AtomicBool>,
+}
+
+impl Compensation {
+    pub fn new(level: DuckLevel) -> Self {
+        Self {
+            level,
+            asynchronous: Arc::default(),
+            undo: Arc::new(AtomicBool::new(true)),
+        }
+    }
+}
+
 /// The duck level audio played at `time` (100 ns units) was played at, from `history` (oldest first).
 pub(super) fn level_at(history: &[DuckChange], time: u64) -> f32 {
     history
@@ -151,18 +173,22 @@ impl Drop for CaptureStream {
     }
 }
 
-/// Opens a capture stream named `node_name` that hands what it captures to `sink`, compensated for `level`. `running`
-/// turns false when the stream fails. Each cycle stores its length in `quantum` (nanoseconds), which the fades use as
-/// their step. `asynchronous` says whether the app's streams are asynchronous (`node.async`).
+/// Opens a capture stream named `node_name` that hands what it captures to `sink`, with the app's duck undone as
+/// `compensation` says. `running` turns false when the stream fails. Each cycle stores its length in `quantum`
+/// (nanoseconds), which the fades use as their step.
 pub(super) fn open(
     core: &CoreRc,
     node_name: &str,
     mut sink: FrameSink,
-    level: DuckLevel,
+    compensation: Compensation,
     running: Arc<AtomicBool>,
     quantum: Arc<AtomicU64>,
-    asynchronous: Arc<AtomicBool>,
 ) -> Result<CaptureStream, pw::Error> {
+    let Compensation {
+        level,
+        asynchronous,
+        undo,
+    } = compensation;
     let mut props = PropertiesBox::new();
     props.insert("media.type", "Audio");
     props.insert("media.category", "Capture");
@@ -236,7 +262,9 @@ pub(super) fn open(
                 } else {
                     cycle
                 };
-                amplify(&mut samples, level_at(&history, played));
+                if undo.load(Ordering::Relaxed) {
+                    amplify(&mut samples, level_at(&history, played));
+                }
                 sink(
                     &samples,
                     CaptureFormat {

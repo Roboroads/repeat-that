@@ -24,7 +24,7 @@ use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 
 use super::apps::{self, AppGroup, AppKey, Own, Placed, Placement, ProcFs, StreamInfo};
-use super::capture::{self, CaptureStream, PLAYBACK, PortInfo};
+use super::capture::{self, CaptureStream, Compensation, PLAYBACK, PortInfo};
 use super::volume::{self, NodeSession, NodeVolume};
 use super::{guard, icon};
 use crate::before_duck::{BeforeDuck, Session};
@@ -357,8 +357,8 @@ struct Capture {
     node: Option<u32>,
     links: BTreeMap<(u32, u32), Link>,
     running: Arc<AtomicBool>,
-    /// Whether the app's streams are asynchronous, for the capture's compensation.
-    asynchronous: Arc<AtomicBool>,
+    /// How the capture undoes the app's duck, which the loop keeps up to date with the app's streams.
+    compensation: Compensation,
     stream: Option<CaptureStream>,
 }
 
@@ -615,7 +615,7 @@ impl State {
                     .and_then(|n| n.stream.as_ref())
                     .is_some_and(|s| s.asynchronous)
             });
-            capture.asynchronous.store(asynchronous, Ordering::Relaxed);
+            capture.compensation.asynchronous.store(asynchronous, Ordering::Relaxed);
             let wanted = capture::plan_links(ports, &app, |id| nodes.get(&id).map(|n| n.class.as_str()), node);
             let stale: Vec<(u32, u32)> = capture.links.keys().filter(|l| !wanted.contains(l)).copied().collect();
             for ends in stale {
@@ -645,6 +645,22 @@ impl State {
                     capture.links.insert((output, input), link);
                 }
             }
+        }
+        self.update_compensation();
+    }
+
+    /// Tells each capture whether to undo its app's duck, see [`Compensation`]: while the app is ducked, only if every
+    /// stream of the app is.
+    fn update_compensation(&self) {
+        for capture in &self.captures {
+            let ducked = capture.compensation.level.get() < 1.0;
+            let all = self
+                .nodes
+                .values()
+                .filter(|n| key_of(n) == Some(&capture.key))
+                .filter_map(|n| n.stream.as_ref())
+                .all(|s| self.ducking.before_duck.contains(&s.serial));
+            capture.compensation.undo.store(!ducked || all, Ordering::Relaxed);
         }
     }
 
@@ -719,15 +735,14 @@ impl State {
         self.next_capture += 1;
         let id = self.next_capture;
         let node_name = format!("repeat-that-capture-{}-{id}", std::process::id());
-        let asynchronous = Arc::new(AtomicBool::new(false));
+        let compensation = Compensation::new(level);
         let stream = capture::open(
             &self.core,
             &node_name,
             sink,
-            level,
+            compensation.clone(),
             Arc::clone(&running),
             Arc::clone(&self.quantum),
-            Arc::clone(&asynchronous),
         )
         .map_err(|e| CaptureError::Backend(format!("can't open a capture stream: {e}")))?;
         self.captures.push(Capture {
@@ -738,7 +753,7 @@ impl State {
             node: None,
             links: BTreeMap::new(),
             running,
-            asynchronous,
+            compensation,
             stream: Some(stream),
         });
         self.relink();
@@ -820,6 +835,7 @@ impl State {
         }
         // Every step: recovery only restores streams still at the volume the journal holds.
         ducking.save();
+        self.update_compensation();
         Ok(())
     }
 
@@ -852,6 +868,14 @@ impl State {
         let Some(stream) = nodes.get(&id).and_then(|n| n.stream.as_ref()) else {
             return;
         };
+        // A volume the user set during the duck is theirs from now on: the duck leaves that stream alone, also when it
+        // ends, and its capture takes it as it plays.
+        if let Some(entry) = ducking.before_duck.get(&stream.serial)
+            && volume::changed_by_user(entry, &stream.volume.borrow())
+        {
+            ducking.before_duck.restored(&stream.serial);
+            ducking.save();
+        }
         if adopt(&mut ducking.before_duck, &ducking.pending, &[stream]) {
             ducking.save();
         }
@@ -863,6 +887,7 @@ impl State {
             ducking.before_duck.apply(&session, level);
             ducking.save();
         }
+        self.update_compensation();
     }
 
     /// Restores the streams that ducks from an earlier run's journal still hold down.

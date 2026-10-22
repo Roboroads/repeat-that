@@ -578,6 +578,7 @@ fn a_volume_changed_by_hand_during_a_duck_is_left_alone() {
     let source = PipeWireSource::new().expect("PipeWire runs");
     let _player = Player::start("RT Hand Tone");
     let app = find_app(&source, "RT Hand Tone");
+    let (handle, recording) = record(&source, &app);
     source.set_app_volume(&app, 0.25).unwrap();
     let node = nodes_where(&pw_dump(), "application.name", "RT Hand Tone")[0];
     wait_for(Duration::from_secs(2), || {
@@ -589,6 +590,15 @@ fn a_volume_changed_by_hand_during_a_duck_is_left_alone() {
         close(&volumes("RT Hand Tone"), &[vec![0.6; 2]], 1e-4).then_some(())
     })
     .expect("set by hand");
+    // The app plays at the user's volume now, and is captured that way: undoing the duck would boost it four times.
+    thread::sleep(Duration::from_millis(200));
+    let _ = recording.left();
+    thread::sleep(Duration::from_millis(500));
+    let (mono, rate) = recording.left();
+    handle.stop();
+    let captured = level_at_frequency(&mono, rate, TONE_HZ) / TONE_RMS;
+    println!("captured at {captured:.2}x the full level after the user set 0.6 during the duck");
+    assert!((captured - 0.6).abs() < 0.06, "captured at {captured:.2}x");
     source.set_app_volume(&app, 1.0).unwrap();
     thread::sleep(Duration::from_millis(300));
     assert_eq!(volumes("RT Hand Tone"), [vec![0.6; 2]], "the user's volume stays");
