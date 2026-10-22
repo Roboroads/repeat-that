@@ -267,9 +267,10 @@ installation and checks, in the same container:
 
 Then `flatpak-builder-lint`, Flathub's own linter, runs on the manifest, on the manifest that goes to Flathub and on the
 built repository, through `filter_lint.py`, and on the metainfo once its screenshot is on `main` (the linter looks it up
-on the network). Two errors are let through until the app is on Flathub: `appid-url-not-reachable`
-(`https://roboroads.me` has to answer, see [Flathub](#flathub)) and `appstream-screenshots-not-mirrored-in-ostree`
-(Flathub fetches the screenshot, which is a link to the main branch, and keeps its own copy). A third,
+on the network). Three errors are let through until the app is on Flathub: `appid-url-not-reachable`
+(`https://roboroads.me` has to answer, see [Flathub](#flathub)), `appstream-screenshots-not-mirrored-in-ostree` and
+`appstream-external-screenshot-url` (Flathub fetches the screenshot, which is a link to the main branch, and keeps its
+own copy on dl.flathub.org). A fourth,
 `appstream-missing-screenshots`, is let through only while the screenshot isn't on `main` yet, on the change that adds it.
 Anything else the linter reports fails the build, except in a release run (one with a tag): the linter comes with a
 floating container image and looks things up on the network, so a new rule or a network failure must not hold back
@@ -454,15 +455,13 @@ require it later, add its name, `macOS capture`, to that list and apply the rule
 files and its own files, so first take the `paths` filter off its `pull_request` trigger: a required check that doesn't
 run leaves every other PR waiting for it.
 
-### First release
-
-`release-please-config.json` has `"release-as": "0.1.0"`, so the first release is 0.1.0 whatever the commits suggest.
-Once 0.1.0 is out, **remove `release-as`**; otherwise the next release PR proposes 0.1.0 again and collides with the
-tag. The `release-please` workflow runs the config check with `--tags` before it acts (the script explains why): once
-`v0.1.0` exists and the pin is still there, that run fails and no further release PRs are opened until the pin is gone.
-Hold the 0.1.0 release PR until the app captures and replays audio, because merging it publishes the installer.
-
 ### Version numbers
+
+release-please picks each version from the commits since the last release (the rules are under
+[Merging and releases](#merging-and-releases)). The config has no `release-as` pin: the one for 0.1.0 was removed
+after that release. Add a pin only to force a version the commits wouldn't give, and remove it as soon as that release
+exists. The `release-please` workflow runs the config check with `--tags` before it acts (the script explains why).
+While the pinned version already has a tag, that run fails and no release PRs are opened.
 
 Keep versions and tags plain `X.Y.Z` / `vX.Y.Z`, without a pre-release suffix like `0.2.0-rc.1`: the config check
 rejects any other `release-as`, and the release workflows reject other tags.
