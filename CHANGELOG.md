@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.2.0](https://github.com/Roboroads/repeat-that/compare/v0.1.0...v0.2.0) (2026-10-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* dispatch capture backends per OS ([#36](https://github.com/Roboroads/repeat-that/issues/36))
+
+### Features
+
+* **app:** add a "not allowed" capture state, muted ducking on macOS and an untested notice ([#43](https://github.com/Roboroads/repeat-that/issues/43)) ([db0f93c](https://github.com/Roboroads/repeat-that/commit/db0f93cfb0b0c3b584f39d4f4add9303188fc1ab))
+* **app:** add a self-check that reports the speech detector ([#41](https://github.com/Roboroads/repeat-that/issues/41)) ([d18141c](https://github.com/Roboroads/repeat-that/commit/d18141c8f7e4b690da66e09a17b34d059ee02f9e))
+* **app:** ask before checking for updates and show them in the settings window ([#55](https://github.com/Roboroads/repeat-that/issues/55)) ([9dbcba8](https://github.com/Roboroads/repeat-that/commit/9dbcba849fc4109d35c65765c66d995f48b69a31))
+* **app:** check for and install updates, off until an update key is set ([#60](https://github.com/Roboroads/repeat-that/issues/60)) ([d208ae7](https://github.com/Roboroads/repeat-that/commit/d208ae76c23aa89b8fc25a4d13acf62a5a655b67))
+* **app:** Wayland portal hotkeys, command-line actions and a no-tray fallback ([#38](https://github.com/Roboroads/repeat-that/issues/38)) ([04f4ec3](https://github.com/Roboroads/repeat-that/commit/04f4ec36ff651ee7479d8ce5e6238539b481d0d0))
+* build a Flatpak and prepare the Flathub submission ([#51](https://github.com/Roboroads/repeat-that/issues/51)) ([1a3d943](https://github.com/Roboroads/repeat-that/commit/1a3d943e8dd486e2d75a75046b3e5acfc5ea43a8))
+* **capture:** capture and duck apps through a Core Audio tap on macOS ([#40](https://github.com/Roboroads/repeat-that/issues/40)) ([3af5ccc](https://github.com/Roboroads/repeat-that/commit/3af5ccc24ac31b3ae28fe9da1254e156bca90bba))
+* **capture:** capture and duck apps through PipeWire on Linux ([#39](https://github.com/Roboroads/repeat-that/issues/39)) ([a280469](https://github.com/Roboroads/repeat-that/commit/a280469441939d12ff66ed37929c433e47da0aaf))
+* ship Linux AppImage, deb and rpm packages ([#47](https://github.com/Roboroads/repeat-that/issues/47)) ([844f82c](https://github.com/Roboroads/repeat-that/commit/844f82c58f74f4a9dff31427b30e8544f66a1f1c))
+
+
+### Bug Fixes
+
+* **app:** name the shortcuts Repeat That on KDE Plasma 6.3 ([#45](https://github.com/Roboroads/repeat-that/issues/45)) ([5953dae](https://github.com/Roboroads/repeat-that/commit/5953daed2f843638f6a3d27edf8f9697de8afd64))
+* **app:** point Flatpak users at the release page for updates ([#68](https://github.com/Roboroads/repeat-that/issues/68)) ([573cd1d](https://github.com/Roboroads/repeat-that/commit/573cd1d362efff58262b46ca4c1ce2a4eed5091e))
+* **capture:** address the review of PipeWire capture and ducking on Linux ([#44](https://github.com/Roboroads/repeat-that/issues/44)) ([6e62540](https://github.com/Roboroads/repeat-that/commit/6e62540fa4c6194edbe1b10154539867dce76595))
+* **ci:** pass secrets to the called release workflows so the macOS build can sign ([#69](https://github.com/Roboroads/repeat-that/issues/69)) ([dfd9e2d](https://github.com/Roboroads/repeat-that/commit/dfd9e2de798c85d08b274a8106d71a7257e67103))
+
+
+### Code Refactoring
+
+* dispatch capture backends per OS ([#36](https://github.com/Roboroads/repeat-that/issues/36)) ([7a3fd32](https://github.com/Roboroads/repeat-that/commit/7a3fd32803927430fea88cf74dc6aed553b881a9))
+
 ## [0.1.0](https://github.com/Roboroads/repeat-that/compare/v0.0.1...v0.1.0) (2026-10-21)
 
 
