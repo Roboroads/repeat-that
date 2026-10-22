@@ -93,11 +93,22 @@ folder on every pull request and every push to `main`, `test_workflow_secrets.py
 Workflow steps that install packages with apt run [`apt-install.sh`](../.github/scripts/apt-install.sh) instead of
 calling `apt-get`. It gives `apt-get update` 1 minute and `apt-get install` 3 minutes, and makes up to three attempts
 (`test_apt_install.py` tests this against a fake `apt-get`). Before it existed, three CI runs sat in an apt step for 30
-minutes or more until they were cancelled, and a rerun finished in under a minute. A failed attempt that is tried again
-shows up as a warning on the run, and when all three fail the error names the step. Each of these steps also has
-`timeout-minutes: 25`, which is longer than the script's worst case, so the script's own message comes first. A new apt
-step should do the same. `build-linux.yml` runs in a container that has no git until its apt step has run, so it checks
-the repository out twice: once before the install, through the GitHub API, to get the script, and once after, with git.
+minutes or more until they were cancelled, and a rerun finished in under a minute.
+
+- A call that finds an apt lock held by another process waits for it inside its own time limit, and doesn't use up an
+  attempt.
+- Before a retry that follows a failed or stopped install, it runs `dpkg --configure -a` and `apt-get -f install`. If
+  either fails, that is a warning and the retry goes on.
+- An error that a retry can't change, such as a package that doesn't exist, ends the step at once with apt's own
+  message, unless `apt-get update` lost an index on the way (then the package may only be missing from the lists).
+- A retry shows up as a warning on the run. When all attempts fail, one error names the step and the last error apt
+  printed. A call that the system killed (out of memory, say) is reported as killed, not as timed out.
+
+Each of these steps also has `timeout-minutes: 25`, which is longer than the script's worst case of about 17 minutes, so
+the script's own message comes first. The `Rust` and `E2E` jobs of `ci.yml` have caps that leave room for those retries
+on top of a cold build. A new apt step should do the same. `build-linux.yml` runs in a container that has no git until
+its apt step has run, so it checks the repository out twice: once before the install, through the GitHub API (about a
+second), to get the script, and once after, with git.
 
 | Platform | Required | Files | Update files (only with an [update key](#update-signing-key)) | Build job in `publish-release.yml` |
 |---|---|---|---|---|
