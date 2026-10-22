@@ -4,13 +4,13 @@ import Requirements from "../components/Requirements.astro";
 import Video from "../components/Video.astro";
 import Base from "../layouts/Base.astro";
 import { getDocs, repoRoot, routesBySource } from "../lib/docs";
-import { findMedia, mediaDir } from "../lib/media";
+import { findMedia } from "../lib/media";
 import { formatSize, loadRelease, primaryFile } from "../lib/release";
 import { loadRequirements } from "../lib/requirements";
 
 const data = loadRelease();
 const release = data.release;
-const media = findMedia(mediaDir());
+const media = findMedia();
 const requirements = await loadRequirements(process.env, repoRoot(), routesBySource(getDocs()), (message) =>
   console.warn(`[site] warning: ${message}`),
 );

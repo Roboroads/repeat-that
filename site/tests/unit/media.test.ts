@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { copyMedia } from "../../integrations/media.mjs";
-import { findMedia, mediaDir } from "../../src/lib/media";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { copyMedia, mediaDirectory } from "../../integrations/media.mjs";
+import { findMedia } from "../../src/lib/media";
 
 const scratch = join(process.cwd(), ".tmp");
 let dir: string;
@@ -38,10 +38,22 @@ describe("findMedia", () => {
   });
 });
 
-describe("mediaDir", () => {
+describe("mediaDirectory", () => {
   it("is public/media unless SITE_MEDIA_DIR says otherwise", () => {
-    expect(mediaDir({}, "/site")).toBe("/site/public/media");
-    expect(mediaDir({ SITE_MEDIA_DIR: ".e2e/media" }, "/site")).toBe("/site/.e2e/media");
+    expect(mediaDirectory({}, "/site")).toBe("/site/public/media");
+    expect(mediaDirectory({ SITE_MEDIA_DIR: ".e2e/media" }, "/site")).toBe("/site/.e2e/media");
+  });
+});
+
+describe("findMedia without a folder", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("looks in the media folder of the build", () => {
+    writeFileSync(join(dir, "demo.mp4"), "x");
+    vi.stubEnv("SITE_MEDIA_DIR", dir);
+    expect(findMedia()).toEqual({ video: "/media/demo.mp4" });
+    vi.stubEnv("SITE_MEDIA_DIR", join(dir, "nope"));
+    expect(findMedia()).toBeNull();
   });
 });
 

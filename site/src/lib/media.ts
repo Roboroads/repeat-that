@@ -9,15 +9,11 @@ export interface Media {
   captions?: string;
 }
 
-export function mediaDir(env: Record<string, string | undefined> = process.env, root: string = process.cwd()): string {
-  return mediaDirectory(env, root);
-}
-
 /**
  * The demo video, or null when there isn't one yet. The deploy workflow puts `demo.mp4` (and a poster and captions if
- * the release has them) in `public/media`. No video, no video section.
+ * the release has them) in `public/media`, `SITE_MEDIA_DIR` names another folder. No video, no video section.
  */
-export function findMedia(dir: string): Media | null {
+export function findMedia(dir: string = mediaDirectory()): Media | null {
   if (!existsSync(join(dir, MEDIA_FILES.video))) return null;
   const media: Media = { video: `/media/${MEDIA_FILES.video}` };
   if (existsSync(join(dir, MEDIA_FILES.poster))) media.poster = `/media/${MEDIA_FILES.poster}`;
