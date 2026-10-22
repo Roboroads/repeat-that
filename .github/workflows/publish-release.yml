@@ -235,12 +235,15 @@ jobs:
       TAG: ${{ inputs.tag }}
       REPLACE: ${{ inputs.replace }}
     steps:
-      # app/ for `npm ci`, which installs the Tauri CLI that signs the updates, at the version of its lock file.
+      # The two files of app/ that `npm ci` reads, to install the Tauri CLI that signs the updates at the version of its
+      # lock file. Patterns of files need the non-cone mode.
       - uses: actions/checkout@v7
         with:
           sparse-checkout: |
-            .github/scripts
-            app
+            /.github/scripts/
+            /app/package.json
+            /app/package-lock.json
+          sparse-checkout-cone-mode: false
 
       - name: Test the release script
         run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
@@ -479,11 +482,14 @@ jobs:
       PLATFORM: ${{ inputs.platform }}
       REPLACE: ${{ inputs.replace }}
     steps:
+      # See the checkout of the publish job.
       - uses: actions/checkout@v7
         with:
           sparse-checkout: |
-            .github/scripts
-            app
+            /.github/scripts/
+            /app/package.json
+            /app/package-lock.json
+          sparse-checkout-cone-mode: false
 
       - name: Look at the release
         run: |
