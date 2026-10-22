@@ -42,6 +42,12 @@ source "$(dirname "$0")/linux-packages-lib.sh"
 # DRI3 either.
 in_sandbox() { flatpak run --nodevice=dri --command="$1" "$app" "${@:2}"; }
 
+# The scratch files and folders of the checks below, removed when the script ends.
+err=
+work=
+runtime=
+trap 'rm -rf "$err" "$work" "$runtime"' EXIT
+
 name=$(basename "$bundle")
 if [[ "$name" == "Repeat-That_${version}_x86_64.flatpak" ]]; then
   ok "$name is named as expected"
