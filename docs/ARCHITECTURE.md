@@ -117,9 +117,10 @@ engine retries; a capture whose connection drops ends, and the next call connect
   and restored once it has played for a moment (WirePlumber sets the remembered volume a moment after the stream
   appears).
 - *Crash safety.* The duck guard is the app's executable started again, or `$APPIMAGE` when it runs from an AppImage,
-  whose mount goes away with the app; it waits with `pidfd_open` and `poll`. In a Flatpak (`FLATPAK_ID`, or
-  `/.flatpak-info`) there is no guard, because it would die with the sandbox: the journal restores ducked apps at the
-  next start.
+  whose mount goes away with the app; it waits with `pidfd_open` and `poll`. Before it disconnects it does a last
+  roundtrip, so the daemon has read every restored volume before the connection goes. In a Flatpak (`FLATPAK_ID`,
+  or `/.flatpak-info`) there is no guard, because it would die with the sandbox: the journal restores ducked apps at
+  the next start.
 - *Icons.* `app_icon` maps the executable's file name to a `.desktop` file (its `Exec`, `TryExec`, `StartupWMClass` or
   file name) in `$XDG_DATA_HOME` and `$XDG_DATA_DIRS`, and looks its `Icon=` up in the desktop's icon theme (from GTK's
   or KDE's settings) and `hicolor`: the smallest PNG at least the size asked for. SVG-only apps get the generic icon.
