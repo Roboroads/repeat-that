@@ -23,6 +23,15 @@ describe("renderDoc", () => {
     expect(long.summary!.endsWith("...")).toBe(true);
   });
 
+  it("decodes every entity in the summary, numeric ones included", async () => {
+    const { summary } = await renderDoc(
+      "# T\n\n`Repeat-That_<version>_x64-setup.exe` is the installer, 5 > 3 & \"quoted\" 'text'.\n",
+      "docs/install-windows.md",
+      routes,
+    );
+    expect(summary).toBe("Repeat-That_<version>_x64-setup.exe is the installer, 5 > 3 & \"quoted\" 'text'.");
+  });
+
   it("has no summary when the doc has no paragraph", async () => {
     expect((await renderDoc("# T\n", "docs/linux.md", routes)).summary).toBeUndefined();
   });

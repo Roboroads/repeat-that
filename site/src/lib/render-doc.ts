@@ -9,14 +9,21 @@ export interface RenderedDoc {
   summary: string | undefined;
 }
 
-const ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'", "&#x26;": "&" };
+const NAMED_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
+
+/** Decodes the entities the HTML serializer writes: the five named ones and numeric ones such as `&#x3C;`. */
+function decodeEntities(text: string): string {
+  return text.replace(/&(?:#x([0-9a-f]+)|#(\d+)|(amp|lt|gt|quot|apos));/gi, (entity, hex, decimal, name) => {
+    if (name) return NAMED_ENTITIES[name.toLowerCase()];
+    const code = hex ? parseInt(hex, 16) : parseInt(decimal, 10);
+    return code <= 0x10ffff ? String.fromCodePoint(code) : entity;
+  });
+}
 
 function summarize(html: string): string | undefined {
   const paragraph = /<p>([\s\S]*?)<\/p>/.exec(html)?.[1];
   if (!paragraph) return undefined;
-  const text = paragraph
-    .replace(/<[^>]+>/g, "")
-    .replace(/&(?:amp|lt|gt|quot|#39|#x26);/g, (entity) => ENTITIES[entity])
+  const text = decodeEntities(paragraph.replace(/<[^>]+>/g, ""))
     .replace(/\s+/g, " ")
     .trim();
   if (!text) return undefined;
