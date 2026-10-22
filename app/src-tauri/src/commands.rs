@@ -23,6 +23,7 @@ use crate::ipc::{AppEntry, CommandError, ConfigureOutcome, OutputDevice, Setting
 use crate::permission;
 use crate::service::{self, SettingsService};
 use crate::shortcut_page::PageOpener;
+use crate::updater::{self, UpdateStatus};
 
 /// Every command, for the app and its tests alike.
 pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'static {
@@ -41,6 +42,9 @@ pub fn handler<R: Runtime>() -> impl Fn(Invoke<R>) -> bool + Send + Sync + 'stat
         configure_shortcuts,
         quit_app,
         open_link,
+        get_update_status,
+        check_for_updates,
+        install_update,
         permission::capture_permission_help,
         permission::ask_for_capture_permission,
         permission::open_capture_permission_settings,
@@ -179,6 +183,33 @@ pub fn open_link<R: Runtime>(app: AppHandle<R>, url: String) -> Result<(), Comma
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|err| CommandError::backend(err.to_string()))
+}
+
+/// Where the app stands on updates: what it can do about them, and what it found.
+#[tauri::command]
+pub fn get_update_status<R: Runtime>(app: AppHandle<R>) -> UpdateStatus {
+    updater::current_status(&app)
+}
+
+/// Checks for an update now and answers when the check is over, with the status as it ends. Asked while a check, a
+/// download or an install is going on it answers at once with the status as it is. A check the user asks for works
+/// whatever they said about checking by themselves.
+#[tauri::command]
+pub async fn check_for_updates<R: Runtime>(app: AppHandle<R>) -> Result<UpdateStatus, CommandError> {
+    let Ok(service) = updater::service(&app) else {
+        return Ok(updater::current_status(&app));
+    };
+    // The network can take a while: not on the main thread.
+    off_the_main_thread(move || Ok(service.check(true))).await
+}
+
+/// Downloads and installs the update that was found, and restarts the app. Answers as soon as that is under way: the
+/// progress, and a failure, come with the `update-status` event. Refused when there is no update to install or this
+/// install can't replace itself.
+#[tauri::command]
+pub async fn install_update<R: Runtime>(app: AppHandle<R>) -> Result<(), CommandError> {
+    let service = updater::service(&app)?;
+    off_the_main_thread(move || service.install()).await
 }
 
 fn running_engine<R: Runtime>(app: &AppHandle<R>) -> Result<EngineHandle, CommandError> {
@@ -479,6 +510,212 @@ mod tests {
             .nth(1)
             .expect("the handler list");
         assert!(handler.split(']').next().unwrap().contains("quit_app"));
+    }
+
+    // Updates, on a fake source
+
+    use crate::updater::ShutdownTiming;
+    use crate::updater::fake::{entries, found};
+
+    fn update_status(h: &TestApp) -> Value {
+        invoke(h, "get_update_status", json!({})).unwrap()
+    }
+
+    fn wait_for_update(h: &TestApp, what: &str, done: impl Fn(&Value) -> bool) -> Value {
+        let last = std::cell::RefCell::new(Value::Null);
+        h.wait_until(Duration::from_secs(10), what, || {
+            *last.borrow_mut() = update_status(h);
+            done(&last.borrow())
+        });
+        last.into_inner()
+    }
+
+    fn offer(h: &TestApp, version: &str) {
+        h.update_source
+            .checks
+            .lock()
+            .unwrap()
+            .push_back(Ok(Some(found(version))));
+    }
+
+    #[test]
+    fn get_update_status_is_the_contract_with_the_window() {
+        let h = harness();
+        assert_eq!(
+            update_status(&h),
+            json!({
+                "mode": "install",
+                "modeReason": null,
+                "currentVersion": "0.1.0",
+                "state": "idle",
+                "available": null,
+                "progress": null,
+                "error": null,
+                "errorKind": null,
+                "lastCheckedAt": null,
+                "manual": false
+            })
+        );
+    }
+
+    #[test]
+    fn check_for_updates_finds_the_update_and_says_so_everywhere() {
+        let h = harness();
+        offer(&h, "0.2.0");
+        let status = invoke(&h, "check_for_updates", json!({})).unwrap();
+        assert_eq!(status["state"], "available");
+        assert_eq!(status["manual"], true);
+        assert_eq!(status["available"]["version"], "0.2.0");
+        assert_eq!(status["available"]["notes"], "Notes");
+        assert_eq!(
+            status["available"]["releaseUrl"],
+            "https://github.com/Roboroads/repeat-that/releases/tag/v0.2.0"
+        );
+        assert_eq!(update_status(&h), status);
+        // The window heard it, in order, and the tray menu offers the update.
+        h.wait_until(Duration::from_secs(10), "the events", || {
+            h.events(updater::STATUS_EVENT).last() == Some(&status)
+        });
+        let states: Vec<_> = h
+            .events(updater::STATUS_EVENT)
+            .iter()
+            .map(|event| event["state"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(states, ["idle", "checking", "available"]);
+        let shown = tray(&h).updates.expect("the tray has an update item");
+        assert_eq!(shown.state, updater::UpdateState::Available);
+        assert_eq!(shown.version.as_deref(), Some("0.2.0"));
+    }
+
+    #[test]
+    fn check_for_updates_with_nothing_new_is_up_to_date() {
+        let h = harness();
+        let status = invoke(&h, "check_for_updates", json!({})).unwrap();
+        assert_eq!(status["state"], "upToDate");
+        assert_eq!(status["available"], Value::Null);
+        assert!(
+            status["lastCheckedAt"]
+                .as_u64()
+                .is_some_and(|ms| ms > 1_700_000_000_000)
+        );
+    }
+
+    #[test]
+    fn a_failed_check_is_a_status_not_a_command_error() {
+        let h = harness();
+        h.update_source.checks.lock().unwrap().push_back(Err(
+            "Couldn't check for updates: the update server can't be reached.".into(),
+        ));
+        let status = invoke(&h, "check_for_updates", json!({})).unwrap();
+        assert_eq!(status["state"], "error");
+        assert_eq!(status["errorKind"], "check");
+        assert_eq!(
+            status["error"],
+            "Couldn't check for updates: the update server can't be reached."
+        );
+        assert_eq!(status["available"], Value::Null);
+    }
+
+    /// What an install does, in order, on this system.
+    fn install_order() -> [&'static str; 4] {
+        match ShutdownTiming::CURRENT {
+            ShutdownTiming::BeforeInstall => ["download", "shutdown", "install", "restart"],
+            ShutdownTiming::AfterInstall => ["download", "install", "shutdown", "restart"],
+        }
+    }
+
+    #[test]
+    fn install_update_downloads_installs_stops_the_engine_and_restarts_in_that_order() {
+        let h = harness();
+        offer(&h, "0.2.0");
+        invoke(&h, "check_for_updates", json!({})).unwrap();
+        assert_eq!(invoke(&h, "install_update", json!({})), Ok(Value::Null));
+        h.wait_until(Duration::from_secs(10), "the restart", || {
+            entries(&h.update_log).contains(&"restart".to_string())
+        });
+        let mut log = entries(&h.update_log);
+        assert_eq!(log.remove(0), "check");
+        assert_eq!(log, install_order());
+        let status = update_status(&h);
+        assert_eq!(status["state"], "installing");
+        assert_eq!(
+            status["available"]["version"], "0.2.0",
+            "the window names what is installing"
+        );
+    }
+
+    #[test]
+    fn a_failed_download_is_an_error_with_the_update_still_named_and_nothing_is_stopped() {
+        let h = harness();
+        *h.update_source.download.lock().unwrap() = Err("Couldn't install the update: the download failed.".into());
+        offer(&h, "0.2.0");
+        invoke(&h, "check_for_updates", json!({})).unwrap();
+        invoke(&h, "install_update", json!({})).unwrap();
+        let status = wait_for_update(&h, "the error", |status| status["state"] == "error");
+        assert_eq!(status["errorKind"], "install");
+        assert_eq!(status["error"], "Couldn't install the update: the download failed.");
+        assert_eq!(
+            status["available"]["releaseUrl"], "https://github.com/Roboroads/repeat-that/releases/tag/v0.2.0",
+            "the window links to the page to download it from"
+        );
+        assert_eq!(entries(&h.update_log), ["check", "download"], "no shutdown, no install");
+    }
+
+    #[test]
+    fn install_update_without_an_update_is_invalid() {
+        let h = harness();
+        let error = invoke(&h, "install_update", json!({})).unwrap_err();
+        assert_eq!(error["kind"], "invalid");
+        assert!(entries(&h.update_log).is_empty());
+    }
+
+    #[test]
+    fn install_update_twice_is_invalid_the_second_time() {
+        let h = harness();
+        offer(&h, "0.2.0");
+        invoke(&h, "check_for_updates", json!({})).unwrap();
+        invoke(&h, "install_update", json!({})).unwrap();
+        let error = invoke(&h, "install_update", json!({})).unwrap_err();
+        assert_eq!(error["kind"], "invalid");
+    }
+
+    #[test]
+    fn the_update_commands_are_registered() {
+        // The window's API file lists them too, once the window uses them; this is the other half.
+        let source = std::fs::read_to_string("src/commands.rs").expect("this file");
+        let handler = source
+            .split("tauri::generate_handler![")
+            .nth(1)
+            .expect("the handler list");
+        let handler = handler.split(']').next().unwrap();
+        for command in ["get_update_status", "check_for_updates", "install_update"] {
+            assert!(handler.contains(command), "{command}");
+        }
+    }
+
+    #[test]
+    fn the_answer_about_checking_by_itself_is_a_setting_and_reaches_the_schedule() {
+        let h = harness();
+        assert_eq!(
+            invoke(&h, "get_settings", json!({})).unwrap()["checkForUpdates"],
+            Value::Null
+        );
+        let updated = invoke(&h, "update_settings", json!({ "patch": { "checkForUpdates": true } })).unwrap();
+        assert_eq!(updated["checkForUpdates"], true);
+        assert_eq!(h.persistence.saves().last().unwrap().check_for_updates, Some(true));
+    }
+
+    #[test]
+    fn the_trays_check_for_updates_starts_a_check_the_user_asked_for() {
+        let h = harness();
+        offer(&h, "0.2.0");
+        actions::dispatch(AppAction::CheckForUpdates, h.app.handle());
+        let status = wait_for_update(&h, "the update", |status| status["state"] == "available");
+        assert_eq!(status["manual"], true);
+        // With an update found, the item only opens the window.
+        actions::dispatch(AppAction::CheckForUpdates, h.app.handle());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(h.update_source.checks_made(), 1);
     }
 
     // The status, and the commands of the audio engine, on the real engine capturing the fixture.

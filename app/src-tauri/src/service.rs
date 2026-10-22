@@ -16,6 +16,7 @@ use crate::locking::lock;
 use crate::session::{SharedSession, choose_backend};
 use crate::settings::{apply_patch, sanitize};
 use crate::store::{InMemoryPersistence, StorePersistence, settings_file};
+use crate::updater;
 
 /// Where settings are kept between runs.
 pub trait SettingsPersistence: Send + Sync {
@@ -239,6 +240,7 @@ pub fn install_with<R: Runtime>(
                 eprintln!("could not announce the new settings: {err}");
             }
             engine::settings_changed(&emitter, settings);
+            updater::settings_changed(&emitter, settings);
         }),
     );
     app.manage(service);

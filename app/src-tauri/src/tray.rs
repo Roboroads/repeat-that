@@ -13,6 +13,7 @@ use crate::actions::{self, AppAction};
 use crate::ipc::{CaptureStateName, HotkeyBackendKind, HotkeyBindings, HotkeyState, HotkeyStates, Playback, Status};
 use crate::settings::HOTKEY_ACTIONS;
 use crate::source::UNSUPPORTED;
+use crate::updater::{UpdateMode, UpdateState, UpdateStatus};
 
 /// The window title and the start of the tooltip.
 const APP_NAME: &str = "Repeat That";
@@ -175,7 +176,7 @@ impl HotkeyLabels {
                 AppAction::Replay => labels.replay = label,
                 AppAction::CatchUp => labels.catch_up = label,
                 AppAction::Stop => labels.stop = label,
-                AppAction::TogglePause | AppAction::OpenSettings | AppAction::Quit => {}
+                AppAction::TogglePause | AppAction::OpenSettings | AppAction::CheckForUpdates | AppAction::Quit => {}
             }
         }
         labels
@@ -197,11 +198,45 @@ impl HotkeyLabels {
     }
 }
 
-/// Everything the tray shows: the status and the hotkeys.
+/// The slice of the update status the tray shows: where the update is, and which version once one is found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateTrayView {
+    pub state: UpdateState,
+    pub version: Option<String>,
+}
+
+impl UpdateTrayView {
+    /// What the tray shows for `status`; `None` where the app never looks for updates (the menu has no item then, and
+    /// that holds for the whole run, so the set of items never changes).
+    pub fn from_status(status: &UpdateStatus) -> Option<Self> {
+        let looks = matches!(status.mode, UpdateMode::Install | UpdateMode::Notify);
+        looks.then(|| UpdateTrayView {
+            state: status.state,
+            version: status.available.as_ref().map(|update| update.version.clone()),
+        })
+    }
+
+    /// The text of the menu item and whether it can be clicked.
+    fn item(&self) -> (String, bool) {
+        match self.state {
+            UpdateState::Idle | UpdateState::UpToDate | UpdateState::Error => ("Check for updates…".into(), true),
+            UpdateState::Checking => ("Checking for updates…".into(), false),
+            UpdateState::Available => match &self.version {
+                Some(version) => (format!("Update to {version}…"), true),
+                None => ("Update available…".into(), true),
+            },
+            UpdateState::Downloading | UpdateState::Installing => ("Downloading update…".into(), false),
+        }
+    }
+}
+
+/// Everything the tray shows: the status, the hotkeys and the updates.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrayState {
     pub status: TrayStatus,
     pub hotkeys: HotkeyLabels,
+    /// `None` = no "Check for updates" item.
+    pub updates: Option<UpdateTrayView>,
 }
 
 pub const STATUS_ID: &str = "status";
@@ -229,8 +264,9 @@ pub struct TrayModel {
     pub entries: Vec<MenuEntry>,
 }
 
-/// Everything the tray shows for `status`: icon, tooltip and menu.
-pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
+/// Everything the tray shows for `status`: icon, tooltip and menu. `updates` adds the "Check for updates" item, which
+/// comes after Settings.
+pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels, updates: Option<&UpdateTrayView>) -> TrayModel {
     let status_line = status.status_line();
     let action = |action: AppAction, label: &str, hotkey: Option<&str>| {
         let label = match hotkey {
@@ -244,7 +280,7 @@ pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
             checked: None,
         })
     };
-    let entries = vec![
+    let mut entries = vec![
         MenuEntry::Item(MenuItemModel {
             id: STATUS_ID,
             label: status_line.clone(),
@@ -262,9 +298,19 @@ pub fn build_model(status: &TrayStatus, hotkeys: &HotkeyLabels) -> TrayModel {
             checked: Some(status.is_paused()),
         }),
         action(AppAction::OpenSettings, "Settings…", None),
-        MenuEntry::Separator,
-        action(AppAction::Quit, "Quit", None),
     ];
+    // Where the app looks for updates, which holds for the whole run, so the items of the menu never change.
+    if let Some(updates) = updates {
+        let (label, enabled) = updates.item();
+        entries.push(MenuEntry::Item(MenuItemModel {
+            id: AppAction::CheckForUpdates.id(),
+            label,
+            enabled,
+            checked: None,
+        }));
+    }
+    entries.push(MenuEntry::Separator);
+    entries.push(action(AppAction::Quit, "Quit", None));
     TrayModel {
         icon: status.icon(),
         tooltip: format!("{APP_NAME} - {status_line}"),
@@ -461,7 +507,7 @@ fn apply_status<R: Runtime>(app: &AppHandle<R>) {
 fn current_model<R: Runtime>(app: &AppHandle<R>) -> TrayModel {
     let shared = app.state::<SharedStatus>();
     let state = lock_status(&shared);
-    build_model(&state.status, &state.hotkeys)
+    build_model(&state.status, &state.hotkeys, state.updates.as_ref())
 }
 
 fn build_menu<R: Runtime>(app: &AppHandle<R>, model: &TrayModel) -> tauri::Result<Menu<R>> {
@@ -613,9 +659,9 @@ mod tests {
 
     #[test]
     fn tooltip_is_the_app_name_and_the_status_line() {
-        let model = build_model(&capturing("Discord", 24), &HotkeyLabels::default());
+        let model = build_model(&capturing("Discord", 24), &HotkeyLabels::default(), None);
         assert_eq!(model.tooltip, "Repeat That - Capturing Discord · 24 s of speech");
-        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default(), None);
         assert_eq!(model.tooltip, "Repeat That - No app selected");
     }
 
@@ -629,7 +675,7 @@ mod tests {
 
     #[test]
     fn no_hotkeys_are_shown_until_they_are_registered() {
-        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default(), None);
         assert_eq!(item(&model, AppAction::Replay.id()).label, "Replay");
         assert_eq!(item(&model, AppAction::CatchUp.id()).label, "Catch-up");
         assert_eq!(item(&model, AppAction::Stop.id()).label, "Stop");
@@ -637,7 +683,7 @@ mod tests {
 
     #[test]
     fn menu_layout() {
-        let model = build_model(&capturing("Discord", 24), &bound_hotkeys());
+        let model = build_model(&capturing("Discord", 24), &bound_hotkeys(), None);
         let layout: Vec<String> = model
             .entries
             .iter()
@@ -662,9 +708,164 @@ mod tests {
         );
     }
 
+    fn updates(state: UpdateState, version: Option<&str>) -> UpdateTrayView {
+        UpdateTrayView {
+            state,
+            version: version.map(String::from),
+        }
+    }
+
+    fn check_item(state: UpdateState, version: Option<&str>) -> (String, bool) {
+        let view = updates(state, version);
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default(), Some(&view));
+        let item = item(&model, "check_updates");
+        (item.label.clone(), item.enabled)
+    }
+
+    #[test]
+    fn there_is_no_update_item_where_the_app_never_looks() {
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default(), None);
+        assert!(items(&model).iter().all(|i| i.id != "check_updates"));
+    }
+
+    #[test]
+    fn the_update_item_sits_after_settings() {
+        let view = updates(UpdateState::Idle, None);
+        let model = build_model(&capturing("Discord", 24), &bound_hotkeys(), Some(&view));
+        let ids: Vec<&str> = model
+            .entries
+            .iter()
+            .map(|e| match e {
+                MenuEntry::Item(i) => i.id,
+                MenuEntry::Separator => "---",
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "status",
+                "replay",
+                "catch_up",
+                "stop",
+                "---",
+                "toggle_pause",
+                "open_settings",
+                "check_updates",
+                "---",
+                "quit"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_update_item_offers_a_check_until_one_runs() {
+        for state in [UpdateState::Idle, UpdateState::UpToDate, UpdateState::Error] {
+            assert_eq!(
+                check_item(state, None),
+                ("Check for updates…".to_string(), true),
+                "{state:?}"
+            );
+        }
+        assert_eq!(
+            check_item(UpdateState::Checking, None),
+            ("Checking for updates…".to_string(), false)
+        );
+    }
+
+    #[test]
+    fn the_update_item_names_the_version_that_was_found() {
+        assert_eq!(
+            check_item(UpdateState::Available, Some("0.3.0")),
+            ("Update to 0.3.0…".to_string(), true)
+        );
+        assert_eq!(
+            check_item(UpdateState::Available, None),
+            ("Update available…".to_string(), true)
+        );
+    }
+
+    #[test]
+    fn the_update_item_waits_while_an_update_comes_in() {
+        for state in [UpdateState::Downloading, UpdateState::Installing] {
+            assert_eq!(
+                check_item(state, Some("0.3.0")),
+                ("Downloading update…".to_string(), false),
+                "{state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_update_item_runs_an_action() {
+        let view = updates(UpdateState::Idle, None);
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default(), Some(&view));
+        for i in items(&model).into_iter().filter(|i| i.id != STATUS_ID) {
+            assert!(AppAction::from_id(i.id).is_some(), "{}", i.id);
+        }
+        assert_eq!(AppAction::from_id("check_updates"), Some(AppAction::CheckForUpdates));
+    }
+
+    fn update_status(mode: UpdateMode, state: UpdateState, version: Option<&str>) -> UpdateStatus {
+        UpdateStatus {
+            mode,
+            mode_reason: None,
+            current_version: "0.1.0".into(),
+            state,
+            available: version.map(|version| crate::updater::AvailableUpdate {
+                version: version.into(),
+                date: None,
+                notes: String::new(),
+                release_url: format!("https://github.com/Roboroads/repeat-that/releases/tag/v{version}"),
+            }),
+            progress: None,
+            error: None,
+            error_kind: None,
+            last_checked_at: None,
+            manual: false,
+        }
+    }
+
+    #[test]
+    fn the_tray_follows_the_update_status_where_the_app_looks() {
+        for mode in [UpdateMode::Install, UpdateMode::Notify] {
+            let status = update_status(mode, UpdateState::Available, Some("0.3.0"));
+            assert_eq!(
+                UpdateTrayView::from_status(&status),
+                Some(updates(UpdateState::Available, Some("0.3.0"))),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_tray_has_no_update_item_where_the_app_never_looks() {
+        for mode in [UpdateMode::External, UpdateMode::Off] {
+            let status = update_status(mode, UpdateState::Idle, None);
+            assert_eq!(UpdateTrayView::from_status(&status), None, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_change_of_update_state_touches_only_the_update_item() {
+        let status = TrayStatus::default();
+        let shown = build_model(
+            &status,
+            &HotkeyLabels::default(),
+            Some(&updates(UpdateState::Idle, None)),
+        );
+        let next = build_model(
+            &status,
+            &HotkeyLabels::default(),
+            Some(&updates(UpdateState::Checking, None)),
+        );
+        let mut tray = FakeTray::default();
+        sync(&Mutex::new(shown), &next, &mut tray);
+        assert_eq!(tray.calls, ["item check_updates"]);
+    }
+
     #[test]
     fn status_line_item_is_disabled_and_the_rest_are_enabled() {
-        let model = build_model(&capturing("Discord", 1), &HotkeyLabels::default());
+        let model = build_model(&capturing("Discord", 1), &HotkeyLabels::default(), None);
         for i in items(&model) {
             assert_eq!(i.enabled, i.id != STATUS_ID, "{}", i.id);
         }
@@ -679,7 +880,7 @@ mod tests {
                 ..TrayStatus::default()
             };
             item(
-                &build_model(&status, &HotkeyLabels::default()),
+                &build_model(&status, &HotkeyLabels::default(), None),
                 AppAction::TogglePause.id(),
             )
             .enabled
@@ -696,9 +897,9 @@ mod tests {
     #[test]
     fn pause_item_is_a_checkbox_that_follows_the_state() {
         let hotkeys = HotkeyLabels::default();
-        let running = build_model(&capturing("Discord", 1), &hotkeys);
+        let running = build_model(&capturing("Discord", 1), &hotkeys, None);
         assert_eq!(item(&running, AppAction::TogglePause.id()).checked, Some(false));
-        let model = build_model(&paused(), &hotkeys);
+        let model = build_model(&paused(), &hotkeys, None);
         assert_eq!(item(&model, AppAction::TogglePause.id()).checked, Some(true));
         assert_eq!(model.icon, TrayIconKind::Paused);
         assert_eq!(item(&model, STATUS_ID).label, "Paused");
@@ -717,7 +918,7 @@ mod tests {
             catch_up: Some("Ctrl+Alt+C".into()),
             stop: None,
         };
-        let model = build_model(&TrayStatus::default(), &hotkeys);
+        let model = build_model(&TrayStatus::default(), &hotkeys, None);
         assert_eq!(item(&model, AppAction::Replay.id()).label, "Replay");
         assert_eq!(item(&model, AppAction::CatchUp.id()).label, "Catch-up (Ctrl+Alt+C)");
         assert_eq!(item(&model, AppAction::Stop.id()).label, "Stop");
@@ -725,7 +926,7 @@ mod tests {
 
     #[test]
     fn every_menu_item_except_the_status_line_maps_to_an_action() {
-        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default());
+        let model = build_model(&TrayStatus::default(), &HotkeyLabels::default(), None);
         for i in items(&model).into_iter().filter(|i| i.id != STATUS_ID) {
             assert!(AppAction::from_id(i.id).is_some(), "{}", i.id);
         }
@@ -783,7 +984,7 @@ mod tests {
         assert_eq!(tray.capture, CaptureView::NotAllowed);
         assert_eq!(tray.status_line(), "Not allowed to capture audio");
         assert_eq!(tray.icon(), TrayIconKind::Idle);
-        let model = build_model(&tray, &HotkeyLabels::default());
+        let model = build_model(&tray, &HotkeyLabels::default(), None);
         assert_eq!(model.tooltip, "Repeat That - Not allowed to capture audio");
         assert_eq!(item(&model, STATUS_ID).label, "Not allowed to capture audio");
         // Pausing works, replays still play what was buffered, and Settings opens the window with the steps.
@@ -832,7 +1033,7 @@ mod tests {
                 behind: Some(Duration::from_millis(2600)),
             }
         );
-        let model = build_model(&tray, &HotkeyLabels::default());
+        let model = build_model(&tray, &HotkeyLabels::default(), None);
         assert_eq!(model.tooltip, "Repeat That - Replaying · 3 s behind live");
         let catching_up = Status {
             playback: Playback::CatchingUp,
@@ -952,7 +1153,7 @@ mod tests {
         );
         let labels = HotkeyLabels::for_status(&HotkeyBindings::default(), &status);
         assert_eq!(labels, HotkeyLabels::default());
-        let model = build_model(&TrayStatus::default(), &labels);
+        let model = build_model(&TrayStatus::default(), &labels, None);
         assert_eq!(item(&model, "replay").label, "Replay");
     }
 
@@ -979,6 +1180,7 @@ mod tests {
         let model = build_model(
             &TrayStatus::default(),
             &HotkeyLabels::for_status(&HotkeyBindings::default(), &status),
+            None,
         );
         assert_eq!(item(&model, "replay").label, "Replay (Meta+Shift+R)");
         assert_eq!(item(&model, "stop").label, "Stop (Meta+Escape)");
@@ -1024,7 +1226,7 @@ mod tests {
     }
 
     fn model(status: &TrayStatus) -> TrayModel {
-        build_model(status, &HotkeyLabels::default())
+        build_model(status, &HotkeyLabels::default(), None)
     }
 
     /// Syncs a tray showing `from` to `to` and returns what was changed.
@@ -1063,7 +1265,11 @@ mod tests {
             ..HotkeyLabels::default()
         };
         let mut tray = FakeTray::default();
-        sync(&Mutex::new(model(&status)), &build_model(&status, &hotkeys), &mut tray);
+        sync(
+            &Mutex::new(model(&status)),
+            &build_model(&status, &hotkeys, None),
+            &mut tray,
+        );
         assert_eq!(tray.calls, ["item replay"]);
     }
 

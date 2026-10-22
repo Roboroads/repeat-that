@@ -74,6 +74,9 @@ pub struct Settings {
     pub hotkeys: HotkeyBindings,
     pub autostart: bool,
     pub first_run_done: bool,
+    /// Whether the app may ask GitHub by itself, once a day, if there is a new version: `None` = not asked yet, which
+    /// counts as no. The user's own "Check for updates" works either way.
+    pub check_for_updates: Option<bool>,
 }
 
 /// Whether an action's hotkey is live.
@@ -374,6 +377,8 @@ pub struct SettingsPatch {
     pub hotkeys: Option<HotkeysPatch>,
     pub autostart: Option<bool>,
     pub first_run_done: Option<bool>,
+    /// `null` is the same as leaving it out: there is no taking the answer back to "not asked yet".
+    pub check_for_updates: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
