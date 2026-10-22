@@ -40,6 +40,16 @@ describe("detectOs from the user agent", () => {
     expect(detectOs(IPHONE)).toBeNull();
   });
 
+  it("is not fooled by a word that contains cros, such as Microsoft", () => {
+    expect(detectOs(`${WINDOWS} Microsoft Office/16.0`)).toBe("windows");
+    expect(detectOs("Mozilla/5.0 (Windows NT 10.0; Microsoft Outlook 16.0) Linux-free")).toBe("windows");
+  });
+
+  it("returns null for an iPad that says so, since its string also says Mac OS X", () => {
+    const iPad = "Mozilla/5.0 (iPad; CPU OS 12_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.1.2 Mobile/15E148 Safari/604.1";
+    expect(detectOs(iPad)).toBeNull();
+  });
+
   it("returns null for an empty or unknown user agent", () => {
     expect(detectOs("")).toBeNull();
     expect(detectOs("curl/8.5.0")).toBeNull();
