@@ -532,8 +532,9 @@ change: [submission](https://docs.flathub.org/docs/for-app-authors/submission) a
   `$XDG_RUNTIME_DIR/app/me.roboroads.RepeatThat`, which the tray can read.
 - *No network and no filesystem access.* The app has no network code; audio never leaves memory. Settings and the duck
   journal (the volumes to give back after a crash) are in the app's own folders.
-- *Start at login* goes through the Background portal (`RequestBackground`), the Wayland hotkeys through the
-  GlobalShortcuts portal.
+- *Start at login* goes through the Background portal (`RequestBackground`), and so does the permission to run in the
+  background, which the app asks for at start because it lives in the tray without a window. The Wayland hotkeys go
+  through the GlobalShortcuts portal.
 - *The prebuilt ONNX Runtime.* The speech detector (Silero VAD) runs on ONNX Runtime, linked statically from the file that
   the `ort` crate downloads for x86_64 Linux. The manifest pins its URL and sha256, and CI checks the pin against
   `Cargo.lock`. If Flathub wants it built from source, see the fallback in [Flatpak](#flatpak).

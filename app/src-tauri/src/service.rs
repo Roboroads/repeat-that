@@ -218,6 +218,8 @@ fn os_autostart<R: Runtime>(app: &AppHandle<R>) -> Arc<dyn Autostart> {
                 service.autostart_refused(&reason);
             }
         });
+        // The app lives in the tray without a window, which a desktop may not allow without this permission.
+        portal.ask_for_background();
         return Arc::new(portal);
     }
     Arc::new(OsAutostart(app.clone()))

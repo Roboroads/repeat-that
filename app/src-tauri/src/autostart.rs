@@ -36,6 +36,11 @@ pub use portal::PortalAutostart;
 /// still running. The answer comes later and is checked against what the settings want by then
 /// ([`Inner::settled`]): a refusal turns the setting back off, and a late "yes" to what has been turned off since is
 /// taken back.
+///
+/// The app is also a background app, one with no window while it sits in the tray, and a desktop may end such an app
+/// that has not been allowed to run in the background. [`PortalAutostart::ask_for_background`] asks for that at start.
+/// The portal remembers the answer, so it asks the user once. If the answer is no, the app says so on its error output
+/// and the documentation says how to allow it (`docs/install-linux.md`); it doesn't change what the app does.
 #[cfg(target_os = "linux")]
 mod portal {
     use std::future::Future;
@@ -54,6 +59,11 @@ mod portal {
 
     /// The program and arguments of the entry the portal makes: the app, hidden in the tray as in the other packages.
     const COMMAND: [&str; 2] = ["repeat-that", HIDDEN_ARG];
+
+    /// What the app says when the system won't let it run in the background.
+    const BACKGROUND_REFUSED: &str = "the system does not allow Repeat That to run in the background, so it may end it \
+        once its window is closed. Allow it in your desktop's settings for the app, or with: \
+        flatpak permission-set background background me.roboroads.RepeatThat yes";
 
     /// What the portal said to a request.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +107,27 @@ mod portal {
                 }),
             }
         }
+
+        /// Asks for the permission to run in the background, without touching Start at login. The desktop asks the
+        /// user the first time, and the portal gives the same answer unasked after that. Returns at once.
+        pub fn ask_for_background(&self) {
+            let inner = Arc::clone(&self.inner);
+            tauri::async_runtime::spawn(async move {
+                match (inner.ask)(None).await {
+                    Ok(granted) => {
+                        if let Some(note) = background_note(granted) {
+                            eprintln!("{note}");
+                        }
+                    }
+                    Err(err) => eprintln!("could not ask whether Repeat That may run in the background: {err}"),
+                }
+            });
+        }
+    }
+
+    /// What to tell the user about the answer to the permission request, if anything.
+    fn background_note(granted: Granted) -> Option<&'static str> {
+        (!granted.background).then_some(BACKGROUND_REFUSED)
     }
 
     impl Autostart for PortalAutostart {
@@ -449,6 +480,24 @@ mod portal {
             held.answer(0, Err("the portal is gone".into()));
             held.settle();
             assert!(held.refused().is_empty());
+        }
+
+        #[test]
+        fn the_background_permission_is_asked_alone_and_a_no_is_not_a_refusal_of_start_at_login() {
+            let held = held();
+            held.portal.ask_for_background();
+            held.wait_for("the request", |held| held.asked() == [None]);
+            held.answer(0, Ok(granted(false, false)));
+            held.settle();
+            assert!(held.refused().is_empty());
+            assert_eq!(held.asked(), [None]);
+        }
+
+        #[test]
+        fn a_background_no_is_noted_with_how_to_allow_it() {
+            let note = background_note(granted(false, false)).expect("a note");
+            assert!(note.contains("flatpak permission-set background background me.roboroads.RepeatThat yes"));
+            assert_eq!(background_note(granted(true, false)), None);
         }
 
         #[test]

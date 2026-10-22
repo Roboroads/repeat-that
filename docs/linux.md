@@ -80,4 +80,6 @@ without a window, also on a desktop with no tray.
 In a Flatpak, the app can't write that file: the system does, when Repeat That asks through the Background portal, and
 your desktop asks you first. The entry is `~/.config/autostart/me.roboroads.RepeatThat.desktop` and starts the Flatpak
 with `--hidden`. The portal can't tell the app whether the entry is still there, so removing it in your desktop's
-settings doesn't turn the switch off: turn it off and on again.
+settings doesn't turn the switch off: turn it off and on again. If you answer no to the desktop's question, the switch
+turns itself off again. The Flatpak also asks, at every start, for permission to run in the background (the portal
+asks you once), see [install-linux.md](install-linux.md#install-the-flatpak).

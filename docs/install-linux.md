@@ -96,9 +96,16 @@ Flatpak with the socket could do the same. Differences from the packages:
 - **Commands for custom shortcuts** are `flatpak run me.roboroads.RepeatThat --replay`, `--stop` and `--catch-up`. The
   Hotkeys section shows them when your desktop can't give the app hotkeys.
 - **Start at login** asks the system through the Background portal. The first time, your desktop asks whether to allow
-  it, and the entry is made on the host and starts the app hidden, as in the other packages. The app can't read the
-  entry back, so if you remove it in your desktop's settings, the switch in Repeat That stays on: turn it off and on
-  again.
+  it, and the entry is made on the host and starts the app hidden, as in the other packages. The question can stay open
+  as long as you like: the settings window and the tray go on working meanwhile. If you say no, or close it, the
+  switch turns itself off again. The app can't read the entry back, so if you remove it in your desktop's settings,
+  the switch in Repeat That stays on: turn it off and on again.
+- **Running in the background.** With its window closed, Repeat That sits in the tray, which a desktop counts as a
+  background app. At every start it asks the same portal for permission to run in the background: your desktop asks
+  you once, and remembers the answer. If you said no, some desktops end an app like that when its window is closed, and
+  the hotkeys end with it. Repeat That doesn't change what it does then, only says so on its error output. Allow it in
+  your desktop's settings for the app, or with
+  `flatpak permission-set background background me.roboroads.RepeatThat yes`.
 - **After a crash during a replay**, the app you were catching up on stays at the lowered volume until you start Repeat
   That again, which then gives it back. The packages keep a small helper process alive that restores the volume at once,
   and a sandbox can't outlive its app. A `kill -9` or a power cut is the case: quitting Repeat That restores the volume

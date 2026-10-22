@@ -286,7 +286,13 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
 - In a Flatpak (`app/src-tauri/src/sandbox.rs`: `FLATPAK_ID`, or `/.flatpak-info`) three things differ. Start at login
   goes through the Background portal (`PortalAutostart` in `autostart.rs`: `RequestBackground` with `autostart` and the
   command `repeat-that --hidden`), because the plugin's entry would land in the sandbox's config folder. The portal can't
-  tell whether an entry exists, so the stored flag is the truth (`reconcile`). The tray icon file goes to
+  tell whether an entry exists, so the stored flag is the truth (`reconcile`). The portal answers when the user does, so
+  `set_enabled` only sends the request, on the async runtime, and returns: nothing waits for a dialog, and the answer is
+  checked against the setting when it comes. A refusal turns the setting off again (`SettingsService::autostart_refused`,
+  which doesn't ask the OS again), and a late "yes" to what was turned off meanwhile is taken back with another request.
+  Since the app sits in the tray with no window, a desktop may end it unless it may run in the background, so at start it
+  also sends a `RequestBackground` without `autostart` (the portal asks the user once and remembers). A "no" is only
+  logged, with `flatpak permission-set background background me.roboroads.RepeatThat yes` as the way to allow it. The tray icon file goes to
   `$XDG_RUNTIME_DIR/app/$FLATPAK_ID`, the folder the sandbox shares with the host at the same path, so the desktop's tray
   can read it (the library's default, `$XDG_RUNTIME_DIR/tray-icon`, is inside the sandbox). And the app doesn't tell the
   portal an app ID (`register_host_app`) or name its shortcuts in kglobalaccel: the portal knows a Flatpak by its ID and
