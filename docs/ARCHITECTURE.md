@@ -209,9 +209,11 @@ Models are downloaded on demand; transcripts follow the same memory-only rule.
   builds `REPEAT_THAT_NULL_OUTPUT=1` plays replays into nothing and `REPEAT_THAT_MOCK_PERMISSION=denied` refuses
   captures as macOS does without the permission, until "Ask again" in the window. Quit stops the engine, which wipes
   the buffer and gives the app its volume back.
-- While capture is *not allowed*, the status bar shows the steps to allow it and the buttons the OS supports
-  (`capture_permission_help`): "Open System Settings" on macOS 15 and later, "Ask again" on 14.2 and later. Both are
-  commands in `app/src-tauri/src/permission.rs`, so the opener plugin stays limited to this project's GitHub pages.
+- While capture is *not allowed*, the status bar shows the backend's sentence on how to allow it and the buttons the
+  OS supports (`capture_permission_help`): "Open System Settings" on macOS 15 and later, "Ask again" on 14.2 and later.
+  Both are commands in `app/src-tauri/src/permission.rs`, so the opener plugin stays limited to this project's GitHub
+  pages. When macOS takes the permission back during a capture, the capture ends and says so
+  (`CaptureHandle::refused`), and the engine goes straight to *not allowed*.
 - The engine's status, the hotkey states and whether settings can be saved go to the window as one `status` event
   (contract in `app/src/lib/api.ts`, Rust side in `app/src-tauri/src/ipc.rs`).
 - Hidden argument `--rt-self-check` (`app/src-tauri/src/self_check.rs`): the app loads Silero the way the engine does,
