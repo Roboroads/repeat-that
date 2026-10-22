@@ -4,12 +4,14 @@ Repeat That needs 64-bit Windows 10 version 2004 (build 19041) or newer, or Wind
 supported yet.
 
 The app is free and volunteer-run, and the installer isn't code-signed yet (we're applying for free signing through
-[SignPath Foundation](https://signpath.org)). Windows therefore shows a SmartScreen warning the first time you run it.
-That's expected; the steps below get you past it.
+[SignPath Foundation](https://signpath.org), see the [code signing policy](code-signing.md)). Windows therefore shows a
+SmartScreen warning the first time you run it. That's expected; the steps below get you past it.
 
 ## Download
 
-Get the installer from the [Releases page](https://github.com/Roboroads/repeat-that/releases). Each release has:
+Get the installer from the [website](https://repeat-that.roboroads.me), which links the latest one and shows its
+checksum, or from the [Releases page](https://github.com/Roboroads/repeat-that/releases), which has every version. Each
+release has:
 
 - `Repeat-That_<version>_x64-setup.exe` is the installer. It installs for your user only (under `%LOCALAPPDATA%`) and
   doesn't ask for administrator rights.
@@ -25,7 +27,8 @@ Get the installer from the [Releases page](https://github.com/Roboroads/repeat-t
    click the **^** arrow next to the clock. Later you can start it from the **Repeat That** entry in the Start menu.
 
 After that, pick the app whose audio you want to keep (Discord, Teams, your browser, ...) in the settings window.
-Captured audio stays in memory and is never written to disk; see [PRIVACY.md](../PRIVACY.md).
+[guide.md](guide.md) explains the hotkeys and the settings. Captured audio stays in memory and is never written to
+disk; see [PRIVACY.md](../PRIVACY.md).
 
 ## Verify your download
 
