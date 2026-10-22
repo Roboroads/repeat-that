@@ -2,7 +2,7 @@
   import type { Settings } from '../api';
   import { openExternal } from '../opener';
   import type { SettingsStore } from '../store.svelte';
-  import { isLink } from '../updates';
+  import { checksForUpdates, isLink } from '../updates';
 
   interface Props {
     store: SettingsStore;
@@ -16,7 +16,7 @@
   const offer = $derived(update.available);
 
   // Only a build that checks can be asked; `null` is "not asked yet".
-  const asking = $derived((update.mode === 'install' || update.mode === 'notify') && settings.checkForUpdates === null);
+  const asking = $derived(checksForUpdates(update.mode) && settings.checkForUpdates === null);
 
   /**
    * What to say about the version on offer. A download or install under way is always shown. A version the user put

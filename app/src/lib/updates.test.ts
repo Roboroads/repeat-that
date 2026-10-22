@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatChecked, isLink, versionLine } from './updates';
+import { checksForUpdates, formatChecked, isLink, versionLine } from './updates';
 
 // Local time, so the expected text does not depend on the machine's time zone.
 const at = (day: number, hour: number, minute: number) => new Date(2026, 9, day, hour, minute).getTime();
@@ -35,5 +35,16 @@ describe('isLink', () => {
     expect(isLink('http://github.com/Roboroads/repeat-that')).toBe(false);
     expect(isLink('javascript:alert(1)')).toBe(false);
     expect(isLink('')).toBe(false);
+  });
+});
+
+describe('checksForUpdates', () => {
+  it.each([
+    ['install', true],
+    ['notify', true],
+    ['external', false],
+    ['off', false],
+  ] as const)('mode %s looks for updates itself: %s', (mode, checks) => {
+    expect(checksForUpdates(mode)).toBe(checks);
   });
 });

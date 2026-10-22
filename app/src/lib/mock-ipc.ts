@@ -19,6 +19,7 @@ import type {
 } from './api';
 import { matchesTarget } from './apps';
 import { clamp, defaultSettings, duckLevelLimits, LIMITS, NO_UPDATER_REASON, offUpdateStatus } from './defaults';
+import { checksForUpdates } from './updates';
 
 export const SCENARIOS = [
   'first-run',
@@ -364,7 +365,7 @@ export class MockBackend {
   }
 
   private checksByItself(): boolean {
-    return this.updates.mode === 'install' || this.updates.mode === 'notify';
+    return checksForUpdates(this.updates.mode);
   }
 
   private pushUpdate(next: Partial<UpdateStatus>): UpdateStatus {

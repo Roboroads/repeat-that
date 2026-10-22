@@ -1,3 +1,5 @@
+import type { UpdateMode } from './api';
+
 /** When the last update check happened, for the line under the update switch: "never", "14:32" or "21 Oct, 14:32". */
 export function formatChecked(at: number | null, now: number = Date.now(), locale?: string): string {
   if (at === null) return 'never';
@@ -11,6 +13,11 @@ export function formatChecked(at: number | null, now: number = Date.now(), local
 export function versionLine(version: string, lastCheckedAt: number | null, now?: number, locale?: string): string {
   const checked = formatChecked(lastCheckedAt, now, locale);
   return version === '' ? `Last checked ${checked}` : `Version ${version} · last checked ${checked}`;
+}
+
+/** Whether a build in `mode` looks for new versions itself (and so asks, and has a switch and a button). */
+export function checksForUpdates(mode: UpdateMode): boolean {
+  return mode === 'install' || mode === 'notify';
 }
 
 /** The release page comes from the backend; the window only opens it when it is a web address. */

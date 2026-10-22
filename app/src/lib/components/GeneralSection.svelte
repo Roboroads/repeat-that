@@ -4,7 +4,7 @@
   import { openExternal } from '../opener';
   import { isWindows } from '../platform';
   import type { SettingsStore } from '../store.svelte';
-  import { versionLine } from '../updates';
+  import { checksForUpdates, versionLine } from '../updates';
   import MacosNotice from './MacosNotice.svelte';
   import Section from './Section.svelte';
   import Switch from './Switch.svelte';
@@ -31,7 +31,7 @@
   const uid = $props.id();
   const update = $derived(store.updates);
   /** Only a build that looks for updates itself has a switch and a button; the others just say why not. */
-  const checks = $derived(update.mode === 'install' || update.mode === 'notify');
+  const checks = $derived(checksForUpdates(update.mode));
   const busy = $derived(
     store.updateCallPending ||
       update.state === 'checking' ||
