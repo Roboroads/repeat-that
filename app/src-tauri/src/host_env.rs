@@ -15,7 +15,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, ExitCode};
 
 /// What the AppImage runtime sets for the app itself: none of it belongs to another program.
 const RUNTIME_VARS: &[&str] = &["APPDIR", "APPIMAGE", "ARGV0", "OWD"];
@@ -91,6 +91,8 @@ pub fn in_appimage() -> bool {
 /// environment, and doesn't wait for it.
 #[cfg(target_os = "linux")]
 pub fn open_url(url: &str) -> Result<(), String> {
+    use std::process::Stdio;
+
     let mut last_error = String::from("no program to open links with");
     for template in open::commands(url) {
         let mut opener = command(template.get_program());
