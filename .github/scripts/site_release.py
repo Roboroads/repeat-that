@@ -62,8 +62,8 @@ def is_size(value):
 
 
 def build_release_data(info, sums, repo, platforms=PLATFORMS):
-    """(data, warnings) for the release `info` (`gh release view --json` output) and the text of its SHA256SUMS (None
-    when the file could not be read). Raises ReleaseError listing every problem found."""
+    """(data, warnings) for the release `info` (`gh release view --json` output) and the text of its SHA256SUMS.
+    Raises ReleaseError listing every problem found."""
     errors, warnings = [], []
     if not REPO.match(repo):
         raise ReleaseError(f"the repository must look like OWNER/NAME, got {repo!r}")
@@ -100,8 +100,6 @@ def build_release_data(info, sums, repo, platforms=PLATFORMS):
     listed = None
     if SUMS_NAME not in assets:
         errors.append(f"the release has no {SUMS_NAME} asset")
-    elif sums is None:
-        errors.append(f"{SUMS_NAME} is on the release but its file could not be read")
     else:
         try:
             listed = parse_sums(sums)
@@ -179,12 +177,14 @@ def read_json(path):
 
 
 def read_sums(path):
-    """The text of the SHA256SUMS file, or None when it is not there."""
+    """The text of the SHA256SUMS file."""
     try:
         with open(path, encoding="utf-8") as stream:
             return stream.read()
-    except (OSError, ValueError):
-        return None
+    except OSError as error:
+        raise ReleaseError(f"cannot read {path}: {error.strerror}")
+    except ValueError as error:  # not UTF-8
+        raise ReleaseError(f"cannot read {path}: {error}")
 
 
 def write_output(path, text):

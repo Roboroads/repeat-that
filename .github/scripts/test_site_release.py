@@ -259,10 +259,6 @@ class SumsChecksTests(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn("SHA256SUMS", errors[0])
 
-    def test_unreadable_sums_are_an_error(self):
-        errors = failure(self, release(EXE), None, REPO)
-        self.assertIn("SHA256SUMS", errors[0])
-
 
 class ReleaseStateTests(unittest.TestCase):
     def test_a_draft_is_an_error(self):
@@ -432,11 +428,27 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(err.count("::error::"), 2)
 
-    def test_a_missing_sums_file_is_an_error(self):
+    def test_a_missing_sums_file_is_an_error_naming_the_file_and_the_cause(self):
         code, _, err, text = self.run_in_folder(release(EXE), None)
         self.assertEqual(code, 1)
-        self.assertIn("SHA256SUMS", err)
+        self.assertTrue(err.startswith("::error::cannot read "), err)
+        self.assertIn("SHA256SUMS: No such file or directory", err)
         self.assertIsNone(text)
+
+    def test_a_sums_file_that_is_not_text_is_an_error_naming_the_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            (folder / "release.json").write_text(json.dumps(release(EXE)), encoding="utf-8")
+            (folder / "SHA256SUMS").write_bytes(b"\xff\xfe not utf-8")
+            code, _, err = self.run_main(
+                "--release-json", str(folder / "release.json"),
+                "--sums", str(folder / "SHA256SUMS"),
+                "--repo", REPO,
+                "--output", str(folder / "out.json"),
+            )  # fmt: skip
+            self.assertEqual(code, 1)
+            self.assertIn(f"cannot read {folder / 'SHA256SUMS'}: ", err)
+            self.assertFalse((folder / "out.json").exists())
 
     def test_a_missing_sha256sums_asset_is_an_error_even_with_a_sums_file(self):
         code, _, err, text = self.run_in_folder(release(EXE, sums=False), sums_text(EXE))
