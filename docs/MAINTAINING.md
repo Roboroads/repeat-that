@@ -98,7 +98,8 @@ with `python3 -m unittest discover -s .github/scripts`.
 
 The update files are what the app's updater reads. A platform doesn't have to produce them to count as built: they exist
 only when an update key is set, so a release without a key has none and is still complete. With a key, the check that
-a platform is complete also wants its update files, see [Update signing key](#update-signing-key).
+a platform is complete also wants its update files, see [Update signing key](#update-signing-key). A platform never
+has some of them: it has all of its update files or none.
 
 A required platform must build before a release is published: if one fails, nothing is published and the draft stays.
 An optional platform (macOS) that fails or is skipped only warns, in the job summary and as a `::warning::`; the
