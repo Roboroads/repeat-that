@@ -75,7 +75,8 @@ export interface BackendStatus {
 export const backendStatus = () => invoke<BackendStatus>('get_status');
 
 /** The settings as the backend has them, which is what a reload shows. */
-export const backendSettings = () => invoke<{ bufferSeconds: number }>('get_settings');
+export const backendSettings = () =>
+  invoke<{ bufferSeconds: number; checkForUpdates: boolean | null }>('get_settings');
 
 /** The built app, where `wdio.conf.ts` starts it from. */
 function applicationPath(): string {

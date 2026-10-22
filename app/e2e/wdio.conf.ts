@@ -27,10 +27,17 @@ const driverCommand = process.env.TAURI_DRIVER ?? 'tauri-driver';
 
 /**
  * Variables some spec files start their app with, by file name. `permission.e2e.ts` gets an app that pretends the OS
- * doesn't let it capture audio until "Ask again" (debug builds only, see src-tauri/src/source.rs).
+ * doesn't let it capture audio until "Ask again" (debug builds only, see src-tauri/src/source.rs). The update specs
+ * each get a pretend update source (`REPEAT_THAT_MOCK_UPDATE`, debug builds only, see src-tauri/src/updater/source.rs):
+ * an app has one for its whole run, so every answer it can give has a spec file. `updates-off.e2e.ts` is not in the
+ * list on purpose, since a build without the variable has no updater, and neither has any other spec's app.
  */
 const SPEC_ENV: Record<string, NodeJS.ProcessEnv> = {
   'permission.e2e.ts': { REPEAT_THAT_MOCK_PERMISSION: 'denied' },
+  'updates.e2e.ts': { REPEAT_THAT_MOCK_UPDATE: 'available' },
+  'updates-fail-download.e2e.ts': { REPEAT_THAT_MOCK_UPDATE: 'fail-download' },
+  'updates-fail-check.e2e.ts': { REPEAT_THAT_MOCK_UPDATE: 'fail-check' },
+  'updates-none.e2e.ts': { REPEAT_THAT_MOCK_UPDATE: 'none' },
 };
 
 /** The variables of `SPEC_ENV` for a spec, which WebdriverIO names by a `file://` URL or by a path. */
