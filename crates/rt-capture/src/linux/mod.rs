@@ -177,8 +177,14 @@ impl PipeWireSource {
         if let Some(live) = connection.as_ref().filter(|c| c.is_alive()) {
             return Ok(live.client());
         }
-        // The old one, if any, ends first.
+        // The old one, if any, ends first, and with it every duck: its captures are gone, and the next connection
+        // ducks nothing but restores what the journal lists. The daemon may have restarted meanwhile, which gives
+        // every stream the volume it remembers. A capture of an app that was ducked must not boost it now.
         *connection = None;
+        let since = capture::now();
+        for level in lock(&self.levels).values() {
+            level.set(1.0, since);
+        }
         let fresh = Connection::open(self.remote.clone(), self.journal.clone(), Arc::clone(&self.quantum))?;
         let client = fresh.client();
         *connection = Some(fresh);
@@ -371,6 +377,33 @@ mod tests {
                 Ok(_) => panic!("connected to {name}"),
             }
         }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_connection_starts_with_every_app_at_full_volume() {
+        // An app ducked through a connection that broke, a PipeWire restart say; the socket doesn't answer yet.
+        let dir = std::env::temp_dir().join(format!("rt-pw-reconnect-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        drop(UnixListener::bind(dir.join("pipewire-0")).unwrap());
+        let source = PipeWireSource {
+            remote: dir.join("pipewire-0"),
+            journal: None,
+            guard: Mutex::default(),
+            connection: Mutex::default(),
+            quantum: Arc::default(),
+            levels: Mutex::default(),
+            fade: Mutex::default(),
+        };
+        let app = AudioApp {
+            pid: 1234,
+            name: "Discord".into(),
+            exe_path: Some("/usr/share/discord/Discord".into()),
+        };
+        source.level(&app).set(0.25, capture::now());
+        assert!(matches!(source.client(), Err(CaptureError::Backend(_))));
+        assert_eq!(source.level(&app).get(), 1.0, "the next capture isn't boosted");
         fs::remove_dir_all(&dir).unwrap();
     }
 
