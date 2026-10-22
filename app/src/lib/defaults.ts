@@ -1,4 +1,4 @@
-import type { Settings } from './api';
+import type { Settings, UpdateStatus } from './api';
 import { currentPlatform, isMac } from './platform';
 
 /** Ranges the backend clamps to (contract §3.6); the sliders and the dev mock use the same ones. */
@@ -36,6 +36,25 @@ export function defaultSettings(): Settings {
     hotkeys: { ...DEFAULT_HOTKEYS },
     autostart: false,
     firstRunDone: false,
+    checkForUpdates: null,
+  };
+}
+
+/** What General says when there is no updater, or the backend doesn't know about one. */
+export const NO_UPDATER_REASON = "This build doesn't check for updates.";
+
+/** The update status of a build without an updater, which is also what the page assumes when the backend has none. */
+export function offUpdateStatus(currentVersion = ''): UpdateStatus {
+  return {
+    mode: 'off',
+    modeReason: NO_UPDATER_REASON,
+    currentVersion,
+    state: 'idle',
+    available: null,
+    progress: null,
+    error: null,
+    lastCheckedAt: null,
+    manual: false,
   };
 }
 

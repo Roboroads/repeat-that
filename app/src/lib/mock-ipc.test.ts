@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { pretendPlatform } from '../test-utils';
-import type { AppEntry, Settings, Status } from './api';
+import type { AppEntry, Settings, Status, UpdateStatus } from './api';
 import { MOCK_HOW_TO_ALLOW, MockBackend, SCENARIOS, scenarioInit } from './mock-ipc';
 
 function backend(init: ConstructorParameters<typeof MockBackend>[0] = {}) {
@@ -244,5 +244,163 @@ describe('scenarios', () => {
     const { b } = backend(scenarioInit(name));
 
     expect((b.handle('get_settings', {}) as Settings).version).toBe(1);
+  });
+});
+
+describe('update commands', () => {
+  const RELEASE_PAGE = 'https://github.com/Roboroads/repeat-that/releases/tag/v99.0.0';
+  const updatesEvents = (events: Array<{ event: string; payload: unknown }>) =>
+    events.filter((e) => e.event === 'update-status').map((e) => e.payload as UpdateStatus);
+
+  it('is a build without an updater unless told otherwise, and starts with no check', async () => {
+    const { b } = backend();
+
+    expect(b.handle('get_update_status', {})).toMatchObject({
+      mode: 'off',
+      state: 'idle',
+      available: null,
+      lastCheckedAt: null,
+      currentVersion: '0.1.0',
+    });
+    expect((b.handle('get_settings', {}) as Settings).checkForUpdates).toBeNull();
+  });
+
+  it('gives a reason for mode off and none for mode install', () => {
+    expect(backend().b.handle('get_update_status', {})).toMatchObject({ modeReason: "This build doesn't check for updates." });
+    expect(backend({ updates: { mode: 'install' } }).b.handle('get_update_status', {})).toMatchObject({
+      modeReason: null,
+    });
+  });
+
+  it('keeps the setting a patch sets, and ignores a null', () => {
+    const { b } = backend();
+
+    expect((b.handle('update_settings', { patch: { checkForUpdates: true } }) as Settings).checkForUpdates).toBe(true);
+    expect((b.handle('update_settings', { patch: { checkForUpdates: null } }) as Settings).checkForUpdates).toBe(true);
+    expect((b.handle('update_settings', { patch: { checkForUpdates: false } }) as Settings).checkForUpdates).toBe(false);
+  });
+
+  it('a check finds 99.0.0, with notes and the release page, and says so in an event first', async () => {
+    const { b, events } = backend({ updates: { mode: 'install' } });
+
+    const status = (await b.handle('check_for_updates', {})) as UpdateStatus;
+
+    expect(status).toMatchObject({
+      state: 'available',
+      manual: true,
+      error: null,
+      available: { version: '99.0.0', releaseUrl: RELEASE_PAGE },
+    });
+    expect(status.available?.notes).toContain('Sample release notes');
+    expect(status.lastCheckedAt).toEqual(expect.any(Number));
+    expect(updatesEvents(events).map((e) => e.state)).toEqual(['checking', 'available']);
+    expect(b.handle('get_update_status', {})).toEqual(status);
+  });
+
+  it('a check with outcome none finds nothing, and with fail-check says why not', async () => {
+    const { b } = backend({ updates: { mode: 'install', outcome: 'none' } });
+    expect(await b.handle('check_for_updates', {})).toMatchObject({ state: 'upToDate', available: null });
+
+    b.updates.outcome = 'fail-check';
+    expect(await b.handle('check_for_updates', {})).toMatchObject({
+      state: 'error',
+      available: null,
+      error: expect.stringMatching(/\S/),
+    });
+  });
+
+  it('a second check while one runs answers with the current status', async () => {
+    const { b } = backend({ updates: { mode: 'install', checkMs: 20 } });
+
+    const first = b.handle('check_for_updates', {}) as Promise<UpdateStatus>;
+    const second = (await b.handle('check_for_updates', {})) as UpdateStatus;
+
+    expect(second.state).toBe('checking');
+    expect((await first).state).toBe('available');
+  });
+
+  it('does not check where there is no updater', async () => {
+    const { b } = backend({ updates: { mode: 'external', modeReason: 'Updates come through Flathub.' } });
+
+    expect(await b.handle('check_for_updates', {})).toMatchObject({ mode: 'external', state: 'idle' });
+  });
+
+  it('refuses to install before a check found something, and in notify mode', async () => {
+    const { b } = backend({ updates: { mode: 'install' } });
+    expect(() => b.handle('install_update', {})).toThrowError(expect.objectContaining({ kind: 'invalid' }));
+
+    const notify = backend({ updates: { mode: 'notify', modeReason: 'Install updates from the download page.' } });
+    await notify.b.handle('check_for_updates', {});
+    expect(() => notify.b.handle('install_update', {})).toThrowError(expect.objectContaining({ kind: 'invalid' }));
+  });
+
+  it('downloads over two seconds of ticks, then ends in installing without restarting', async () => {
+    const { b, events } = backend({ updates: { mode: 'install' } });
+    await b.handle('check_for_updates', {});
+
+    b.handle('install_update', {});
+    expect(b.handle('get_update_status', {})).toMatchObject({ state: 'downloading', progress: 0 });
+    b.tick(1000);
+    expect(b.handle('get_update_status', {})).toMatchObject({ state: 'downloading', progress: 0.5 });
+    b.tick(1000);
+
+    expect(b.handle('get_update_status', {})).toMatchObject({ state: 'installing', progress: null });
+    expect(updatesEvents(events).at(-1)?.state).toBe('installing');
+    // A second install, now that one is under way.
+    expect(() => b.handle('install_update', {})).toThrowError(expect.objectContaining({ kind: 'invalid' }));
+  });
+
+  it('fail-download stops half way with an error, and keeps what was found', async () => {
+    const { b } = backend({ updates: { mode: 'install', outcome: 'fail-download' } });
+    await b.handle('check_for_updates', {});
+
+    b.handle('install_update', {});
+    b.tick(1000);
+
+    expect(b.handle('get_update_status', {})).toMatchObject({
+      state: 'error',
+      progress: null,
+      error: expect.stringMatching(/\S/),
+      available: { version: '99.0.0' },
+    });
+  });
+
+  it('checks by itself five seconds after the setting is turned on, as the real app does', async () => {
+    const { b } = backend({ updates: { mode: 'install' } });
+
+    b.handle('update_settings', { patch: { checkForUpdates: true } });
+    b.tick(4000);
+    expect((b.handle('get_update_status', {}) as UpdateStatus).state).toBe('idle');
+    b.tick(1000);
+
+    await vi.waitFor(() => expect(b.handle('get_update_status', {})).toMatchObject({ state: 'available', manual: false }));
+  });
+
+  it('checks by itself a few seconds after it starts when the setting is already on', async () => {
+    const { b } = backend({ settings: { checkForUpdates: true }, updates: { mode: 'notify' } });
+
+    b.tick(5000);
+
+    await vi.waitFor(() => expect(b.handle('get_update_status', {})).toMatchObject({ state: 'available' }));
+  });
+
+  it('does not check by itself while the setting is off or where there is no updater', async () => {
+    const off = backend({ updates: { mode: 'install' } });
+    off.b.handle('update_settings', { patch: { checkForUpdates: false } });
+    off.b.tick(60_000);
+
+    const none = backend();
+    none.b.handle('update_settings', { patch: { checkForUpdates: true } });
+    none.b.tick(60_000);
+
+    expect((off.b.handle('get_update_status', {}) as UpdateStatus).state).toBe('idle');
+    expect((none.b.handle('get_update_status', {}) as UpdateStatus).state).toBe('idle');
+  });
+
+  it('has scenarios that start with the question and with a build that can only point to the download page', () => {
+    expect(scenarioInit('update').updates).toMatchObject({ mode: 'install' });
+    expect(scenarioInit('update-notify').updates).toMatchObject({ mode: 'notify' });
+    expect(scenarioInit('update-notify').settings?.checkForUpdates).toBe(true);
+    expect(scenarioInit('update').settings?.checkForUpdates ?? null).toBeNull();
   });
 });

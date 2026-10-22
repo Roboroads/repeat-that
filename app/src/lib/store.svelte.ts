@@ -1,5 +1,6 @@
 import * as api from './api';
-import type { AppEntry, OutputDevice, Settings, SettingsPatch, Status } from './api';
+import type { AppEntry, OutputDevice, Settings, SettingsPatch, Status, UpdateStatus } from './api';
+import { offUpdateStatus } from './defaults';
 
 const APP_REFRESH_MS = 2000;
 
@@ -20,8 +21,8 @@ interface UpdateOptions {
 }
 
 /**
- * What the settings page knows: the backend's settings and status, the running apps and the output devices.
- * Every change goes to the backend at once (`update`); there is no Save button.
+ * What the settings page knows: the backend's settings and status, the update status, the running apps and the output
+ * devices. Every change goes to the backend at once (`update`); there is no Save button.
  */
 export class SettingsStore {
   settings = $state<Settings | null>(null);
@@ -36,6 +37,12 @@ export class SettingsStore {
   loadError = $state<string | null>(null);
   /** The last failed action, shown in a banner until dismissed. */
   error = $state<string | null>(null);
+  /** What the build does about updates. A build or backend without an updater is mode `off`. */
+  updates = $state<UpdateStatus>(offUpdateStatus());
+  /** The version whose banner the user closed with "Later". A newer version is offered again. */
+  private dismissedVersion = $state<string | null>(null);
+  /** A check or install request is out, so its button can't be pressed twice. */
+  updateCallPending = $state(false);
 
   private unlisteners: api.Unlisten[] = [];
   private disposed = false;
@@ -67,10 +74,11 @@ export class SettingsStore {
     this.loadError = null;
     try {
       await this.subscribe();
-      const [settings, status] = await Promise.all([api.getSettings(), api.getStatus()]);
+      const [settings, status, updates] = await Promise.all([api.getSettings(), api.getStatus(), this.loadUpdates()]);
       if (this.disposed) return;
       this.settings = this.confirmed = settings;
       this.status = status;
+      this.updates = updates;
     } catch (raw) {
       if (!this.disposed) this.loadError = api.toApiError(raw).message;
       return;
@@ -80,7 +88,19 @@ export class SettingsStore {
     await this.refreshApps();
   }
 
-  /** Listens to `status` and `settings-changed`. Does nothing when it already does; throws when it cannot. */
+  /** A backend without the update commands (an older one) answers an error here: that is a build without updates. */
+  private async loadUpdates(): Promise<UpdateStatus> {
+    try {
+      return await api.getUpdateStatus();
+    } catch {
+      return offUpdateStatus();
+    }
+  }
+
+  /**
+   * Listens to `status`, `update-status` and `settings-changed`. Does nothing when it already does; throws when it
+   * cannot.
+   */
   private async subscribe(): Promise<void> {
     if (this.unlisteners.length > 0) return;
     const unlisteners: api.Unlisten[] = [];
@@ -88,6 +108,11 @@ export class SettingsStore {
       unlisteners.push(
         await api.onStatus((status) => {
           this.status = status;
+        }),
+      );
+      unlisteners.push(
+        await api.onUpdateStatus((updates) => {
+          this.updates = updates;
         }),
       );
       unlisteners.push(
@@ -199,6 +224,46 @@ export class SettingsStore {
 
   async setPaused(paused: boolean): Promise<void> {
     await this.run(() => api.setPaused(paused));
+  }
+
+  /** Looks for a newer version now, as the user asked, and shows the offer again if they had closed it. */
+  async checkForUpdates(): Promise<void> {
+    this.dismissedVersion = null;
+    this.updateCallPending = true;
+    try {
+      this.updates = await api.checkForUpdates();
+    } catch (raw) {
+      this.error = api.toApiError(raw).message;
+    } finally {
+      this.updateCallPending = false;
+    }
+  }
+
+  /** Downloads and installs the version found. The progress and the restart come as `update-status` events. */
+  async installUpdate(): Promise<void> {
+    this.updateCallPending = true;
+    try {
+      await api.installUpdate();
+    } catch (raw) {
+      this.error = api.toApiError(raw).message;
+    } finally {
+      this.updateCallPending = false;
+    }
+  }
+
+  /** "Later": hides the offer of the version found until the next launch, or until a newer one turns up. */
+  dismissUpdate(): void {
+    this.dismissedVersion = this.updates.available?.version ?? null;
+  }
+
+  showUpdate(): void {
+    this.dismissedVersion = null;
+  }
+
+  /** The user closed the banner of the version on offer. */
+  get offerDismissed(): boolean {
+    const offer = this.updates.available;
+    return offer !== null && offer.version === this.dismissedVersion;
   }
 
   async refreshApps(): Promise<void> {

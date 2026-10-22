@@ -2,7 +2,7 @@ import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import { emit } from '@tauri-apps/api/event';
 import { afterEach, describe, expect, it } from 'vitest';
 import * as api from './api';
-import { defaultSettings } from './defaults';
+import { defaultSettings, offUpdateStatus } from './defaults';
 
 type Call = { cmd: string; args: unknown };
 
@@ -59,6 +59,9 @@ describe('commands', () => {
     ['getStatus', () => api.getStatus(), 'get_status', {}],
     ['listApps', () => api.listApps(), 'list_apps', {}],
     ['listOutputDevices', () => api.listOutputDevices(), 'list_output_devices', {}],
+    ['getUpdateStatus', () => api.getUpdateStatus(), 'get_update_status', {}],
+    ['checkForUpdates', () => api.checkForUpdates(), 'check_for_updates', {}],
+    ['installUpdate', () => api.installUpdate(), 'install_update', {}],
   ])('%s calls its command', async (_name, run, cmd, args) => {
     const calls = mockBackend();
 
@@ -104,6 +107,37 @@ describe('desktop commands', () => {
     await emit('status', status);
 
     expect(seen).toEqual([status]);
+  });
+});
+
+describe('update commands', () => {
+  it('getUpdateStatus and checkForUpdates resolve with the status the backend sent', async () => {
+    const status = offUpdateStatus('0.1.0');
+    mockBackend(() => status);
+
+    await expect(api.getUpdateStatus()).resolves.toEqual(status);
+    await expect(api.checkForUpdates()).resolves.toEqual(status);
+  });
+
+  it('installUpdate rejects with the reason the backend refused', async () => {
+    mockBackend(() => {
+      throw { kind: 'invalid', message: 'There is no update to install' };
+    });
+
+    const error = await api.installUpdate().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(api.ApiError);
+    expect(error).toMatchObject({ kind: 'invalid', message: 'There is no update to install' });
+  });
+
+  it('installUpdate turns a failure that is not a CommandError into a backend error', async () => {
+    mockBackend(() => {
+      throw 'Command install_update not found';
+    });
+
+    const error = await api.installUpdate().catch((e: unknown) => e);
+
+    expect(error).toMatchObject({ kind: 'backend', message: 'Command install_update not found' });
   });
 });
 
@@ -172,5 +206,31 @@ describe('events', () => {
     await emit('settings-changed', defaultSettings());
 
     expect(seen).toEqual([defaultSettings()]);
+  });
+
+  it('delivers update-status payloads until unlistened', async () => {
+    mockBackend();
+    const seen: unknown[] = [];
+    const unlisten = await api.onUpdateStatus((status) => seen.push(status));
+
+    await emit('update-status', offUpdateStatus('0.1.0'));
+    unlisten();
+    await emit('update-status', offUpdateStatus('0.2.0'));
+
+    expect(seen).toEqual([offUpdateStatus('0.1.0')]);
+  });
+
+  it('keeps the update-status event apart from status', async () => {
+    mockBackend();
+    const statuses: unknown[] = [];
+    const updates: unknown[] = [];
+    await api.onStatus((status) => statuses.push(status));
+    await api.onUpdateStatus((status) => updates.push(status));
+
+    await emit('status', { playback: 'idle' });
+    await emit('update-status', offUpdateStatus());
+
+    expect(statuses).toEqual([{ playback: 'idle' }]);
+    expect(updates).toEqual([offUpdateStatus()]);
   });
 });
