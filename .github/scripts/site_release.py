@@ -19,9 +19,10 @@ from the extension; the files of a platform come in that order (Linux: AppImage,
 input always gives the same bytes.
 
 It fails (exit 1, `::error::` annotations, no output written) when the release is a draft or a prerelease, has no
-SHA256SUMS, has an asset without a line in it, or SHA256SUMS lists a file the release doesn't have or has a malformed
-line. The build then fails and the previous site stays live. An asset that belongs to no platform is left out with a
-`::warning::`.
+SHA256SUMS, has an asset without a line in it (any asset, also one that belongs to no platform: publish-release.yml
+lists every file it attaches, so a file without a line was not put there by a release), or SHA256SUMS lists a file the
+release doesn't have or has a malformed line. The build then fails and the previous site stays live. An asset that
+belongs to no platform but is listed in SHA256SUMS is left out with a `::warning::`.
 """
 
 import argparse
