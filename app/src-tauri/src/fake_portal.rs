@@ -1,8 +1,8 @@
 //! A stand-in for the desktop's GlobalShortcuts and Background portals, on a bus of its own, for the tests of the code
-//! that talks to the real ones. It does what the interface description says and nothing more: a session per `CreateSession`, answers to
-//! `BindShortcuts` and `ListShortcuts` through `Request` objects, and signals the test sends when it wants a key pressed, a key changed or the
-//! session ended. No desktop is involved, so what it shows is that the app speaks the protocol, not that a particular
-//! desktop answers the way the interface says.
+//! that talks to the real ones. It does what the interface description says and nothing more: a session per
+//! `CreateSession`, answers to `BindShortcuts` and `ListShortcuts` through `Request` objects, and signals the test
+//! sends when it wants a key pressed, a key changed or the session ended. No desktop is involved, so what it shows is
+//! that the app speaks the protocol, not that a particular desktop answers the way the interface says.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

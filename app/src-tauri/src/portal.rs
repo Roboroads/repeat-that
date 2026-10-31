@@ -51,11 +51,11 @@ fn kde_component(env: &dyn Env, in_flatpak: bool) -> Option<String> {
 
 /// Whether what the portal lists for a new session is what works in it, so that a session which finds all of its
 /// shortcuts listed has nothing to bind. KDE's portal lists the actions the session itself has registered with
-/// kglobalaccel. From Plasma 6.1 on it registers the ones it kept for the app when it makes the session; Plasma 5.27 and
-/// 6.0 register nothing before a bind and list nothing, so a session there binds as before. The specification only says
-/// that the list holds what an earlier session bound, not that it works in this one, and GNOME's portal grabs the keys
-/// in the bind (and lists nothing before it), so everywhere else a session binds without asking. The portal picks KDE's
-/// backend by `XDG_CURRENT_DESKTOP`, and so does this.
+/// kglobalaccel. From Plasma 6.1 on it registers the ones it kept for the app when it makes the session; Plasma 5.27
+/// and 6.0 register nothing before a bind and list nothing, so a session there binds as before. The specification only
+/// says that the list holds what an earlier session bound, not that it works in this one, and GNOME's portal grabs the
+/// keys in the bind (and lists nothing before it), so everywhere else a session binds without asking. The portal picks
+/// KDE's backend by `XDG_CURRENT_DESKTOP`, and so does this.
 fn sessions_keep_shortcuts(env: &dyn Env) -> bool {
     env.var("XDG_CURRENT_DESKTOP")
         .is_some_and(|desktops| desktops.split(':').any(|name| name.trim().eq_ignore_ascii_case("kde")))
@@ -310,8 +310,8 @@ pub fn start(on_change: impl Fn() + Send + Sync + 'static) -> PortalBackend {
     )
 }
 
-/// [`start`] on the bus `connect` reaches, looking again after each of `retry` (the last one repeats). `list_for` is how
-/// long a new session waits for the portal to list the shortcuts it started with, on a portal whose list says what
+/// [`start`] on the bus `connect` reaches, looking again after each of `retry` (the last one repeats). `list_for` is
+/// how long a new session waits for the portal to list the shortcuts it started with, on a portal whose list says what
 /// works in the session (see [`sessions_keep_shortcuts`]); `None` elsewhere, where a session binds without asking.
 fn start_on(
     on_change: impl Fn() + Send + Sync + 'static,
@@ -513,10 +513,10 @@ impl PortalLink {
     }
 
     /// A session with the portal (of the interface in `version`) is up, with the shortcuts in `listed` when the portal
-    /// was asked which it started with. Whatever was asked while there was none is out of date, so the state says what to
-    /// bind now: the first bind of the session, which is counted as pending. `None` when the session has every action
-    /// already: their keys are the answer, and a bind would change nothing but could show the user a dialog or the
-    /// desktop's settings.
+    /// was asked which it started with. Whatever was asked while there was none is out of date, so the state says what
+    /// to bind now: the first bind of the session, which is counted as pending. `None` when the session has every
+    /// action already: their keys are the answer, and a bind would change nothing but could show the user a dialog or
+    /// the desktop's settings.
     pub fn session_up(&self, version: u32, listed: Option<&[Assigned]>) -> Option<Vec<ShortcutRequest>> {
         let (requests, kept) = {
             let mut state = lock(&self.0.state);
