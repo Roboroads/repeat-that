@@ -11,10 +11,12 @@ How the hotkeys work depends on the session you are logged in to.
 - **X11.** The Hotkeys section works as it does on Windows. Click a field and press the combination you want.
 - **Wayland on KDE Plasma, or GNOME 48 and later.** An app can't grab keys itself on Wayland. It tells the desktop which
   actions it has, and the desktop asks you which keys to give them (through the XDG GlobalShortcuts portal). On the
-  first start a system dialog asks you to confirm the three shortcuts. Repeat That suggests Ctrl+Alt+Space,
-  Ctrl+Alt+Backspace and Ctrl+Alt+Enter, and the desktop may offer something else. The Hotkeys section shows the keys
-  you ended up with, or "Not assigned" for an action that has none, and has no recorder. To change a key, press
-  **Change in system settings**. A version 2 portal opens the desktop's shortcut page itself. Plasma's portal is
+  first start a system dialog asks you to confirm the three shortcuts (Plasma 6.3 opens System Settings on its Shortcuts
+  page instead). Repeat That suggests Ctrl+Alt+Space, Ctrl+Alt+Backspace and Ctrl+Alt+Enter, and the desktop may offer
+  something else. On KDE later starts don't ask again: Repeat That finds the three shortcuts Plasma kept and leaves them
+  as they are. It only asks again when one is gone, for instance after you removed the entry in System Settings →
+  Shortcuts. The Hotkeys section shows the keys you ended up with, or "Not assigned" for an action that has none, and
+  has no recorder. To change a key, press **Change in system settings**. A version 2 portal opens the desktop's shortcut page itself. Plasma's portal is
   version 1, so there Repeat That starts the shortcuts module of System Settings (`systemsettings kcm_keys`, or
   `kcmshell6 kcm_keys`), and on GNOME it starts `gnome-control-center keyboard`. In a Flatpak that needs permission to
   start programs on the host (`flatpak-spawn --host`). When none of this is possible, the window only says where to

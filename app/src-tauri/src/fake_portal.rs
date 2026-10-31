@@ -1,6 +1,6 @@
 //! A stand-in for the desktop's GlobalShortcuts and Background portals, on a bus of its own, for the tests of the code
 //! that talks to the real ones. It does what the interface description says and nothing more: a session per `CreateSession`, answers to
-//! `BindShortcuts` through `Request` objects, and signals the test sends when it wants a key pressed, a key changed or the
+//! `BindShortcuts` and `ListShortcuts` through `Request` objects, and signals the test sends when it wants a key pressed, a key changed or the
 //! session ended. No desktop is involved, so what it shows is that the app speaks the protocol, not that a particular
 //! desktop answers the way the interface says.
 
@@ -71,6 +71,11 @@ pub struct State {
     pub background_answer: Mutex<BackgroundAnswer>,
     /// The `BindShortcuts` calls so far, each with the shortcuts it asked for.
     pub binds: Mutex<Vec<Vec<Asked>>>,
+    /// How many `ListShortcuts` calls there were.
+    pub lists: AtomicUsize,
+    /// What the desktop keeps for the app across sessions, each shortcut with its key: what the last accepted bind got,
+    /// or what a test says an earlier start left. `ListShortcuts` answers with it.
+    pub kept: Mutex<Vec<(String, String)>>,
     pub configures: AtomicUsize,
     pub answer: Mutex<BindAnswer>,
     session: Mutex<Option<String>>,
@@ -102,6 +107,7 @@ struct ShortcutInfo {
 #[derive(Serialize, Type)]
 struct ShortcutOut(String, ShortcutInfo);
 
+/// The results of a bind or a list: the shortcuts, each with its key.
 #[derive(Serialize, Type)]
 #[zvariant(signature = "dict")]
 struct Bound {
@@ -220,17 +226,27 @@ impl Shortcuts {
             sender_in_path(&header),
             token(&options, "handle_token")
         );
+        let keys: Vec<(String, String)> = asked
+            .iter()
+            .map(|shortcut| {
+                let trigger = shortcut.preferred_trigger.clone().unwrap_or_default();
+                (shortcut.id.clone(), trigger)
+            })
+            .collect();
         let accepted = Bound {
-            shortcuts: asked
-                .iter()
-                .map(|shortcut| shortcut_out(&shortcut.id, shortcut.preferred_trigger.as_deref().unwrap_or("")))
-                .collect(),
+            shortcuts: keys.iter().map(|(id, trigger)| shortcut_out(id, trigger)).collect(),
         };
         match answer {
-            BindAnswer::Accept => respond(connection.clone(), request.clone(), 0, accepted),
+            BindAnswer::Accept => {
+                *self.state.kept.lock().unwrap() = keys;
+                respond(connection.clone(), request.clone(), 0, accepted);
+            }
             BindAnswer::Hold => {
-                let (connection, request) = (connection.clone(), request.clone());
-                *self.state.held.lock().unwrap() = Some(Box::new(move || respond(connection, request, 0, accepted)));
+                let (connection, request, state) = (connection.clone(), request.clone(), Arc::clone(&self.state));
+                *self.state.held.lock().unwrap() = Some(Box::new(move || {
+                    *state.kept.lock().unwrap() = keys;
+                    respond(connection, request, 0, accepted);
+                }));
             }
             // The response of a dialog that was closed: code 1 and nothing else.
             _ => respond(
@@ -240,6 +256,28 @@ impl Shortcuts {
                 HashMap::<String, OwnedValue>::new(),
             ),
         }
+        OwnedObjectPath::try_from(request).map_err(|err| fdo::Error::Failed(err.to_string()))
+    }
+
+    async fn list_shortcuts(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] connection: &Connection,
+        _session_handle: ObjectPath<'_>,
+        options: HashMap<String, OwnedValue>,
+    ) -> fdo::Result<OwnedObjectPath> {
+        self.state.lists.fetch_add(1, Ordering::SeqCst);
+        let request = format!(
+            "/org/freedesktop/portal/desktop/request/{}/{}",
+            sender_in_path(&header),
+            token(&options, "handle_token")
+        );
+        let listed = Bound {
+            shortcuts: (self.state.kept.lock().unwrap().iter())
+                .map(|(id, trigger)| shortcut_out(id, trigger))
+                .collect(),
+        };
+        respond(connection.clone(), request.clone(), 0, listed);
         OwnedObjectPath::try_from(request).map_err(|err| fdo::Error::Failed(err.to_string()))
     }
 
@@ -395,6 +433,11 @@ impl FakePortal {
     pub fn release_held(&self) {
         let held = self.state.held.lock().unwrap().take().expect("a held bind");
         held();
+    }
+
+    /// The desktop keeps these shortcuts for the app, as an earlier start that bound them leaves it.
+    pub fn keep(&self, keys: &[(&str, &str)]) {
+        *self.state.kept.lock().unwrap() = keys.iter().map(|(id, key)| (id.to_string(), key.to_string())).collect();
     }
 
     pub fn answer_binds_with(&self, answer: BindAnswer) {
