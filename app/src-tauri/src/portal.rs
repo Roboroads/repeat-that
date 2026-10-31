@@ -11,6 +11,11 @@
 //! [`PortalBackend`] is the [`ShortcutBackend`] the hotkey manager drives. A thread of the async runtime talks to the
 //! portal (see `worker`) and feeds what happens back through a [`PortalLink`]; the two sides share one small state
 //! machine, which is what the tests below drive.
+//!
+//! A new session doesn't always bind. KDE's portal (Plasma 6.1 and later) starts each session with the shortcuts it
+//! kept for the app, already working, and Plasma 6.3 opens System Settings on its Shortcuts page for every bind, so
+//! binding at every start opened it at every start. There a session lists the shortcuts first and binds only when one
+//! is missing (see [`sessions_keep_shortcuts`]).
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -43,6 +48,31 @@ fn kde_component(env: &dyn Env, in_flatpak: bool) -> Option<String> {
         Some(HOST_APP_ID.to_string())
     }
 }
+
+/// Whether what the portal lists for a new session is what works in it, so that a session which finds all of its
+/// shortcuts listed has nothing to bind. KDE's portal lists the actions the session itself has registered with
+/// kglobalaccel. From Plasma 6.1 on it registers the ones it kept for the app when it makes the session; Plasma 5.27
+/// and 6.0 register nothing before a bind and list nothing, so a session there binds as before. The specification only
+/// says that the list holds what an earlier session bound, not that it works in this one, and GNOME's portal grabs the
+/// keys in the bind (and lists nothing before it), so everywhere else a session binds without asking. The portal picks
+/// KDE's backend by `XDG_CURRENT_DESKTOP`, and so does this.
+fn sessions_keep_shortcuts(env: &dyn Env) -> bool {
+    env.var("XDG_CURRENT_DESKTOP")
+        .is_some_and(|desktops| desktops.split(':').any(|name| name.trim().eq_ignore_ascii_case("kde")))
+}
+
+/// Whether `listed` has a shortcut for each of `requests`, whatever its key. The key is the desktop's to give and the
+/// user's to change, and the portal describes it in its own words, which can't be compared with a preferred trigger in
+/// the specification's format. Binding again wouldn't change it either: the portal keeps the key a shortcut has.
+fn has_every_action(requests: &[ShortcutRequest], listed: &[Assigned]) -> bool {
+    requests
+        .iter()
+        .all(|request| listed.iter().any(|shortcut| shortcut.id == request.id))
+}
+
+/// How long a new session waits for the portal to list the shortcuts it started with. KDE's portal answers at once; one
+/// that doesn't answer in time gets the bind instead, so the hotkeys never wait on it for long.
+const LIST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long to wait for the portal to answer a request to open its settings.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -272,20 +302,28 @@ pub fn channel(on_change: impl Fn() + Send + Sync + 'static) -> (PortalBackend, 
 /// Looks for the portal, and talks to it once it is there, from the first `commit` on. Returns at once: a portal that is
 /// slow to answer at login is waited for on a thread of the async runtime, not by the app's start.
 pub fn start(on_change: impl Fn() + Send + Sync + 'static) -> PortalBackend {
-    start_on(on_change, zbus::Connection::session(), RETRY)
+    start_on(
+        on_change,
+        zbus::Connection::session(),
+        RETRY,
+        sessions_keep_shortcuts(&ProcessEnv).then_some(LIST_TIMEOUT),
+    )
 }
 
-/// [`start`] on the bus `connect` reaches, looking again after each of `retry` (the last one repeats).
+/// [`start`] on the bus `connect` reaches, looking again after each of `retry` (the last one repeats). `list_for` is
+/// how long a new session waits for the portal to list the shortcuts it started with, on a portal whose list says what
+/// works in the session (see [`sessions_keep_shortcuts`]); `None` elsewhere, where a session binds without asking.
 fn start_on(
     on_change: impl Fn() + Send + Sync + 'static,
     connect: impl Future<Output = zbus::Result<zbus::Connection>> + Send + 'static,
     retry: &'static [Duration],
+    list_for: Option<Duration>,
 ) -> PortalBackend {
     let (backend, link, requests) = channel(on_change);
     *lock(&backend.start) = Some(Box::new(move || {
         tauri::async_runtime::spawn(async move {
             match connect.await {
-                Ok(connection) => worker::run(&link, requests, connection, retry).await,
+                Ok(connection) => worker::run(&link, requests, connection, retry, list_for).await,
                 Err(err) => link.unavailable(format!("could not reach the session bus: {err}")),
             }
         });
@@ -474,19 +512,36 @@ impl PortalLink {
         self.0.edge(id, KeyEdge::Released);
     }
 
-    /// A session with the portal (of the interface in `version`) is up. Whatever was asked while there was none is out of
-    /// date, so the state says what to bind now: the first bind of the session, which is counted as pending.
-    pub fn session_up(&self, version: u32) -> Vec<ShortcutRequest> {
-        let requests = {
+    /// A session with the portal (of the interface in `version`) is up, with the shortcuts in `listed` when the portal
+    /// was asked which it started with. Whatever was asked while there was none is out of date, so the state says what
+    /// to bind now: the first bind of the session, which is counted as pending. `None` when the session has every
+    /// action already: their keys are the answer, and a bind would change nothing but could show the user a dialog or
+    /// the desktop's settings.
+    pub fn session_up(&self, version: u32, listed: Option<&[Assigned]>) -> Option<Vec<ShortcutRequest>> {
+        let (requests, kept) = {
             let mut state = lock(&self.0.state);
             state.availability = Availability::Available { version };
             let requests = state.requests();
             state.sent = Some(requests.clone());
-            state.binds_pending = 1;
-            requests
+            let kept = listed.filter(|listed| has_every_action(&requests, listed));
+            if kept.is_some() {
+                state.binds_pending = 0;
+                state.bound_once = true;
+            } else {
+                state.binds_pending = 1;
+            }
+            (requests, kept)
         };
-        (self.0.on_change)();
-        requests
+        match kept {
+            Some(listed) => {
+                self.0.assign(listed, true);
+                None
+            }
+            None => {
+                (self.0.on_change)();
+                Some(requests)
+            }
+        }
     }
 
     /// The portal answered a bind with the shortcuts that are bound now.
@@ -546,7 +601,7 @@ mod worker {
     //! against a stand-in portal; `PortalLink` is the part with the rules.
 
     use ashpd::desktop::global_shortcuts::{
-        BindShortcutsOptions, ConfigureShortcutsOptions, GlobalShortcuts, NewShortcut, Shortcut,
+        BindShortcutsOptions, ConfigureShortcutsOptions, GlobalShortcuts, ListShortcutsOptions, NewShortcut, Shortcut,
     };
     use ashpd::desktop::{ResponseError, Session};
     use ashpd::{AppID, Error};
@@ -608,17 +663,19 @@ mod worker {
 
     /// Looks for the portal and keeps a session with it, for as long as the backend exists. When the portal isn't there
     /// or the session ends, the link is told, and it is looked for again after the next of `retry`; a session that was up
-    /// starts the delays over.
+    /// starts the delays over. With `list_for` a new session first asks the portal which shortcuts it started with, and
+    /// waits that long for the answer (see `start_on`).
     pub async fn run(
         link: &PortalLink,
         mut requests: Receiver<Request>,
         connection: zbus::Connection,
         retry: &'static [Duration],
+        list_for: Option<Duration>,
     ) {
         let mut failures = 0_usize;
         loop {
             let mut established = false;
-            match session(link, &mut requests, &connection, &mut established).await {
+            match session(link, &mut requests, &connection, &mut established, list_for).await {
                 // The backend is gone with the app.
                 Ok(()) => return,
                 Err(reason) => link.unavailable(reason),
@@ -638,6 +695,7 @@ mod worker {
         requests: &mut Receiver<Request>,
         connection: &zbus::Connection,
         established: &mut bool,
+        list_for: Option<Duration>,
     ) -> Result<(), String> {
         let version = probe_version(connection)
             .await
@@ -695,10 +753,16 @@ mod worker {
         // Asked while there was no session, and out of date now: what to bind is in the state.
         while requests.try_recv().is_ok() {}
         *established = true;
-        bind(&portal, &session, link, &link.session_up(version)).await;
+        let listed = match list_for {
+            Some(limit) => list(&portal, &session, limit).await,
+            None => None,
+        };
+        if let Some(shortcuts) = link.session_up(version, listed.as_deref()) {
+            bind(&portal, &session, link, &shortcuts).await;
+        }
         // Plasma 6.3's portal lists the shortcuts under the app ID once a session starts, see `kglobalaccel`, in a Flatpak
-        // too: it names them after the Flatpak ID. Done after the first answer, when the portal has registered them,
-        // whether the dialog was accepted or not. Later binds in the session leave the name alone.
+        // too: it names them after the Flatpak ID. Done after the first answer (the list, or the bind), when the portal
+        // has registered them, whether the dialog was accepted or not. Later binds in the session leave the name alone.
         name_for_kde(connection);
 
         loop {
@@ -754,6 +818,32 @@ mod worker {
                 }
             }
         });
+    }
+
+    /// The shortcuts the session started with, or `None` when the portal can't say within `limit`. The session then
+    /// binds, as it would without the list.
+    async fn list(
+        portal: &GlobalShortcuts,
+        session: &Session<GlobalShortcuts>,
+        limit: Duration,
+    ) -> Option<Vec<Assigned>> {
+        let answer = std::pin::pin!(async {
+            portal
+                .list_shortcuts(session, ListShortcutsOptions::default())
+                .await
+                .and_then(|request| request.response())
+        });
+        match select(answer, std::pin::pin!(pause(limit))).await {
+            Either::Left((Ok(listed), _)) => Some(assigned(listed.shortcuts())),
+            Either::Left((Err(err), _)) => {
+                eprintln!("could not list the shortcuts, so they are bound: {err}");
+                None
+            }
+            Either::Right(_) => {
+                eprintln!("the portal did not list the shortcuts in time, so they are bound");
+                None
+            }
+        }
     }
 
     /// Binds `shortcuts` and tells the link how it went. Only the session ending turns the hotkeys off: a bind that fails
@@ -946,7 +1036,7 @@ mod tests {
     /// The backend once the portal thread has a session, with the first bind waiting for the user.
     fn rig_with(version: u32, bindings: &HotkeyBindings) -> Rig {
         let mut rig = probing(bindings);
-        rig.first_bind = rig.link.session_up(version);
+        rig.first_bind = rig.link.session_up(version, None).expect("a bind");
         rig
     }
 
@@ -1120,8 +1210,134 @@ mod tests {
         rig.change_preferences();
         // Nothing is queued for a portal nobody has found yet: the session binds what the state holds when it comes up.
         rig.no_request();
-        let first = rig.link.session_up(2);
+        let first = rig.link.session_up(2, None).expect("a bind");
         assert_eq!(first[0].preferred_trigger.as_deref(), Some("CTRL+SHIFT+r"));
+    }
+
+    // A session that starts with the shortcuts (KDE)
+
+    #[test]
+    fn plasma_sessions_start_with_the_shortcuts_it_kept() {
+        // `XDG_CURRENT_DESKTOP` is a list, in any case.
+        for desktop in ["KDE", "X-Custom:kde"] {
+            let env = FakeEnv::with(&[("XDG_CURRENT_DESKTOP", desktop)]);
+            assert!(sessions_keep_shortcuts(&env), "{desktop}");
+        }
+    }
+
+    #[test]
+    fn other_desktops_bind_in_every_session() {
+        for desktop in ["GNOME", "ubuntu:GNOME", "Hyprland", "KDE-like", ""] {
+            let env = FakeEnv::with(&[("XDG_CURRENT_DESKTOP", desktop)]);
+            assert!(!sessions_keep_shortcuts(&env), "{desktop}");
+        }
+        assert!(!sessions_keep_shortcuts(&FakeEnv::default()));
+    }
+
+    fn kept_by_plasma() -> [Assigned; 3] {
+        [
+            assigned("replay", "Ctrl+Alt+Space"),
+            assigned("stop", "Ctrl+Alt+Backspace"),
+            assigned("catch-up", "Ctrl+Alt+Return"),
+        ]
+    }
+
+    #[test]
+    fn a_session_that_starts_with_every_shortcut_binds_none_and_has_their_keys() {
+        let mut rig = probing(&HotkeyBindings::default());
+        assert_eq!(rig.link.session_up(1, Some(&kept_by_plasma())), None);
+        rig.no_request();
+        let triggers = rig.manager.report().triggers;
+        assert_eq!(triggers.replay.as_deref(), Some("Ctrl+Alt+Space"));
+        assert_eq!(triggers.catch_up.as_deref(), Some("Ctrl+Alt+Return"));
+        assert_eq!(
+            rig.manager.states(),
+            HotkeyStates {
+                replay: HotkeyState::Ok,
+                stop: HotkeyState::Ok,
+                catch_up: HotkeyState::Ok
+            }
+        );
+        rig.link.activated("replay");
+        assert_eq!(rig.fired(), [AppAction::Replay]);
+    }
+
+    #[test]
+    fn the_same_keys_applied_again_do_not_bind_them_either() {
+        let mut rig = probing(&HotkeyBindings::default());
+        rig.link.session_up(1, Some(&kept_by_plasma()));
+        rig.manager.apply(&HotkeyBindings::default());
+        rig.no_request();
+    }
+
+    #[test]
+    fn a_kept_shortcut_without_a_key_is_there_all_the_same() {
+        // The user took the key away, or Plasma had none to give: binding again wouldn't give it one.
+        let mut rig = probing(&HotkeyBindings::default());
+        let mut kept = kept_by_plasma();
+        kept[1] = assigned("stop", "");
+        assert_eq!(rig.link.session_up(1, Some(&kept)), None);
+        rig.no_request();
+        assert_eq!(rig.manager.report().triggers.stop, None);
+        assert_eq!(rig.manager.states().stop, HotkeyState::Unbound);
+    }
+
+    #[test]
+    fn a_key_the_desktop_kept_counts_whatever_the_app_would_ask_for() {
+        // The user changed it in System Settings, and the stored one is only a preference.
+        let mut rig = probing(&HotkeyBindings {
+            replay: Some("Ctrl+Shift+R".into()),
+            ..HotkeyBindings::default()
+        });
+        assert_eq!(rig.link.session_up(1, Some(&kept_by_plasma())), None);
+        rig.no_request();
+        assert_eq!(rig.manager.report().triggers.replay.as_deref(), Some("Ctrl+Alt+Space"));
+    }
+
+    #[test]
+    fn after_a_session_that_had_them_a_changed_preference_is_still_asked_for() {
+        let mut rig = probing(&HotkeyBindings::default());
+        rig.link.session_up(1, Some(&kept_by_plasma()));
+        rig.change_preferences();
+        assert_eq!(rig.next_bind()[0].preferred_trigger.as_deref(), Some("CTRL+SHIFT+r"));
+    }
+
+    #[test]
+    fn a_session_that_misses_one_of_the_shortcuts_binds_all_of_them() {
+        let rig = probing(&HotkeyBindings::default());
+        let kept = kept_by_plasma();
+        let bind = rig.link.session_up(1, Some(&kept[..2])).expect("a bind");
+        assert_eq!(
+            bind.iter().map(|shortcut| shortcut.id).collect::<Vec<_>>(),
+            ["replay", "stop", "catch-up"]
+        );
+        // The bind waits for the user, as the first one always does.
+        assert_eq!(rig.manager.configure(), Ok(ConfigureOutcome::Busy));
+    }
+
+    #[test]
+    fn shortcuts_the_app_does_not_have_count_for_nothing() {
+        let rig = probing(&HotkeyBindings::default());
+        let kept = [
+            assigned("replay", "Ctrl+Alt+Space"),
+            assigned("stop", "Ctrl+Alt+Backspace"),
+            assigned("rewind", "Ctrl+Alt+R"),
+        ];
+        assert!(rig.link.session_up(1, Some(&kept)).is_some());
+    }
+
+    #[test]
+    fn a_session_that_starts_with_no_shortcuts_binds() {
+        let rig = probing(&HotkeyBindings::default());
+        assert!(rig.link.session_up(1, Some(&[])).is_some());
+    }
+
+    #[test]
+    fn with_the_shortcuts_there_the_settings_button_goes_to_where_they_are_changed() {
+        // Not to a dialog: version 1 has no settings page to open, so the window opens the desktop's own.
+        let rig = probing(&HotkeyBindings::default());
+        rig.link.session_up(1, Some(&kept_by_plasma()));
+        assert_eq!(rig.manager.configure(), Ok(ConfigureOutcome::Unsupported));
     }
 
     // Keys going down and up
@@ -1354,7 +1570,7 @@ mod tests {
         rig.link.unavailable("the session ended".into());
         rig.change_preferences();
 
-        let again = rig.link.session_up(2);
+        let again = rig.link.session_up(2, None).expect("a bind");
 
         assert_eq!(again[0].preferred_trigger.as_deref(), Some("CTRL+SHIFT+r"));
         assert_eq!(rig.manager.report().backend, HotkeyBackendKind::Portal);
@@ -1508,10 +1724,23 @@ mod tests {
             answer: BindAnswer,
             retry: &'static [Duration],
         ) -> Option<World> {
+            world_on(version, bindings, answer, retry, None, |_| {})
+        }
+
+        /// [`world`], with `list_for` as in `start_on`, and the portal readied by `setup` before the app talks to it.
+        fn world_on(
+            version: Option<u32>,
+            bindings: &HotkeyBindings,
+            answer: BindAnswer,
+            retry: &'static [Duration],
+            list_for: Option<Duration>,
+            setup: impl FnOnce(&FakePortal),
+        ) -> Option<World> {
             let bus = PrivateBus::start()?;
             let portal = version.map(|version| FakePortal::start(&bus, version));
             if let Some(portal) = &portal {
                 portal.answer_binds_with(answer);
+                setup(portal);
             }
             let changes = Arc::new(AtomicUsize::new(0));
             let counter = Arc::clone(&changes);
@@ -1522,6 +1751,7 @@ mod tests {
                 },
                 async move { zbus::connection::Builder::address(address.as_str())?.build().await },
                 retry,
+                list_for,
             );
             let fired = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&fired);
@@ -1543,6 +1773,29 @@ mod tests {
             world(Some(2), &HotkeyBindings::default(), answer, NEVER)
         }
 
+        /// Plasma: a version 1 portal whose sessions start with the shortcuts it keeps for the app, `kept`.
+        fn plasma(kept: &[(&str, &str)], retry: &'static [Duration]) -> Option<World> {
+            world_on(
+                Some(1),
+                &HotkeyBindings::default(),
+                BindAnswer::Accept,
+                retry,
+                Some(LIST_TIMEOUT),
+                |portal| portal.keep(kept),
+            )
+        }
+
+        fn owned(keys: &[(&str, &str)]) -> Vec<(String, String)> {
+            keys.iter().map(|(id, key)| (id.to_string(), key.to_string())).collect()
+        }
+
+        /// The three shortcuts as Plasma keeps them once they have been bound.
+        const KEPT: &[(&str, &str)] = &[
+            ("replay", "Ctrl+Alt+Space"),
+            ("stop", "Ctrl+Alt+Backspace"),
+            ("catch-up", "Ctrl+Alt+Return"),
+        ];
+
         /// Polls until `done`, for up to ten seconds.
         fn until(what: &str, done: impl Fn() -> bool) {
             let deadline = Instant::now() + Duration::from_secs(10);
@@ -1559,6 +1812,10 @@ mod tests {
 
             fn binds(&self) -> usize {
                 self.portal().state.binds.lock().unwrap().len()
+            }
+
+            fn lists(&self) -> usize {
+                self.portal().state.lists.load(Ordering::SeqCst)
             }
 
             fn wait_for_keys(&self) {
@@ -1603,8 +1860,8 @@ mod tests {
             world.wait_for_keys();
             let report = world.manager.report();
             assert_eq!(report.backend, HotkeyBackendKind::Portal);
-            assert_eq!(report.triggers.stop.as_deref(), Some("CTRL+ALT+BackSpace"));
-            assert_eq!(report.triggers.catch_up.as_deref(), Some("CTRL+ALT+Return"));
+            assert_eq!(report.triggers.stop.as_deref(), Some("Ctrl+Alt+Backspace"));
+            assert_eq!(report.triggers.catch_up.as_deref(), Some("Ctrl+Alt+Return"));
             assert_eq!(
                 world.manager.states(),
                 HotkeyStates {
@@ -1776,9 +2033,98 @@ mod tests {
                 world.backend() == HotkeyBackendKind::Portal && world.manager.report().triggers.replay.is_some()
             });
             assert_eq!(world.binds(), 2, "bound again in the new session");
+            assert_eq!(
+                world.lists(),
+                0,
+                "only KDE's portal is asked what a session starts with"
+            );
             world.portal().press("stop", true);
             until("the press", || !world.fired().is_empty());
             assert_eq!(world.fired(), [AppAction::Stop]);
+        }
+
+        #[test]
+        fn plasma_is_not_asked_again_for_shortcuts_it_kept_from_an_earlier_start() {
+            // Plasma 6.3 answers every bind by opening System Settings on its Shortcuts page.
+            let Some(world) = plasma(KEPT, NEVER) else {
+                return;
+            };
+            world.wait_for_keys();
+            assert_eq!(world.binds(), 0, "no bind, so no settings page at the start");
+            assert_eq!(world.lists(), 1);
+            let report = world.manager.report();
+            assert_eq!(report.backend, HotkeyBackendKind::Portal);
+            assert_eq!(report.triggers.stop.as_deref(), Some("Ctrl+Alt+Backspace"));
+            assert_eq!(world.manager.states().catch_up, HotkeyState::Ok);
+            world.portal().press("catch-up", true);
+            until("the press", || !world.fired().is_empty());
+            assert_eq!(world.fired(), [AppAction::CatchUp]);
+        }
+
+        #[test]
+        fn plasma_is_asked_once_for_shortcuts_it_does_not_have_and_not_again_in_the_next_session() {
+            let Some(world) = plasma(&[], QUICK) else {
+                return;
+            };
+            world.wait_for_keys();
+            assert_eq!(world.binds(), 1, "the first start sets them up");
+            assert_eq!(world.portal().state.kept.lock().unwrap().clone(), owned(KEPT));
+
+            world.portal().close_session();
+            until("the hotkeys to be off", || world.backend() == HotkeyBackendKind::None);
+            until("the hotkeys to be back", || {
+                world.backend() == HotkeyBackendKind::Portal && world.manager.report().triggers.replay.is_some()
+            });
+            assert_eq!(world.binds(), 1, "the new session found them kept");
+            assert_eq!(world.lists(), 2);
+            assert_eq!(
+                world.manager.report().triggers.stop.as_deref(),
+                Some("Ctrl+Alt+Backspace")
+            );
+            world.portal().press("stop", true);
+            until("the press", || !world.fired().is_empty());
+        }
+
+        #[test]
+        fn a_portal_that_does_not_list_the_shortcuts_in_time_gets_the_bind() {
+            let limit = Duration::from_millis(300);
+            let Some(world) = world_on(
+                Some(1),
+                &HotkeyBindings::default(),
+                BindAnswer::Accept,
+                NEVER,
+                Some(limit),
+                |portal| {
+                    portal.keep(KEPT);
+                    portal.hold_lists();
+                },
+            ) else {
+                return;
+            };
+            let started = Instant::now();
+            until("a bind request", || world.binds() > 0);
+            assert!(started.elapsed() >= limit / 2, "bound before the list had its time");
+            world.wait_for_keys();
+            assert_eq!(world.lists(), 1);
+            world.portal().press("replay", true);
+            until("the press", || !world.fired().is_empty());
+        }
+
+        #[test]
+        fn plasma_is_asked_for_all_three_when_it_kept_only_some() {
+            // An action that came with an update, say.
+            let Some(world) = plasma(&KEPT[..2], NEVER) else {
+                return;
+            };
+            until("a bind request", || world.binds() > 0);
+            let asked = world.portal().state.binds.lock().unwrap()[0].clone();
+            assert_eq!(
+                asked.iter().map(|shortcut| shortcut.id.as_str()).collect::<Vec<_>>(),
+                ["replay", "stop", "catch-up"]
+            );
+            world.wait_for_keys();
+            // The two it had keep their keys, and the new one gets the key the app asked for.
+            assert_eq!(world.portal().state.kept.lock().unwrap().clone(), owned(KEPT));
         }
 
         #[test]
@@ -1814,6 +2160,7 @@ mod tests {
                     || {},
                     async move { zbus::connection::Builder::address(address.as_str())?.build().await },
                     QUICK,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -1849,6 +2196,7 @@ mod tests {
                             .await
                     },
                     NEVER,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -1877,6 +2225,7 @@ mod tests {
                             .await
                     },
                     NEVER,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -1900,6 +2249,7 @@ mod tests {
                             .await
                     },
                     NEVER,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -1941,7 +2291,7 @@ mod tests {
                     .build()
                     .await
                     .unwrap();
-                worker::run(&link, requests, connection, QUICK).await;
+                worker::run(&link, requests, connection, QUICK, None).await;
             });
             until("a bind", || !portal.state.binds.lock().unwrap().is_empty());
 

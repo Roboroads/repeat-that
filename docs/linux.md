@@ -11,30 +11,32 @@ How the hotkeys work depends on the session you are logged in to.
 - **X11.** The Hotkeys section works as it does on Windows. Click a field and press the combination you want.
 - **Wayland on KDE Plasma, or GNOME 48 and later.** An app can't grab keys itself on Wayland. It tells the desktop which
   actions it has, and the desktop asks you which keys to give them (through the XDG GlobalShortcuts portal). On the
-  first start a system dialog asks you to confirm the three shortcuts. Repeat That suggests Ctrl+Alt+Space,
-  Ctrl+Alt+Backspace and Ctrl+Alt+Enter, and the desktop may offer something else. The Hotkeys section shows the keys
-  you ended up with, or "Not assigned" for an action that has none, and has no recorder. To change a key, press
-  **Change in system settings**. A version 2 portal opens the desktop's shortcut page itself. Plasma's portal is
-  version 1, so there Repeat That starts the shortcuts module of System Settings (`systemsettings kcm_keys`, or
-  `kcmshell6 kcm_keys`), and on GNOME it starts `gnome-control-center keyboard`. In a Flatpak that needs permission to
-  start programs on the host (`flatpak-spawn --host`). When none of this is possible, the window only says where to
-  look: in KDE it is System Settings → Shortcuts → Repeat That, in GNOME it is Settings → Keyboard → View and Customize
-  Shortcuts → Apps. If you closed the first dialog without choosing, no action has a key and the
-  button reads **Set up shortcuts**: it opens the dialog again. Other Wayland desktops that provide the portal work the
-  same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets the
-  shortcuts up as soon as it is there. Plasma 6.3's portal lists the shortcuts under the app ID
+  first start a system dialog asks you to confirm the three shortcuts (Plasma 6.3 opens System Settings on its Shortcuts
+  page instead). Repeat That suggests Ctrl+Alt+Space, Ctrl+Alt+Backspace and Ctrl+Alt+Enter, and the desktop may offer
+  something else. On KDE later starts don't ask again: Repeat That finds the three shortcuts Plasma kept and leaves them
+  as they are. It only asks again when one is gone, for instance after you removed the entry in System Settings →
+  Shortcuts. The Hotkeys section shows the keys you ended up with, or "Not assigned" for an action that has none, and
+  has no recorder. To change a key, press **Change in system settings**. A version 2 portal opens the desktop's shortcut
+  page itself. Plasma's portal is version 1, so there Repeat That starts the shortcuts module of System Settings
+  (`systemsettings kcm_keys`, or `kcmshell6 kcm_keys`), and on GNOME it starts `gnome-control-center keyboard`. In a
+  Flatpak that needs permission to start programs on the host (`flatpak-spawn --host`). When none of this is possible,
+  the window only says where to look: in KDE it is System Settings → Shortcuts → Repeat That, in GNOME it is Settings →
+  Keyboard → View and Customize Shortcuts → Apps. If you closed the first dialog without choosing, no action has a key
+  and the button reads **Set up shortcuts**: it opens the dialog again. Other Wayland desktops that provide the portal
+  work the same way. If the portal is slow to start at login, or starts later, Repeat That keeps looking for it and sets
+  the shortcuts up as soon as it is there. Plasma 6.3's portal lists the shortcuts under the app ID
   (`me.roboroads.repeat-that`) after every start, so Repeat That gives them back the name "Repeat That" in kglobalaccel
-  each time it starts. Plasma 6.4 and later get the name right themselves. The Flatpak does the same under its own
-  ID, `me.roboroads.RepeatThat`, which the portal reads from the sandbox; for that it has permission to talk to
-  kglobalaccel (`--talk-name=org.kde.kglobalaccel`) and uses it for nothing else. If a **default key is left
-  unassigned**, another shortcut already has it: Plasma leaves out, without a word, a key that another component
-  holds, and only offers a key when it first sees an action. This happens when Repeat That is installed twice, say the
-  `.deb` or the AppImage next to the Flatpak: the other install keeps the same three keys under
-  `me.roboroads.repeat-that`. Plasma keeps what it has for an action, empty included, so freeing the key later doesn't
-  give it to the action: remove the entry you don't use in System Settings → Shortcuts, then press **Default** next to
-  each unassigned action of the entry you keep (or give them other keys there). To see who has the keys, run
-  `grep -B1 -A4 roboroads ~/.config/kglobalshortcutsrc`: each action reads `current key,default key,name`, so
-  `replay=,Ctrl+Alt+Space,replay` lost its key and `replay=Ctrl+Alt+Space,Ctrl+Alt+Space,replay` has it.
+  each time it starts. Plasma 6.4 and later get the name right themselves. The Flatpak does the same under its own ID,
+  `me.roboroads.RepeatThat`, which the portal reads from the sandbox; for that it has permission to talk to kglobalaccel
+  (`--talk-name=org.kde.kglobalaccel`) and uses it for nothing else. If a **default key is left unassigned**, another
+  shortcut already has it: Plasma leaves out, without a word, a key that another component holds, and only offers a key
+  when it first sees an action. This happens when Repeat That is installed twice, say the `.deb` or the AppImage next to
+  the Flatpak: the other install keeps the same three keys under `me.roboroads.repeat-that`. Plasma keeps what it has
+  for an action, empty included, so freeing the key later doesn't give it to the action: remove the entry you don't use
+  in System Settings → Shortcuts, then press **Default** next to each unassigned action of the entry you keep (or give
+  them other keys there). To see who has the keys, run `grep -B1 -A4 roboroads ~/.config/kglobalshortcutsrc`: each
+  action reads `current key,default key,name`, so `replay=,Ctrl+Alt+Space,replay` lost its key and
+  `replay=Ctrl+Alt+Space,Ctrl+Alt+Space,replay` has it.
 - **Wayland without the portal.** GNOME 46 (Ubuntu 24.04), Sway, Hyprland and others have no GlobalShortcuts portal, so
   Repeat That can't have global hotkeys there. The Hotkeys section says so and lists the three commands below, each with
   a Copy button. Bind them as custom shortcuts in your desktop, and they do the same job.
