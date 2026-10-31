@@ -1785,6 +1785,10 @@ mod tests {
             )
         }
 
+        fn owned(keys: &[(&str, &str)]) -> Vec<(String, String)> {
+            keys.iter().map(|(id, key)| (id.to_string(), key.to_string())).collect()
+        }
+
         /// The three shortcuts as Plasma keeps them once they have been bound.
         const KEPT: &[(&str, &str)] = &[
             ("replay", "Ctrl+Alt+Space"),
@@ -1856,8 +1860,8 @@ mod tests {
             world.wait_for_keys();
             let report = world.manager.report();
             assert_eq!(report.backend, HotkeyBackendKind::Portal);
-            assert_eq!(report.triggers.stop.as_deref(), Some("CTRL+ALT+BackSpace"));
-            assert_eq!(report.triggers.catch_up.as_deref(), Some("CTRL+ALT+Return"));
+            assert_eq!(report.triggers.stop.as_deref(), Some("Ctrl+Alt+Backspace"));
+            assert_eq!(report.triggers.catch_up.as_deref(), Some("Ctrl+Alt+Return"));
             assert_eq!(
                 world.manager.states(),
                 HotkeyStates {
@@ -2064,6 +2068,7 @@ mod tests {
             };
             world.wait_for_keys();
             assert_eq!(world.binds(), 1, "the first start sets them up");
+            assert_eq!(world.portal().state.kept.lock().unwrap().clone(), owned(KEPT));
 
             world.portal().close_session();
             until("the hotkeys to be off", || world.backend() == HotkeyBackendKind::None);
@@ -2072,6 +2077,10 @@ mod tests {
             });
             assert_eq!(world.binds(), 1, "the new session found them kept");
             assert_eq!(world.lists(), 2);
+            assert_eq!(
+                world.manager.report().triggers.stop.as_deref(),
+                Some("Ctrl+Alt+Backspace")
+            );
             world.portal().press("stop", true);
             until("the press", || !world.fired().is_empty());
         }
@@ -2114,6 +2123,8 @@ mod tests {
                 ["replay", "stop", "catch-up"]
             );
             world.wait_for_keys();
+            // The two it had keep their keys, and the new one gets the key the app asked for.
+            assert_eq!(world.portal().state.kept.lock().unwrap().clone(), owned(KEPT));
         }
 
         #[test]

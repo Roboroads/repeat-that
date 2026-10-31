@@ -22,7 +22,8 @@ const SHORTCUTS: &str = "org.freedesktop.portal.GlobalShortcuts";
 /// What `BindShortcuts` is answered with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BindAnswer {
-    /// Every shortcut gets its preferred key, or none when it had none (a dialog the user accepted).
+    /// A dialog the user accepted: every new shortcut gets its preferred key (none when it had none), one the desktop
+    /// has already keeps its key.
     #[default]
     Accept,
     /// The user closed the dialog.
@@ -127,6 +128,24 @@ fn shortcut_out(id: &str, trigger: &str) -> ShortcutOut {
     )
 }
 
+/// `trigger` (`CTRL+ALT+space`, the shortcuts specification's format) the way a desktop shows it (`Ctrl+Alt+Space`,
+/// as Plasma does).
+fn described(trigger: &str) -> String {
+    let name = |part: &str| match part {
+        "CTRL" => "Ctrl".to_string(),
+        "ALT" => "Alt".to_string(),
+        "SHIFT" => "Shift".to_string(),
+        "LOGO" => "Meta".to_string(),
+        key => {
+            let mut chars = key.chars();
+            chars.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(chars.flat_map(char::to_lowercase)).collect()
+            })
+        }
+    };
+    trigger.split('+').map(name).collect::<Vec<_>>().join("+")
+}
+
 struct Shortcuts {
     version: u32,
     state: Arc<State>,
@@ -228,13 +247,21 @@ impl Shortcuts {
             sender_in_path(&header),
             token(&options, "handle_token")
         );
-        let keys: Vec<(String, String)> = asked
-            .iter()
-            .map(|shortcut| {
-                let trigger = shortcut.preferred_trigger.clone().unwrap_or_default();
-                (shortcut.id.clone(), trigger)
-            })
-            .collect();
+        // As Plasma does: a shortcut the desktop has keeps its key, a new one gets the preferred key, and one the app
+        // no longer asks for is forgotten.
+        let keys: Vec<(String, String)> = {
+            let kept = self.state.kept.lock().unwrap();
+            asked
+                .iter()
+                .map(|shortcut| {
+                    let key = match kept.iter().find(|(id, _)| *id == shortcut.id) {
+                        Some((_, key)) => key.clone(),
+                        None => shortcut.preferred_trigger.as_deref().map(described).unwrap_or_default(),
+                    };
+                    (shortcut.id.clone(), key)
+                })
+                .collect()
+        };
         let accepted = Bound {
             shortcuts: keys.iter().map(|(id, trigger)| shortcut_out(id, trigger)).collect(),
         };
