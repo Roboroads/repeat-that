@@ -12,10 +12,10 @@
 //! portal (see `worker`) and feeds what happens back through a [`PortalLink`]; the two sides share one small state
 //! machine, which is what the tests below drive.
 //!
-//! A new session doesn't always bind. KDE's portal starts each session with the shortcuts it kept for the app, already
-//! working, and Plasma 6.3 opens System Settings on its Shortcuts page for every bind, so binding at every start opened
-//! it at every start. There a session lists the shortcuts first and binds only when one is missing (see
-//! [`sessions_keep_shortcuts`]).
+//! A new session doesn't always bind. KDE's portal (Plasma 6.1 and later) starts each session with the shortcuts it
+//! kept for the app, already working, and Plasma 6.3 opens System Settings on its Shortcuts page for every bind, so
+//! binding at every start opened it at every start. There a session lists the shortcuts first and binds only when one
+//! is missing (see [`sessions_keep_shortcuts`]).
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -49,11 +49,13 @@ fn kde_component(env: &dyn Env, in_flatpak: bool) -> Option<String> {
     }
 }
 
-/// Whether a new session starts with the shortcuts the portal kept for the app, working, so that one which finds all of
-/// them listed has nothing to bind. KDE's portal does: it loads them from kglobalaccel when it makes the session (Plasma
-/// 6.3 and later). The specification only says that the list holds what an earlier session bound, not that it works in
-/// this one, and GNOME's portal grabs the keys in the bind (and lists nothing before it), so everywhere else a session
-/// binds. The portal picks KDE's backend by `XDG_CURRENT_DESKTOP`, and so does this.
+/// Whether what the portal lists for a new session is what works in it, so that a session which finds all of its
+/// shortcuts listed has nothing to bind. KDE's portal lists the actions the session itself has registered with
+/// kglobalaccel. From Plasma 6.1 on it registers the ones it kept for the app when it makes the session; Plasma 5.27 and
+/// 6.0 register nothing before a bind and list nothing, so a session there binds as before. The specification only says
+/// that the list holds what an earlier session bound, not that it works in this one, and GNOME's portal grabs the keys
+/// in the bind (and lists nothing before it), so everywhere else a session binds without asking. The portal picks KDE's
+/// backend by `XDG_CURRENT_DESKTOP`, and so does this.
 fn sessions_keep_shortcuts(env: &dyn Env) -> bool {
     env.var("XDG_CURRENT_DESKTOP")
         .is_some_and(|desktops| desktops.split(':').any(|name| name.trim().eq_ignore_ascii_case("kde")))
