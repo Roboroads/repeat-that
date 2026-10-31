@@ -68,6 +68,10 @@ fn has_every_action(requests: &[ShortcutRequest], listed: &[Assigned]) -> bool {
         .all(|request| listed.iter().any(|shortcut| shortcut.id == request.id))
 }
 
+/// How long a new session waits for the portal to list the shortcuts it started with. KDE's portal answers at once; one
+/// that doesn't answer in time gets the bind instead, so the hotkeys never wait on it for long.
+const LIST_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long to wait for the portal to answer a request to open its settings.
 const CONFIGURE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -300,23 +304,24 @@ pub fn start(on_change: impl Fn() + Send + Sync + 'static) -> PortalBackend {
         on_change,
         zbus::Connection::session(),
         RETRY,
-        sessions_keep_shortcuts(&ProcessEnv),
+        sessions_keep_shortcuts(&ProcessEnv).then_some(LIST_TIMEOUT),
     )
 }
 
-/// [`start`] on the bus `connect` reaches, looking again after each of `retry` (the last one repeats). `keeps` says that
-/// the portal's sessions start with the shortcuts it kept, see [`sessions_keep_shortcuts`].
+/// [`start`] on the bus `connect` reaches, looking again after each of `retry` (the last one repeats). `list_for` is how
+/// long a new session waits for the portal to list the shortcuts it started with, on a portal whose list says what
+/// works in the session (see [`sessions_keep_shortcuts`]); `None` elsewhere, where a session binds without asking.
 fn start_on(
     on_change: impl Fn() + Send + Sync + 'static,
     connect: impl Future<Output = zbus::Result<zbus::Connection>> + Send + 'static,
     retry: &'static [Duration],
-    keeps: bool,
+    list_for: Option<Duration>,
 ) -> PortalBackend {
     let (backend, link, requests) = channel(on_change);
     *lock(&backend.start) = Some(Box::new(move || {
         tauri::async_runtime::spawn(async move {
             match connect.await {
-                Ok(connection) => worker::run(&link, requests, connection, retry, keeps).await,
+                Ok(connection) => worker::run(&link, requests, connection, retry, list_for).await,
                 Err(err) => link.unavailable(format!("could not reach the session bus: {err}")),
             }
         });
@@ -656,19 +661,19 @@ mod worker {
 
     /// Looks for the portal and keeps a session with it, for as long as the backend exists. When the portal isn't there
     /// or the session ends, the link is told, and it is looked for again after the next of `retry`; a session that was up
-    /// starts the delays over. With `keeps` a new session asks the portal which shortcuts it started with, see
-    /// [`sessions_keep_shortcuts`].
+    /// starts the delays over. With `list_for` a new session first asks the portal which shortcuts it started with, and
+    /// waits that long for the answer (see `start_on`).
     pub async fn run(
         link: &PortalLink,
         mut requests: Receiver<Request>,
         connection: zbus::Connection,
         retry: &'static [Duration],
-        keeps: bool,
+        list_for: Option<Duration>,
     ) {
         let mut failures = 0_usize;
         loop {
             let mut established = false;
-            match session(link, &mut requests, &connection, &mut established, keeps).await {
+            match session(link, &mut requests, &connection, &mut established, list_for).await {
                 // The backend is gone with the app.
                 Ok(()) => return,
                 Err(reason) => link.unavailable(reason),
@@ -688,7 +693,7 @@ mod worker {
         requests: &mut Receiver<Request>,
         connection: &zbus::Connection,
         established: &mut bool,
-        keeps: bool,
+        list_for: Option<Duration>,
     ) -> Result<(), String> {
         let version = probe_version(connection)
             .await
@@ -746,7 +751,10 @@ mod worker {
         // Asked while there was no session, and out of date now: what to bind is in the state.
         while requests.try_recv().is_ok() {}
         *established = true;
-        let listed = if keeps { list(&portal, &session).await } else { None };
+        let listed = match list_for {
+            Some(limit) => list(&portal, &session, limit).await,
+            None => None,
+        };
         if let Some(shortcuts) = link.session_up(version, listed.as_deref()) {
             bind(&portal, &session, link, &shortcuts).await;
         }
@@ -810,17 +818,27 @@ mod worker {
         });
     }
 
-    /// The shortcuts the session started with, or `None` when the portal can't say. The session then binds, as it would
-    /// without the list.
-    async fn list(portal: &GlobalShortcuts, session: &Session<GlobalShortcuts>) -> Option<Vec<Assigned>> {
-        let answer = portal
-            .list_shortcuts(session, ListShortcutsOptions::default())
-            .await
-            .and_then(|request| request.response());
-        match answer {
-            Ok(listed) => Some(assigned(listed.shortcuts())),
-            Err(err) => {
+    /// The shortcuts the session started with, or `None` when the portal can't say within `limit`. The session then
+    /// binds, as it would without the list.
+    async fn list(
+        portal: &GlobalShortcuts,
+        session: &Session<GlobalShortcuts>,
+        limit: Duration,
+    ) -> Option<Vec<Assigned>> {
+        let answer = std::pin::pin!(async {
+            portal
+                .list_shortcuts(session, ListShortcutsOptions::default())
+                .await
+                .and_then(|request| request.response())
+        });
+        match select(answer, std::pin::pin!(pause(limit))).await {
+            Either::Left((Ok(listed), _)) => Some(assigned(listed.shortcuts())),
+            Either::Left((Err(err), _)) => {
                 eprintln!("could not list the shortcuts, so they are bound: {err}");
+                None
+            }
+            Either::Right(_) => {
+                eprintln!("the portal did not list the shortcuts in time, so they are bound");
                 None
             }
         }
@@ -1704,23 +1722,23 @@ mod tests {
             answer: BindAnswer,
             retry: &'static [Duration],
         ) -> Option<World> {
-            world_on(version, bindings, answer, retry, None)
+            world_on(version, bindings, answer, retry, None, |_| {})
         }
 
-        /// [`world`], and with `kept` on a desktop whose sessions start with the shortcuts it keeps for the app (KDE's),
-        /// which an earlier start left as `kept`.
+        /// [`world`], with `list_for` as in `start_on`, and the portal readied by `setup` before the app talks to it.
         fn world_on(
             version: Option<u32>,
             bindings: &HotkeyBindings,
             answer: BindAnswer,
             retry: &'static [Duration],
-            kept: Option<&[(&str, &str)]>,
+            list_for: Option<Duration>,
+            setup: impl FnOnce(&FakePortal),
         ) -> Option<World> {
             let bus = PrivateBus::start()?;
             let portal = version.map(|version| FakePortal::start(&bus, version));
             if let Some(portal) = &portal {
                 portal.answer_binds_with(answer);
-                portal.keep(kept.unwrap_or_default());
+                setup(portal);
             }
             let changes = Arc::new(AtomicUsize::new(0));
             let counter = Arc::clone(&changes);
@@ -1731,7 +1749,7 @@ mod tests {
                 },
                 async move { zbus::connection::Builder::address(address.as_str())?.build().await },
                 retry,
-                kept.is_some(),
+                list_for,
             );
             let fired = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&fired);
@@ -1760,7 +1778,8 @@ mod tests {
                 &HotkeyBindings::default(),
                 BindAnswer::Accept,
                 retry,
-                Some(kept),
+                Some(LIST_TIMEOUT),
+                |portal| portal.keep(kept),
             )
         }
 
@@ -2056,6 +2075,31 @@ mod tests {
         }
 
         #[test]
+        fn a_portal_that_does_not_list_the_shortcuts_in_time_gets_the_bind() {
+            let limit = Duration::from_millis(300);
+            let Some(world) = world_on(
+                Some(1),
+                &HotkeyBindings::default(),
+                BindAnswer::Accept,
+                NEVER,
+                Some(limit),
+                |portal| {
+                    portal.keep(KEPT);
+                    portal.hold_lists();
+                },
+            ) else {
+                return;
+            };
+            let started = Instant::now();
+            until("a bind request", || world.binds() > 0);
+            assert!(started.elapsed() >= limit / 2, "bound before the list had its time");
+            world.wait_for_keys();
+            assert_eq!(world.lists(), 1);
+            world.portal().press("replay", true);
+            until("the press", || !world.fired().is_empty());
+        }
+
+        #[test]
         fn plasma_is_asked_for_all_three_when_it_kept_only_some() {
             // An action that came with an update, say.
             let Some(world) = plasma(&KEPT[..2], NEVER) else {
@@ -2103,7 +2147,7 @@ mod tests {
                     || {},
                     async move { zbus::connection::Builder::address(address.as_str())?.build().await },
                     QUICK,
-                    false,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -2139,7 +2183,7 @@ mod tests {
                             .await
                     },
                     NEVER,
-                    false,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -2168,7 +2212,7 @@ mod tests {
                             .await
                     },
                     NEVER,
-                    false,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -2192,7 +2236,7 @@ mod tests {
                             .await
                     },
                     NEVER,
-                    false,
+                    None,
                 )),
                 Arc::new(|_| {}),
             );
@@ -2234,7 +2278,7 @@ mod tests {
                     .build()
                     .await
                     .unwrap();
-                worker::run(&link, requests, connection, QUICK, false).await;
+                worker::run(&link, requests, connection, QUICK, None).await;
             });
             until("a bind", || !portal.state.binds.lock().unwrap().is_empty());
 

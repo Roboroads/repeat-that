@@ -5,7 +5,7 @@
 //! desktop answers the way the interface says.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -73,6 +73,8 @@ pub struct State {
     pub binds: Mutex<Vec<Vec<Asked>>>,
     /// How many `ListShortcuts` calls there were.
     pub lists: AtomicUsize,
+    /// `ListShortcuts` is never answered.
+    hold_lists: AtomicBool,
     /// What the desktop keeps for the app across sessions, each shortcut with its key: what the last accepted bind got,
     /// or what a test says an earlier start left. `ListShortcuts` answers with it.
     pub kept: Mutex<Vec<(String, String)>>,
@@ -277,7 +279,9 @@ impl Shortcuts {
                 .map(|(id, trigger)| shortcut_out(id, trigger))
                 .collect(),
         };
-        respond(connection.clone(), request.clone(), 0, listed);
+        if !self.state.hold_lists.load(Ordering::SeqCst) {
+            respond(connection.clone(), request.clone(), 0, listed);
+        }
         OwnedObjectPath::try_from(request).map_err(|err| fdo::Error::Failed(err.to_string()))
     }
 
@@ -433,6 +437,11 @@ impl FakePortal {
     pub fn release_held(&self) {
         let held = self.state.held.lock().unwrap().take().expect("a held bind");
         held();
+    }
+
+    /// From now on `ListShortcuts` gets no answer, as from a portal that hangs.
+    pub fn hold_lists(&self) {
+        self.state.hold_lists.store(true, Ordering::SeqCst);
     }
 
     /// The desktop keeps these shortcuts for the app, as an earlier start that bound them leaves it.
