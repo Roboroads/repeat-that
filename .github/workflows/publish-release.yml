@@ -107,6 +107,8 @@ on:
     paths:
       - .github/workflows/publish-release.yml
       - .github/workflows/build-*.yml
+      - .github/scripts/apt-install.sh
+      - .github/scripts/test_apt_install.py
       - .github/scripts/release_assets.py
       - .github/scripts/test_release_assets.py
       - .github/scripts/sign-updates.sh
@@ -310,14 +312,20 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       # --ignore-scripts: nothing from the lock file needs to run, and this job may hold the private key.
-      - name: Install the Tauri CLI and minisign
+      - name: Install the Tauri CLI
         if: ${{ steps.updater.outputs.mode != 'none' }}
         run: |
           set -euo pipefail
           (cd app && npm ci --ignore-scripts --no-audit --no-fund)
           app/node_modules/.bin/tauri --version
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq minisign
+
+      # apt-install.sh stops a hung apt after a few minutes and tries again; timeout-minutes is its backstop.
+      - name: Install minisign
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          bash .github/scripts/apt-install.sh --quiet --step "Install minisign" minisign
           minisign -v
 
       # The private key is in the environment of this step only, and only a release has it.
@@ -578,14 +586,20 @@ jobs:
           cache-dependency-path: app/package-lock.json
 
       # --ignore-scripts: nothing from the lock file needs to run, and this job may hold the private key.
-      - name: Install the Tauri CLI and minisign
+      - name: Install the Tauri CLI
         if: ${{ steps.updater.outputs.mode != 'none' }}
         run: |
           set -euo pipefail
           (cd app && npm ci --ignore-scripts --no-audit --no-fund)
           app/node_modules/.bin/tauri --version
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq minisign
+
+      # apt-install.sh stops a hung apt after a few minutes and tries again; timeout-minutes is its backstop.
+      - name: Install minisign
+        if: ${{ steps.updater.outputs.mode != 'none' }}
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          bash .github/scripts/apt-install.sh --quiet --step "Install minisign" minisign
           minisign -v
 
       # The private key is in the environment of this step only, and only a release has it.

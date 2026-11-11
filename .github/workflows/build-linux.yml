@@ -46,6 +46,7 @@ on:
       - crates/**
       - Cargo.toml
       - Cargo.lock
+      - .github/scripts/apt-install.sh
       - .github/scripts/check-linux-packages.sh
       - .github/scripts/linux-packages-lib.sh
       - .github/scripts/smoke-linux-package.sh
@@ -91,16 +92,21 @@ jobs:
             exit 1
           fi
 
+      # This container has no git yet (the next step installs it), and apt-install.sh lives in the repository. Without
+      # git, actions/checkout downloads the files through GitHub's API instead; the checkout after the install replaces
+      # them with a real clone.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.sha || inputs.tag }}
+
       # The Tauri libraries, libpipewire's headers and clang for the capture backend (as in ci.yml), git and curl for the
       # checkout and rustup, and the tools the bundler and check-linux-packages.sh use: `file` and the GTK and
       # gdk-pixbuf query tools for the AppImage's GTK plugin, rpm, rpm2cpio and cpio to read the .rpm, and
       # desktop-file-validate.
       - name: Install system packages
-        env:
-          DEBIAN_FRONTEND: noninteractive
+        timeout-minutes: 25
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          bash .github/scripts/apt-install.sh --step "Install system packages" \
             ca-certificates curl git build-essential pkg-config file xz-utils \
             libwebkit2gtk-4.1-dev libgtk-3-dev libgtk-3-bin libayatana-appindicator3-dev librsvg2-dev librsvg2-common \
             libasound2-dev libxdo-dev libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang \

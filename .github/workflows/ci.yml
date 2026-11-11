@@ -67,7 +67,8 @@ jobs:
     # queueing for its own OS, and finishes without running any steps.
     if: ${{ !cancelled() }}
     runs-on: ${{ needs.changes.outputs.code == 'false' && 'ubuntu-latest' || matrix.os }}
-    timeout-minutes: 30
+    # Room for a cold build plus the apt step's retries, see .github/scripts/apt-install.sh.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -81,11 +82,12 @@ jobs:
       # The desktop app (app/src-tauri) is part of the workspace, so cargo needs the Tauri system libraries and the
       # built frontend (`tauri::generate_context!` embeds app/dist). The PipeWire backend needs libpipewire's headers
       # and clang (bindgen); its end-to-end tests below need PipeWire, WirePlumber, pipewire-pulse and their tools.
+      # apt-install.sh stops a hung apt after a few minutes and tries again; timeout-minutes is its backstop.
       - name: Install system packages (Linux)
         if: needs.changes.outputs.code != 'false' && runner.os == 'Linux'
+        timeout-minutes: 25
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          bash .github/scripts/apt-install.sh --step "Install system packages (Linux)" \
             pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev \
             libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang \
             pipewire wireplumber pipewire-bin pipewire-pulse pulseaudio-utils dbus-daemon
@@ -211,7 +213,8 @@ jobs:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # Room for a cold build plus the apt step's retries, see .github/scripts/apt-install.sh.
+    timeout-minutes: 50
     defaults:
       run:
         working-directory: app
@@ -222,9 +225,10 @@ jobs:
       # of WebKitGTK and the D-Bus daemon that each test app gets for itself.
       - name: Install system packages
         if: needs.changes.outputs.code != 'false'
+        timeout-minutes: 25
+        working-directory: ${{ github.workspace }} # the job's default is app/
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          bash .github/scripts/apt-install.sh --step "Install system packages" \
             pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libxdo-dev \
             libpipewire-0.3-dev libspa-0.2-dev libclang-dev clang \
             xvfb webkit2gtk-driver dbus-daemon
